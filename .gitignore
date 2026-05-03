@@ -1,0 +1,53 @@
+# Case data — NEVER commit evidence
+case-data/
+*.raw
+*.mem
+*.aff4
+*.E01
+*.vmem
+*.dmp
+*.pcap
+*.pcapng
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Secrets — paranoid catch-all
+.env
+.env.*
+*.key
+*.pem
+secrets/
+
+# RAG index (large, regenerable)
+rag/index/
+
+# Extractions and audit logs (per-case, regenerable, can be huge)
+extractions/
+audit/
+
+# Claude Code local state
+.claude/state/
+.claude/transcripts/
