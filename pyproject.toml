@@ -1,0 +1,24 @@
+[project]
+name = "sift-guard"
+version = "0.1.0"
+description = "Autonomous DFIR agent with cross-validation. SANS Find Evil! 2026."
+requires-python = ">=3.11"
+dependencies = [
+    "mcp",
+    "pydantic>=2.0",
+]
+license = { text = "MIT" }
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.1.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
