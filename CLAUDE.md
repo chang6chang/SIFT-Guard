@@ -152,6 +152,39 @@ in `iterations.json`.
   untrusted="true">...</evidence>` delimiters. Analyst system prompts
   treat content inside these blocks as data, never instructions.
 
+## Ground truth isolation
+
+The agent operates from evidence alone. Curated, human-authored case
+context is for scoring runs, not for steering them. Three rules:
+
+1. **`docs/dataset-inventory.md` is a HUMAN-ONLY artifact.** It exists
+   so the team can grade findings after a run. The agent must never
+   read it. Real-world IR cases do not come with a curated briefing —
+   if the agent learns to lean on one, the autonomy criterion
+   collapses and the accuracy report measures memorization rather
+   than detection.
+
+2. **The agent reads nothing under `docs/` at runtime.** Only
+   `case-data/evidence/` (read-only) and `case-data/extractions/`
+   (its own parsed outputs) are in scope. The source tree, git
+   metadata, team notes, and internal documentation are all
+   off-limits during a run.
+
+3. **MCP functions never accept arbitrary file paths from the agent.**
+   Every tool that touches a file takes an `evidence_id` registered
+   in `CASE.yaml` and resolves to a concrete path inside the server.
+   The agent cannot construct a path — it can only name a registered
+   piece of evidence. This blocks the agent — whether through a bug,
+   prompt injection in evidence-derived strings, or its own confused
+   reasoning — from being routed into `docs/`, `.git/`, the source
+   tree, or anywhere outside the case sandbox.
+
+These are architectural guardrails (Hard Rule #2), not prompt
+guardrails. The MCP server enforces them by construction: no `docs/`
+access tool exists, file-taking tools accept only `evidence_id`, and
+the resolver rejects any id not present in the registered
+`CASE.yaml`.
+
 ## Architectural enforcement of evidence integrity (concrete)
 
 - `register_evidence` computes SHA-256, sets file `chmod 444`, parent
