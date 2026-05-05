@@ -374,3 +374,25 @@ process names from cmdline or the PEB. Logged as a known kernel
 artifact, not a bug. Reference in `adversarial-robustness.md` when
 written: an attacker can engineer collisions in this field via 15+
 char executable names.
+
+## 2026-05-05 — Protocol SIFT: do not compare against
+
+**Decision:** SIFT-Guard does not benchmark against Protocol SIFT.
+Accuracy report compares SIFT-Guard findings against ground-truth
+labels only.
+
+**Rationale:** Protocol SIFT is a Claude Code skills package, not an
+MCP framework (verified: zero MCP code in upstream HEAD 40bed7a, no
+LICENSE file). Adoption (Option A) and fork (Option C) blocked by
+license. Black-box benchmark (Option B) was viable but the team is
+budget-constrained on hours; comparison work deferred indefinitely.
+
+**Consequence for rubric:** weaker IR Accuracy (#2) and Constraint
+Implementation (#4) narrative — no head-to-head numbers, no
+prompt-vs-architectural-guardrail contrast pulled from a real run.
+Mitigation: lean harder on the iterative self-correction demo (#1
+tiebreaker) and the hash-chained audit (#5).
+
+**Artifacts retained:** docs/protocol-sift/ (assessment + raw inputs)
+kept for reference. Protocol SIFT install on SIFT VM left in place,
+unused.
