@@ -314,13 +314,120 @@ class PsscanResult(BaseModel):
         return _enforce_utc("invoked_at", v)
 
 
+class ProcessTreeRecord(BaseModel):
+    """One node in a `windows.pstree.PsTree` recursive tree.
+
+    Fields divide into three groups:
+
+    1. EPROCESS basics shared with ProcessRecord (pid, ppid,
+       image_file_name, offset_v, threads, handles, session_id,
+       wow64, create_time, exit_time). Pstree builds on the same
+       active-list walk as pslist; these carry the same semantics.
+    2. Pstree-specific resolved metadata (audit, cmd, path). Volatility
+       reads ``_RTL_USER_PROCESS_PARAMETERS`` to surface the full image
+       path, command line, and kernel-side audit name. Most rows have
+       these as null — the parameters block is paged out for ~91% of
+       processes on a typical Windows snapshot (Rocba: 197/2186
+       populated). Treat as untrusted strings; they reflect attacker-
+       controlled command-line arguments when populated.
+    3. children — recursive list of ProcessTreeRecord, parent-anchored
+       by Volatility from each EPROCESS's
+       ``InheritedFromUniqueProcessId``. Top-level (depth-0) records
+       are processes whose PPID is no longer in the active list, plus
+       the genuine root (PID 4 / System, PPID 0). On Rocba: 58 top-
+       level entries, max depth 8.
+
+    Cmd / path / audit are not wrapped in ``UntrustedString`` here —
+    same convention as ProcessRecord.image_file_name. Wrapping is the
+    tool-return-boundary's job; storing raw strings keeps the audit
+    chain replayable across changes to the wrap function.
+    """
+
+    pid: int = Field(ge=0)
+    ppid: int = Field(ge=0)
+    image_file_name: str
+    offset_v: int = Field(ge=0)
+    threads: int = Field(ge=0)
+    handles: int | None = Field(default=None, ge=0)
+    session_id: int | None = None
+    wow64: bool
+    create_time: datetime | None = None
+    exit_time: datetime | None = None
+    # Pstree-specific. ``audit`` is the kernel-side image name (e.g.
+    # ``\Device\HarddiskVolume3\Windows\System32\smss.exe``); ``path``
+    # is the user-space resolved path (e.g.
+    # ``\SystemRoot\System32\smss.exe``); ``cmd`` is the full command
+    # line. Any of the three may be null on Vol 3 2.27.0 even when
+    # the others are populated.
+    audit: str | None = None
+    cmd: str | None = None
+    path: str | None = None
+    children: list["ProcessTreeRecord"] = Field(default_factory=list)
+
+    @field_validator("create_time", "exit_time")
+    @classmethod
+    def _validate_optional_utc(cls, v: datetime | None, info) -> datetime | None:
+        if v is None:
+            return v
+        return _enforce_utc(info.field_name, v)
+
+
+# Pydantic v2 needs an explicit rebuild for self-referential forward
+# references when used with `from __future__ import annotations`. The
+# class body finishes evaluating to a string `"ProcessTreeRecord"` for
+# `children`'s type; this resolves it.
+ProcessTreeRecord.model_rebuild()
+
+
+class PstreeResult(BaseModel):
+    """Result envelope for the `windows.pstree.PsTree` Volatility plugin.
+
+    Same provenance shape as PslistResult / PsscanResult — different
+    `plugin_name` Literal, and `processes` carries top-level (depth-0)
+    nodes with descendants nested via ``ProcessTreeRecord.children``.
+
+    The week-6 validator uses this tree shape to detect masquerading
+    (svchost.exe with a non-services.exe parent), unusual depth
+    (powershell.exe spawned from explorer.exe at depth 4+), and
+    orphaned subtrees whose PPID points outside the active list.
+    """
+
+    evidence_id: str
+    plugin_name: Literal["windows.pstree.PsTree"]
+    volatility_version: str = Field(min_length=1)
+    processes: list[ProcessTreeRecord]
+    command_executed: str = Field(min_length=1)
+    runtime_seconds: float = Field(ge=0)
+    invoked_at: datetime
+
+    @field_validator("evidence_id")
+    @classmethod
+    def _validate_evidence_id(cls, v: str) -> str:
+        try:
+            parsed = UUID(v)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
+        if parsed.version != 4:
+            raise ValueError(
+                f"evidence_id must be UUID version 4, got version {parsed.version}"
+            )
+        return str(parsed)
+
+    @field_validator("invoked_at")
+    @classmethod
+    def _validate_invoked_at(cls, v: datetime) -> datetime:
+        return _enforce_utc("invoked_at", v)
+
+
 __all__ = [
     "ArtifactClass",
     "AuditLogEntry",
     "EvidenceRecord",
     "ProcessRecord",
     "ProcessScanRecord",
+    "ProcessTreeRecord",
     "PslistResult",
     "PsscanResult",
+    "PstreeResult",
     "UntrustedString",
 ]

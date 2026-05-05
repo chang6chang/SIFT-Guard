@@ -7,7 +7,9 @@ by default per pyproject.toml's pytest config. These unit tests mock
 
   - the ``plugin_name`` regex (positive + negative cases)
   - the ``image_path_in_vm`` prefix check
-  - the ``parse_pslist_json`` PascalCase → snake_case mapping, including
+  - the ``parse_volatility_json`` PascalCase → snake_case mapping
+    (shared by pslist and psscan; pstree has its own
+    ``parse_pstree_json`` because of the recursive shape), including
     forward-compat behavior on unknown fields a future Volatility
     release might add.
 """
@@ -28,7 +30,7 @@ os.environ.setdefault("SIFT_VM_HOST", "test.invalid")
 
 from server.runners.sift_vm import (  # noqa: E402  (intentional post-env import)
     SIFT_VM_EVIDENCE_PREFIX,
-    parse_pslist_json,
+    parse_volatility_json,
     run_vol_plugin,
 )
 
@@ -110,18 +112,19 @@ class TestImagePathPrefix:
 
 
 # ---------------------------------------------------------------------------
-# parse_pslist_json
+# parse_volatility_json (shared by pslist + psscan; pstree has its
+# own recursive parser exercised in tests/test_vol_pstree.py)
 # ---------------------------------------------------------------------------
 
 
-class TestParsePslistJson:
+class TestParseVolatilityJson:
     def test_maps_three_record_fixture_to_snake_case(self):
         # Fixture: System (PID 4), Registry (PID 100), smss.exe (PID 440)
         # — replace tests/fixtures/vol_pslist_sample.json with the real
         # first 3 records of /tmp/pslist.json from the SIFT VM and these
         # assertions still hold.
         stdout = PSLIST_FIXTURE.read_text(encoding="utf-8")
-        rows = parse_pslist_json(stdout)
+        rows = parse_volatility_json(stdout)
 
         assert len(rows) == 3
         assert rows[0]["pid"] == 4
@@ -151,7 +154,7 @@ class TestParsePslistJson:
         # Pathological dump: zero processes. The parser must not crash —
         # downstream PslistResult tolerates an empty list (see
         # tests/test_schemas.py::TestPslistResult).
-        assert parse_pslist_json("[]") == []
+        assert parse_volatility_json("[]") == []
 
     def test_unknown_extra_fields_ignored(self):
         # Forward-compat: a future Volatility release may add fields
@@ -180,7 +183,7 @@ class TestParsePslistJson:
                 }
             ]
         )
-        rows = parse_pslist_json(future_output)
+        rows = parse_volatility_json(future_output)
         assert len(rows) == 1
         for unknown in ("AuditFlags", "ImageBase", "TokenPrivileges"):
             assert unknown not in rows[0]

@@ -13,11 +13,17 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
-from server.schemas import EvidenceRecord, PslistResult, PsscanResult
+from server.schemas import (
+    EvidenceRecord,
+    PslistResult,
+    PsscanResult,
+    PstreeResult,
+)
 from server.tools.evidence import register_evidence as _register_evidence_impl
 from server.tools.memory import (
     vol_pslist as _vol_pslist_impl,
     vol_psscan as _vol_psscan_impl,
+    vol_pstree as _vol_pstree_impl,
 )
 
 
@@ -81,6 +87,31 @@ def vol_psscan(evidence_id: str) -> PsscanResult:
     scanning walks the full memory layer. Do not call back-to-back redundantly.
     """
     return _vol_psscan_impl(evidence_id, case_dir=CASE_DIR)
+
+
+@mcp.tool()
+def vol_pstree(evidence_id: str) -> PstreeResult:
+    """Run windows.pstree.PsTree against a registered memory image.
+
+    Reconstructs the parent-child process hierarchy from each EPROCESS's
+    InheritedFromUniqueProcessId. Returns a recursive tree of ProcessTreeRecord
+    nodes — top-level entries are roots, orphans (PPID no longer in the active
+    list), or System (PID 4 / PPID 0); descendants are nested in each node's
+    `children` field. Pstree-specific resolved fields (audit, cmd, path) are
+    populated when Volatility can read RTL_USER_PROCESS_PARAMETERS, which on
+    Rocba was ~9% of records — most rows have these as null because the
+    parameters block was paged out.
+
+    Same evidence_id-only contract as vol_pslist; same sanitized rejection
+    messages and audited rejection lines under the `vol_pstree:rejected_*`
+    prefix. The week-6 validator uses this tree shape to detect masquerading
+    (svchost.exe with non-services.exe parent) and unusual process depth.
+
+    Cost: typically 25-45 seconds per call against a 19GB Windows 10 image
+    (Rocba: 29.5s observed). Comparable to vol_pslist's runtime — pstree walks
+    the same active EPROCESS list, just with hierarchy reconstruction.
+    """
+    return _vol_pstree_impl(evidence_id, case_dir=CASE_DIR)
 
 
 if __name__ == "__main__":

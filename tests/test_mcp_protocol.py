@@ -4,12 +4,12 @@ Spawns `server/main.py` as a subprocess via stdio, exercises the real MCP
 protocol the way Claude Code will, and verifies:
 
 (1) the tool surface exposes exactly the registered tools — currently
-    `register_evidence`, `vol_pslist`, and `vol_psscan`. Each tool's
-    input schema is locked to its declared parameters only (no
-    `case_dir` leak); this is the architectural lock for CLAUDE.md
+    `register_evidence`, `vol_pslist`, `vol_psscan`, and `vol_pstree`.
+    Each tool's input schema is locked to its declared parameters only
+    (no `case_dir` leak); this is the architectural lock for CLAUDE.md
     rule 3.
 (2) human-readable warnings reach the LLM over the wire (IRREVERSIBLE
-    on register_evidence, latency cost on vol_pslist and vol_psscan).
+    on register_evidence, latency cost on every vol_* tool).
 (3) registration succeeds end-to-end and produces the expected on-disk
     side effects (chmod 444, CASE.yaml, audit JSONL).
 (4) a bad input produces a protocol-level error response, not a crash;
@@ -152,7 +152,7 @@ def _extract_record(call_result) -> dict | None:
 
 
 class TestToolSurface:
-    def test_three_tool_surface_is_locked(self, tmp_path: Path):
+    def test_four_tool_surface_is_locked(self, tmp_path: Path):
         # Surface lock: every new MCP tool added to server/main.py
         # forces an explicit update here. Adding a tool without
         # extending this set means the surface grew silently — which
@@ -163,9 +163,10 @@ class TestToolSurface:
             "register_evidence",
             "vol_pslist",
             "vol_psscan",
+            "vol_pstree",
         }, (
-            f"expected exactly register_evidence, vol_pslist, vol_psscan; "
-            f"got {sorted(tool_names)}"
+            f"expected exactly register_evidence, vol_pslist, vol_psscan, "
+            f"vol_pstree; got {sorted(tool_names)}"
         )
 
     def test_register_evidence_parameters_are_locked_to_filepath(
@@ -270,6 +271,43 @@ class TestToolSurface:
         assert tool.description, "vol_psscan must carry a description"
         assert "5-10 minutes" in tool.description, (
             "vol_psscan description must surface its latency cost — "
+            "the LLM uses this to decide whether to invoke. Found: "
+            f"{tool.description!r}"
+        )
+
+    def test_vol_pstree_parameters_are_locked_to_evidence_id(
+        self, tmp_path: Path
+    ):
+        # Symmetric to vol_pslist / vol_psscan locks. Same architectural
+        # rule: no case_dir, no plugin_name, no path leak — only
+        # evidence_id. Schema-introspection test test_no_path_fields.py
+        # is the systemic guard; this is the per-tool tripwire that
+        # surfaces a failure with a vol_pstree-specific message.
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = _tool_by_name(listing, "vol_pstree")
+        schema = tool.inputSchema
+
+        assert schema.get("type") == "object"
+        properties = schema.get("properties", {})
+        assert set(properties.keys()) == {"evidence_id"}, (
+            "vol_pstree must accept only `evidence_id`; got "
+            f"{sorted(properties.keys())}. If `case_dir`, `plugin_name`, or "
+            "any path field shows up here, CLAUDE.md rule 3 is broken."
+        )
+        assert properties["evidence_id"].get("type") == "string"
+        assert "evidence_id" in schema.get("required", []), (
+            "evidence_id must be required, not optional"
+        )
+
+    def test_vol_pstree_description_carries_cost_warning(self, tmp_path: Path):
+        # pstree's runtime sits between pslist (~5s) and psscan (~6m):
+        # ~30s on Rocba. The LLM should see the range so it doesn't
+        # treat pstree as free like pslist or expensive like psscan.
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = _tool_by_name(listing, "vol_pstree")
+        assert tool.description, "vol_pstree must carry a description"
+        assert "25-45 seconds" in tool.description, (
+            "vol_pstree description must surface its latency cost — "
             "the LLM uses this to decide whether to invoke. Found: "
             f"{tool.description!r}"
         )
@@ -383,4 +421,5 @@ class TestRoundTrip:
             "register_evidence",
             "vol_pslist",
             "vol_psscan",
+            "vol_pstree",
         }

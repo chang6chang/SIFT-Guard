@@ -1,6 +1,7 @@
-"""Typed MCP tools for the Volatility 3 `windows.{pslist,psscan}` plugins.
+"""Typed MCP tools for the Volatility 3 `windows.{pslist,psscan,pstree}`
+plugins.
 
-Both tools compose the Phase B layers:
+All three tools compose the same Phase B layers:
   - the agent supplies an `evidence_id`
   - the tool resolves it via case-data/CASE.yaml to an EvidenceRecord
   - validates `artifact_class is memory_image`
@@ -8,25 +9,30 @@ Both tools compose the Phase B layers:
     SIFT_VM_EVIDENCE_PREFIX
   - captures the Volatility version (reproducibility metadata)
   - invokes the SSH-based runner with the pinned plugin name
-  - parses the PascalCase JSON output to snake_case dicts
-  - constructs ProcessRecord rows; per-record validation failures are
-    audit-logged as warning entries and the bad row is skipped, so
-    one corrupt EPROCESS does not collapse the whole call
-  - returns a typed result (PslistResult / PsscanResult) with full
-    provenance
+  - parses the PascalCase JSON output
+  - constructs typed records; per-row validation failures are audit-
+    logged as warnings and the bad row (or bad subtree, for pstree) is
+    skipped, so one corrupt record does not collapse the whole call
+  - returns a typed result with full provenance
 
 Architectural guarantee per CLAUDE.md "Ground truth isolation" rule 3:
 the agent cannot construct a path and cannot name a plugin. Plugin
 names are pinned in this module; the path comes from the evidence
 registry. The runner's plugin_name regex is defense-in-depth.
 
-Why both plugins live in one module: they share the EPROCESS row shape
-(verified empirically — see schemas.PsscanResult docstring) and reuse
-all of the resolve/translate/audit scaffolding. The two `vol_*`
-functions are intentional near-duplicates rather than a parameterized
-helper, per CLAUDE.md "three similar lines is better than a premature
-abstraction." When a third memory plugin (pstree, netscan, ...) lands,
-the duplication will be visible enough to motivate a real extraction.
+Helpers shared across the three tools (extracted in week 4 — the
+"rule of three" trigger):
+
+  - ``_log_tool_rejection`` (was ``_log_rejection`` /
+    ``_log_psscan_rejection``) parameterized on tool_name
+  - ``_ToolRecordWarning`` (was ``_PslistRecordWarning`` /
+    ``_PsscanRecordWarning``) carries `warning_type` as a constructor
+    arg rather than a class default
+
+Both extractions preserve audit-line bytes for callers that pass the
+right strings — pydantic's `model_dump_json` serializes the same field
+set in the same order regardless of whether `warning_type` was a class
+default or an instance value.
 """
 
 from __future__ import annotations
@@ -42,8 +48,8 @@ from server.audit import append_audit_entry
 from server.runners.sift_vm import (
     SIFT_VM_EVIDENCE_PREFIX,
     get_vol_version,
-    parse_pslist_json,
-    parse_psscan_json,
+    parse_pstree_json,
+    parse_volatility_json,
     run_vol_plugin,
 )
 from server.schemas import (
@@ -51,18 +57,20 @@ from server.schemas import (
     EvidenceRecord,
     ProcessRecord,
     ProcessScanRecord,
+    ProcessTreeRecord,
     PslistResult,
     PsscanResult,
+    PstreeResult,
 )
 
 
 _PSLIST_PLUGIN = "windows.pslist.PsList"
 _PSSCAN_PLUGIN = "windows.psscan.PsScan"
+_PSTREE_PLUGIN = "windows.pstree.PsTree"
 _CASE_FILENAME = "CASE.yaml"
-_TOOL_NAME = "vol_pslist"
+_PSLIST_TOOL_NAME = "vol_pslist"
 _PSSCAN_TOOL_NAME = "vol_psscan"
-_WARNING_TOOL_NAME = "vol_pslist:record_validation_warning"
-_PSSCAN_WARNING_TOOL_NAME = "vol_psscan:record_validation_warning"
+_PSTREE_TOOL_NAME = "vol_pstree"
 
 # Pool-tag scanning walks the full memory layer rather than the active
 # EPROCESS list, so psscan is materially slower than pslist. On Rocba
@@ -73,8 +81,13 @@ _PSSCAN_WARNING_TOOL_NAME = "vol_psscan:record_validation_warning"
 _PSSCAN_TIMEOUT_SECONDS = 900
 
 
-class _PslistRecordWarning(BaseModel):
+class _ToolRecordWarning(BaseModel):
     """Audit payload for a Volatility row that failed schema validation.
+
+    `warning_type` is constructed as ``vol_<tool>_record_validation_failed``
+    by the caller — embedding the tool name in the warning_type field
+    keeps the failure greppable from the JSONL when multiple plugin
+    tools have run against the same image.
 
     Persisted into the chain only via its `output_hash`. The full
     warning text is not written elsewhere in the prototype; recovery
@@ -83,23 +96,13 @@ class _PslistRecordWarning(BaseModel):
     reference the path here.
     """
 
-    warning_type: str = "vol_pslist_record_validation_failed"
-    record_index: int
-    validation_error: str
-
-
-class _PsscanRecordWarning(BaseModel):
-    """Mirror of `_PslistRecordWarning` for the psscan tool. Distinct
-    `warning_type` keeps the failure mode greppable in the audit chain
-    when both plugins ran against the same image."""
-
-    warning_type: str = "vol_psscan_record_validation_failed"
+    warning_type: str
     record_index: int
     validation_error: str
 
 
 class _RejectionReason(StrEnum):
-    """Why a vol_pslist call was rejected before the runner was invoked."""
+    """Why a memory-tool call was rejected before the runner was invoked."""
 
     EVIDENCE_NOT_FOUND = "evidence_not_found"
     WRONG_ARTIFACT_CLASS = "wrong_artifact_class"
@@ -107,7 +110,7 @@ class _RejectionReason(StrEnum):
 
 
 class _RejectionRecord(BaseModel):
-    """Audit payload for a rejected vol_pslist call.
+    """Audit payload for a rejected memory-tool call.
 
     Per the Phase B.3 follow-up: every rejection writes a chain line so
     rejection cannot become an unrecorded probe channel. The
@@ -164,37 +167,25 @@ def _resolve_evidence(
     return None
 
 
-def _log_rejection(
-    case_dir: Path, reason: _RejectionReason, evidence_id: str
+def _log_tool_rejection(
+    case_dir: Path,
+    tool_name: str,
+    reason: _RejectionReason,
+    evidence_id: str,
 ) -> None:
     """Append one rejection line to the audit chain.
 
-    The rejection's tool_name is ``vol_pslist:rejected_<reason>`` —
+    The rejection's tool_name is ``<tool_name>:rejected_<reason>`` —
     greppable from the JSONL and unambiguous about which rejection
-    path fired.
+    path fired and which tool fired it. Used by all memory-tool
+    wrappers; behavior is byte-identical to the per-tool helpers it
+    replaces (same `_RejectionRecord` shape, same input_args, same
+    tool_name string format).
     """
     rejection = _RejectionRecord(reason=reason, evidence_id=evidence_id)
     append_audit_entry(
         case_dir=case_dir,
-        tool_name=f"{_TOOL_NAME}:rejected_{reason.value}",
-        evidence_id=evidence_id,
-        input_args={"evidence_id": evidence_id},
-        output=rejection,
-    )
-
-
-def _log_psscan_rejection(
-    case_dir: Path, reason: _RejectionReason, evidence_id: str
-) -> None:
-    """Mirror of `_log_rejection` for vol_psscan. Tool name prefix is
-    `vol_psscan:rejected_<reason>` so a chain reader can tell which of
-    the two plugin tools rejected a probe — both can run against the
-    same evidence, and a probe campaign that walks the registry will
-    leave traces under both prefixes."""
-    rejection = _RejectionRecord(reason=reason, evidence_id=evidence_id)
-    append_audit_entry(
-        case_dir=case_dir,
-        tool_name=f"{_PSSCAN_TOOL_NAME}:rejected_{reason.value}",
+        tool_name=f"{tool_name}:rejected_{reason.value}",
         evidence_id=evidence_id,
         input_args={"evidence_id": evidence_id},
         output=rejection,
@@ -220,16 +211,18 @@ def vol_pslist(evidence_id: str, case_dir: str = "case-data") -> PslistResult:
         # Audit BEFORE raising: rejection must not be an unrecorded
         # probe channel. Operator sees the evidence_id via the audit
         # log; agent sees only the sanitized exception.
-        _log_rejection(
+        _log_tool_rejection(
             case_dir_path,
+            _PSLIST_TOOL_NAME,
             _RejectionReason.EVIDENCE_NOT_FOUND,
             evidence_id,
         )
         raise ValueError("evidence_id not found in CASE.yaml")
 
     if record.artifact_class is not ArtifactClass.MEMORY_IMAGE:
-        _log_rejection(
+        _log_tool_rejection(
             case_dir_path,
+            _PSLIST_TOOL_NAME,
             _RejectionReason.WRONG_ARTIFACT_CLASS,
             evidence_id,
         )
@@ -245,8 +238,9 @@ def vol_pslist(evidence_id: str, case_dir: str = "case-data") -> PslistResult:
         # Triggered only if CASE.yaml's absolute_path is outside the
         # case_dir/evidence/ tree — should be impossible under normal
         # register_evidence flow, but we still record the probe.
-        _log_rejection(
+        _log_tool_rejection(
             case_dir_path,
+            _PSLIST_TOOL_NAME,
             _RejectionReason.PATH_TRANSLATION_FAILED,
             evidence_id,
         )
@@ -257,20 +251,21 @@ def vol_pslist(evidence_id: str, case_dir: str = "case-data") -> PslistResult:
     stdout, command_string, runtime_seconds = run_vol_plugin(
         _PSLIST_PLUGIN, vm_path
     )
-    raw_rows = parse_pslist_json(stdout)
+    raw_rows = parse_volatility_json(stdout)
 
     processes: list[ProcessRecord] = []
     for index, raw in enumerate(raw_rows):
         try:
             processes.append(ProcessRecord(**raw))
         except ValidationError as exc:
-            warning = _PslistRecordWarning(
+            warning = _ToolRecordWarning(
+                warning_type="vol_pslist_record_validation_failed",
                 record_index=index,
                 validation_error=str(exc),
             )
             append_audit_entry(
                 case_dir=case_dir_path,
-                tool_name=_WARNING_TOOL_NAME,
+                tool_name=f"{_PSLIST_TOOL_NAME}:record_validation_warning",
                 evidence_id=evidence_id,
                 input_args={"record_index": index},
                 output=warning,
@@ -288,7 +283,7 @@ def vol_pslist(evidence_id: str, case_dir: str = "case-data") -> PslistResult:
 
     append_audit_entry(
         case_dir=case_dir_path,
-        tool_name=_TOOL_NAME,
+        tool_name=_PSLIST_TOOL_NAME,
         evidence_id=evidence_id,
         input_args={"evidence_id": evidence_id},
         output=result,
@@ -334,16 +329,18 @@ def vol_psscan(evidence_id: str, case_dir: str = "case-data") -> PsscanResult:
 
     record = _resolve_evidence(evidence_id, case_dir_path)
     if record is None:
-        _log_psscan_rejection(
+        _log_tool_rejection(
             case_dir_path,
+            _PSSCAN_TOOL_NAME,
             _RejectionReason.EVIDENCE_NOT_FOUND,
             evidence_id,
         )
         raise ValueError("evidence_id not found in CASE.yaml")
 
     if record.artifact_class is not ArtifactClass.MEMORY_IMAGE:
-        _log_psscan_rejection(
+        _log_tool_rejection(
             case_dir_path,
+            _PSSCAN_TOOL_NAME,
             _RejectionReason.WRONG_ARTIFACT_CLASS,
             evidence_id,
         )
@@ -355,8 +352,9 @@ def vol_psscan(evidence_id: str, case_dir: str = "case-data") -> PsscanResult:
             record.absolute_path, host_prefix, SIFT_VM_EVIDENCE_PREFIX
         )
     except ValueError:
-        _log_psscan_rejection(
+        _log_tool_rejection(
             case_dir_path,
+            _PSSCAN_TOOL_NAME,
             _RejectionReason.PATH_TRANSLATION_FAILED,
             evidence_id,
         )
@@ -367,20 +365,21 @@ def vol_psscan(evidence_id: str, case_dir: str = "case-data") -> PsscanResult:
     stdout, command_string, runtime_seconds = run_vol_plugin(
         _PSSCAN_PLUGIN, vm_path, timeout_seconds=_PSSCAN_TIMEOUT_SECONDS
     )
-    raw_rows = parse_psscan_json(stdout)
+    raw_rows = parse_volatility_json(stdout)
 
     processes: list[ProcessScanRecord] = []
     for index, raw in enumerate(raw_rows):
         try:
             processes.append(ProcessScanRecord(**raw))
         except ValidationError as exc:
-            warning = _PsscanRecordWarning(
+            warning = _ToolRecordWarning(
+                warning_type="vol_psscan_record_validation_failed",
                 record_index=index,
                 validation_error=str(exc),
             )
             append_audit_entry(
                 case_dir=case_dir_path,
-                tool_name=_PSSCAN_WARNING_TOOL_NAME,
+                tool_name=f"{_PSSCAN_TOOL_NAME}:record_validation_warning",
                 evidence_id=evidence_id,
                 input_args={"record_index": index},
                 output=warning,
@@ -407,4 +406,116 @@ def vol_psscan(evidence_id: str, case_dir: str = "case-data") -> PsscanResult:
     return result
 
 
-__all__ = ["translate_to_vm_path", "vol_pslist", "vol_psscan"]
+def vol_pstree(evidence_id: str, case_dir: str = "case-data") -> PstreeResult:
+    """Run windows.pstree.PsTree against a registered memory_image.
+
+    Reconstructs the parent-child process hierarchy from each EPROCESS's
+    ``InheritedFromUniqueProcessId``. Built on the same active-list walk
+    as pslist (so total record count matches pslist exactly — verified
+    on Rocba: 2186 vs 2186), but adds three resolved-string fields per
+    node (audit, cmd, path) and the recursive `children` structure the
+    week-6 validator uses to anchor masquerading detection.
+
+    Resolves ``evidence_id`` via CASE.yaml. Validates ``artifact_class``
+    is ``memory_image``. Translates the host path to the VM path under
+    ``SIFT_VM_EVIDENCE_PREFIX``. Captures the Volatility version,
+    invokes the runner, parses the recursive output, and returns a typed
+    PstreeResult.
+
+    Per-record validation note: pydantic validates the whole subtree
+    when constructing a top-level ProcessTreeRecord. If any descendant
+    has a malformed field (negative PID, non-UTC timestamp, etc.), the
+    *entire top-level subtree* is skipped and a single
+    `vol_pstree:record_validation_warning` line is logged with the
+    top-level index. This is coarser than pslist/psscan's per-row skip,
+    a deliberate trade-off — preserving the tree shape is the validator's
+    primary use case, and per-descendant recovery would force walking
+    the raw dict tree manually before construction.
+
+    Cost: typically 25-45 seconds per call against a 19 GB Windows 10
+    image (Rocba: 29.5s observed). Dramatically faster than psscan
+    because pstree walks the same active EPROCESS list as pslist;
+    runner default timeout (300s) is sufficient.
+    """
+    case_dir_path = Path(case_dir).resolve()
+
+    record = _resolve_evidence(evidence_id, case_dir_path)
+    if record is None:
+        _log_tool_rejection(
+            case_dir_path,
+            _PSTREE_TOOL_NAME,
+            _RejectionReason.EVIDENCE_NOT_FOUND,
+            evidence_id,
+        )
+        raise ValueError("evidence_id not found in CASE.yaml")
+
+    if record.artifact_class is not ArtifactClass.MEMORY_IMAGE:
+        _log_tool_rejection(
+            case_dir_path,
+            _PSTREE_TOOL_NAME,
+            _RejectionReason.WRONG_ARTIFACT_CLASS,
+            evidence_id,
+        )
+        raise ValueError("evidence is not a memory image")
+
+    host_prefix = str(case_dir_path / "evidence")
+    try:
+        vm_path = translate_to_vm_path(
+            record.absolute_path, host_prefix, SIFT_VM_EVIDENCE_PREFIX
+        )
+    except ValueError:
+        _log_tool_rejection(
+            case_dir_path,
+            _PSTREE_TOOL_NAME,
+            _RejectionReason.PATH_TRANSLATION_FAILED,
+            evidence_id,
+        )
+        raise
+
+    volatility_version = get_vol_version()
+    invoked_at = datetime.now(tz=timezone.utc)
+    stdout, command_string, runtime_seconds = run_vol_plugin(
+        _PSTREE_PLUGIN, vm_path
+    )
+    raw_rows = parse_pstree_json(stdout)
+
+    processes: list[ProcessTreeRecord] = []
+    for index, raw in enumerate(raw_rows):
+        try:
+            processes.append(ProcessTreeRecord(**raw))
+        except ValidationError as exc:
+            warning = _ToolRecordWarning(
+                warning_type="vol_pstree_record_validation_failed",
+                record_index=index,
+                validation_error=str(exc),
+            )
+            append_audit_entry(
+                case_dir=case_dir_path,
+                tool_name=f"{_PSTREE_TOOL_NAME}:record_validation_warning",
+                evidence_id=evidence_id,
+                input_args={"record_index": index},
+                output=warning,
+            )
+
+    result = PstreeResult(
+        evidence_id=evidence_id,
+        plugin_name=_PSTREE_PLUGIN,
+        volatility_version=volatility_version,
+        processes=processes,
+        command_executed=command_string,
+        runtime_seconds=runtime_seconds,
+        invoked_at=invoked_at,
+    )
+
+    append_audit_entry(
+        case_dir=case_dir_path,
+        tool_name=_PSTREE_TOOL_NAME,
+        evidence_id=evidence_id,
+        input_args={"evidence_id": evidence_id},
+        output=result,
+    )
+
+    return result
+
+
+__all__ = ["translate_to_vm_path", "vol_pslist", "vol_psscan", "vol_pstree"]

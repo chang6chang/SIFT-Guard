@@ -1,0 +1,101 @@
+[
+    {
+        "Audit": null,
+        "Cmd": null,
+        "CreateTime": "2020-11-11T08:13:00+00:00",
+        "ExitTime": null,
+        "Handles": null,
+        "ImageFileName": "System",
+        "Offset(V)": 201816000901312,
+        "PID": 4,
+        "PPID": 0,
+        "Path": null,
+        "SessionId": null,
+        "Threads": 197,
+        "Wow64": false,
+        "__children": [
+            {
+                "Audit": "\\Device\\HarddiskVolume3\\Windows\\System32\\smss.exe",
+                "Cmd": "\\SystemRoot\\System32\\smss.exe",
+                "CreateTime": "2020-11-11T08:13:00+00:00",
+                "ExitTime": null,
+                "Handles": null,
+                "ImageFileName": "smss.exe",
+                "Offset(V)": 201816078422080,
+                "PID": 440,
+                "PPID": 4,
+                "Path": "\\SystemRoot\\System32\\smss.exe",
+                "SessionId": null,
+                "Threads": 2,
+                "Wow64": false,
+                "__children": []
+            }
+        ]
+    },
+    {
+        "Audit": "\\Device\\HarddiskVolume3\\Windows\\System32\\services.exe",
+        "Cmd": "C:\\Windows\\system32\\services.exe",
+        "CreateTime": "2020-11-11T08:13:01+00:00",
+        "ExitTime": null,
+        "Handles": null,
+        "ImageFileName": "services.exe",
+        "Offset(V)": 201816200000000,
+        "PID": 828,
+        "PPID": 752,
+        "Path": "C:\\Windows\\System32\\services.exe",
+        "SessionId": 0,
+        "Threads": 5,
+        "Wow64": false,
+        "__children": [
+            {
+                "Audit": "\\Device\\HarddiskVolume3\\Windows\\System32\\svchost.exe",
+                "Cmd": "C:\\Windows\\system32\\svchost.exe -k netsvcs",
+                "CreateTime": "2020-11-11T08:13:02+00:00",
+                "ExitTime": null,
+                "Handles": null,
+                "ImageFileName": "svchost.exe",
+                "Offset(V)": 201816200001000,
+                "PID": 1244,
+                "PPID": 828,
+                "Path": "C:\\Windows\\System32\\svchost.exe",
+                "SessionId": 0,
+                "Threads": 12,
+                "Wow64": false,
+                "__children": [
+                    {
+                        "Audit": "\\Device\\HarddiskVolume3\\Windows\\System32\\consent.exe",
+                        "Cmd": "consent.exe 1244 504 0000020F1A2B3C4D",
+                        "CreateTime": "2020-11-11T09:55:42+00:00",
+                        "ExitTime": null,
+                        "Handles": null,
+                        "ImageFileName": "consent.exe",
+                        "Offset(V)": 201816200002000,
+                        "PID": 9876,
+                        "PPID": 1244,
+                        "Path": "C:\\Windows\\System32\\consent.exe",
+                        "SessionId": 1,
+                        "Threads": 3,
+                        "Wow64": false,
+                        "__children": []
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "Audit": "\\Device\\HarddiskVolume3\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        "Cmd": "\"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\"",
+        "CreateTime": "2020-11-11T15:42:11+00:00",
+        "ExitTime": null,
+        "Handles": null,
+        "ImageFileName": "chrome.exe",
+        "Offset(V)": 201816300000000,
+        "PID": 6676,
+        "PPID": 99999,
+        "Path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        "SessionId": 1,
+        "Threads": 28,
+        "Wow64": false,
+        "__children": []
+    }
+]

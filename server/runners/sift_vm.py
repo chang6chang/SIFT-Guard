@@ -210,13 +210,13 @@ def run_vol_plugin(
 
 
 # Volatility 3 -> ProcessRecord field-name mapping. Volatility emits
-# PascalCase plus a couple of quirks (`Offset(V)` with parens, and
-# `File output` with a space). The schema field names are snake_case.
-# Listed explicitly so an unexpected new field in a future Volatility
-# release silently drops out instead of poisoning the dict that
-# `ProcessRecord(**d)` will consume — forward-compat with no version
-# pin needed at the parser layer.
-_PSLIST_FIELD_MAP = {
+# PascalCase plus quirks (`Offset(V)` with parens, `File output` with a
+# space). Schema field names are snake_case. Listed explicitly so an
+# unexpected new field in a future Volatility release silently drops
+# out instead of poisoning the dict that `ProcessRecord(**d)` will
+# consume — forward-compat with no version pin needed at the parser
+# layer.
+_EPROCESS_FIELD_MAP = {
     "PID": "pid",
     "PPID": "ppid",
     "ImageFileName": "image_file_name",
@@ -230,21 +230,21 @@ _PSLIST_FIELD_MAP = {
 }
 
 
-def parse_pslist_json(stdout: str) -> list[dict]:
-    """Parse Volatility 3 pslist JSON output into snake_case dicts.
+def parse_volatility_json(stdout: str) -> list[dict]:
+    """Parse a Volatility 3 EPROCESS-row JSON output into snake_case dicts.
 
-    Volatility emits PascalCase with quirks like ``Offset(V)`` and
-    ``File output``. This function maps to the snake_case schema field
-    names: ``PID``→``pid``, ``PPID``→``ppid``,
-    ``ImageFileName``→``image_file_name``, ``Offset(V)``→``offset_v``,
-    ``Threads``→``threads``, ``Handles``→``handles``,
-    ``SessionId``→``session_id``, ``Wow64``→``wow64``,
-    ``CreateTime``→``create_time``, ``ExitTime``→``exit_time``. Drops
-    ``File output``, ``__children``, and any other unknown keys.
+    Used by both ``windows.pslist.PsList`` and ``windows.psscan.PsScan``;
+    their JSON shape is empirically identical (Vol 3 2.27.0 on Rocba —
+    see PsscanResult docstring in server.schemas). Drops ``File output``,
+    ``__children``, and any other unknown keys.
 
     Datetime strings are left as ISO strings — pydantic will parse them
     when the dict is fed to ``ProcessRecord(**d)``. Returns a list of
     dicts suitable for direct construction.
+
+    Pstree's recursive shape is parsed by ``parse_pstree_json`` instead —
+    its tree structure isn't a flat row list and it carries three extra
+    fields (Audit, Cmd, Path) absent from pslist/psscan.
     """
     raw = json.loads(stdout)
     if not isinstance(raw, list):
@@ -253,20 +253,58 @@ def parse_pslist_json(stdout: str) -> list[dict]:
     rows: list[dict] = []
     for row in raw:
         mapped: dict = {}
-        for vol_key, schema_key in _PSLIST_FIELD_MAP.items():
+        for vol_key, schema_key in _EPROCESS_FIELD_MAP.items():
             if vol_key in row:
                 mapped[schema_key] = row[vol_key]
         rows.append(mapped)
     return rows
 
 
-# windows.psscan.PsScan emits the same EPROCESS row shape as
-# windows.pslist.PsList — verified against Volatility 3 2.27.0 on
-# Rocba 2026-05-05: identical 12-key set across all 2212 records.
-# Alias rather than duplicate so the call site reads naturally
-# (`parse_psscan_json(stdout)` for vol_psscan) and a future Vol
-# release that diverges turns this into a one-line replacement.
-parse_psscan_json = parse_pslist_json
+# Pstree adds three resolved-string fields beyond the EPROCESS basics:
+# kernel-side image name (Audit), user-space path (Path), and command
+# line (Cmd). Otherwise the per-node row shape is the same.
+_PSTREE_FIELD_MAP = {
+    **_EPROCESS_FIELD_MAP,
+    "Audit": "audit",
+    "Cmd": "cmd",
+    "Path": "path",
+}
+
+
+def _map_pstree_node(node: dict) -> dict:
+    """Map one pstree JSON node to ProcessTreeRecord-shaped kwargs.
+
+    Recurses into ``__children`` so the caller receives a single dict
+    suitable for ``ProcessTreeRecord(**d)`` construction. Unknown keys
+    are dropped, matching the forward-compat stance in
+    ``parse_volatility_json``.
+    """
+    mapped: dict = {}
+    for vol_key, schema_key in _PSTREE_FIELD_MAP.items():
+        if vol_key in node:
+            mapped[schema_key] = node[vol_key]
+    children_raw = node.get("__children") or []
+    mapped["children"] = [_map_pstree_node(c) for c in children_raw]
+    return mapped
+
+
+def parse_pstree_json(stdout: str) -> list[dict]:
+    """Parse Volatility 3 pstree JSON output into the recursive
+    snake_case shape the schema expects.
+
+    Pstree's top-level JSON is a list of root-or-orphan nodes; each
+    node has ``__children`` recursively. This function preserves the
+    tree (the validator's anchoring point) — flattening would erase
+    parent-child relationships that the recursive schema captures.
+
+    Returns a list of dicts. Each dict has the EPROCESS basics plus
+    the three pstree-specific fields and a ``children`` list (possibly
+    empty) of recursively-mapped child dicts.
+    """
+    raw = json.loads(stdout)
+    if not isinstance(raw, list):
+        raise ValueError("expected JSON array at top level")
+    return [_map_pstree_node(node) for node in raw]
 
 
 __all__ = [
@@ -277,7 +315,7 @@ __all__ = [
     "SIFT_VM_VOL_PYTHON",
     "SIFT_VM_EVIDENCE_PREFIX",
     "get_vol_version",
-    "parse_pslist_json",
-    "parse_psscan_json",
+    "parse_pstree_json",
+    "parse_volatility_json",
     "run_vol_plugin",
 ]
