@@ -104,6 +104,7 @@ def register_evidence(
     """Register one piece of evidence into the case directory.
 
     Sequence:
+      0. confine `filepath` to <case_dir>/evidence/ (sanitized rejection)
       1. resolve and validate the path
       2. stream-hash sha256 and capture magic bytes in one pass
       3. detect artifact class
@@ -113,7 +114,18 @@ def register_evidence(
       7. append a hash-chained line to the audit log
       8. return the EvidenceRecord
     """
-    path = Path(filepath).resolve()
+    # Step 0 — path confinement. Resolve both sides (symlinks are
+    # followed) and refuse anything that is not under <case_dir>/evidence/.
+    # Sanitized message: never echo the offending path back to the agent
+    # (decisions-log 2026-05-05, MCP error-message sanitization rule).
+    case_dir_path = Path(case_dir).resolve(strict=False)
+    evidence_root = (case_dir_path / "evidence").resolve(strict=False)
+    path = Path(filepath).resolve(strict=False)
+    try:
+        path.relative_to(evidence_root)
+    except ValueError:
+        raise PermissionError("Path outside evidence directory rejected")
+
     if not path.exists():
         raise FileNotFoundError(f"Evidence path does not exist: {path}")
     if not path.is_file():
@@ -138,7 +150,6 @@ def register_evidence(
         file_mode_after_registration=oct(_FILE_MODE),
     )
 
-    case_dir_path = Path(case_dir).resolve()
     case_dir_path.mkdir(parents=True, exist_ok=True)
 
     case_yaml_path = case_dir_path / _CASE_FILENAME

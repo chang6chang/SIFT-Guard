@@ -55,12 +55,17 @@ async def _list_tools_only(server_cwd: Path):
 
 
 async def _full_round_trip(tmp_path: Path) -> dict:
-    """Single MCP session: list → ok call → error call → list again.
+    """Single MCP session: list → ok → not-found error → confinement
+    rejection → list again.
 
     Bundled into one session so the 'server stays alive after error'
     assertion is meaningful — it would be trivial across new sessions.
+    Fixture lives under <cwd>/case-data/evidence/ so the path-confinement
+    check in `register_evidence` lets it through.
     """
-    fixture = tmp_path / "fixture.dat"
+    evidence_dir = tmp_path / "case-data" / "evidence"
+    evidence_dir.mkdir(parents=True)
+    fixture = evidence_dir / "fixture.dat"
     fixture.write_bytes(secrets.token_bytes(1024))
 
     results: dict = {}
@@ -76,10 +81,18 @@ async def _full_round_trip(tmp_path: Path) -> dict:
 
             results["err"] = await session.call_tool(
                 "register_evidence",
-                arguments={"filepath": str(tmp_path / "does-not-exist.dat")},
+                arguments={"filepath": str(evidence_dir / "does-not-exist.dat")},
             )
 
-            # Verify the session is still healthy after a tool error.
+            # Path-confinement rejection: an absolute path outside the
+            # evidence root must be refused with the sanitized message
+            # and must not extend the audit chain.
+            results["denied"] = await session.call_tool(
+                "register_evidence",
+                arguments={"filepath": "/etc/passwd"},
+            )
+
+            # Verify the session is still healthy after both error kinds.
             results["tools_after"] = await session.list_tools()
 
     return results
@@ -202,8 +215,9 @@ class TestRoundTrip:
         assert record["artifact_class"] == "unknown"
         assert record["file_mode_after_registration"] == "0o444"
 
-        # (c) the actual file on disk is chmod 444.
-        fixture = tmp_path / "fixture.dat"
+        # (c) the actual file on disk is chmod 444. Fixture lives under
+        # the evidence root so the path-confinement check let it through.
+        fixture = tmp_path / "case-data" / "evidence" / "fixture.dat"
         mode = stat.S_IMODE(fixture.stat().st_mode)
         assert mode == 0o444, f"expected 0o444 after registration, got {oct(mode)}"
 
@@ -234,6 +248,36 @@ class TestRoundTrip:
             f"got {len(lines_after)} lines after error"
         )
 
-        # Server stays alive after the error: list_tools succeeded.
+        # Path-confinement: /etc/passwd is outside <case_dir>/evidence/.
+        # The harness must surface isError=True with the sanitized
+        # message ("Path outside evidence directory rejected"), the
+        # offending path must not be echoed in the response, and the
+        # audit chain must not grow. This is the over-the-wire proof
+        # of CLAUDE.md Hard Rule #2 / Ground-truth-isolation rule 3 —
+        # the agent cannot route itself out of the case sandbox even
+        # by handing the server a fully-qualified absolute path.
+        denied = results["denied"]
+        assert getattr(denied, "isError", False) is True, (
+            f"/etc/passwd should yield isError=True; got {denied!r}"
+        )
+        denied_text = "".join(
+            getattr(c, "text", "") or "" for c in (denied.content or [])
+        )
+        assert "Path outside evidence directory rejected" in denied_text, (
+            f"sanitized rejection message missing from response: {denied_text!r}"
+        )
+        # Sanitization: the offending path must not appear anywhere in
+        # the LLM-visible response.
+        assert "/etc/passwd" not in denied_text, (
+            "rejection response must not echo the agent-supplied path "
+            f"back; got: {denied_text!r}"
+        )
+        lines_after_denied = audit.read_text(encoding="utf-8").splitlines()
+        assert len(lines_after_denied) == 1, (
+            "path-confinement rejection must not append to the audit "
+            f"chain; got {len(lines_after_denied)} lines after rejection"
+        )
+
+        # Server stays alive after both error kinds: list_tools succeeded.
         assert len(tools_after.tools) == 1
         assert tools_after.tools[0].name == "register_evidence"
