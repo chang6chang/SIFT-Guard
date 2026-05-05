@@ -260,6 +260,15 @@ def parse_pslist_json(stdout: str) -> list[dict]:
     return rows
 
 
+# windows.psscan.PsScan emits the same EPROCESS row shape as
+# windows.pslist.PsList — verified against Volatility 3 2.27.0 on
+# Rocba 2026-05-05: identical 12-key set across all 2212 records.
+# Alias rather than duplicate so the call site reads naturally
+# (`parse_psscan_json(stdout)` for vol_psscan) and a future Vol
+# release that diverges turns this into a one-line replacement.
+parse_psscan_json = parse_pslist_json
+
+
 __all__ = [
     "SIFT_VM_USER",
     "SIFT_VM_HOST",
@@ -269,5 +278,6 @@ __all__ = [
     "SIFT_VM_EVIDENCE_PREFIX",
     "get_vol_version",
     "parse_pslist_json",
+    "parse_psscan_json",
     "run_vol_plugin",
 ]

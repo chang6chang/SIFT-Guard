@@ -263,11 +263,64 @@ class PslistResult(BaseModel):
         return _enforce_utc("invoked_at", v)
 
 
+# Type alias. windows.psscan.PsScan emits an EPROCESS row with the same
+# 12-key shape as windows.pslist.PsList — verified empirically on the
+# SIFT 2026.1 / Volatility 3 2.27.0 build against Rocba (2026-05-05):
+# identical {PID, PPID, ImageFileName, Offset(V), Threads, Handles,
+# SessionId, Wow64, CreateTime, ExitTime, File output, __children} key
+# set across all 2212 records. Aliasing keeps a plugin-named type at
+# the boundary without forking schema definitions; if a future Vol
+# release ever diverges (e.g. adds a "File offset" field unique to
+# psscan), this alias becomes a real subclass at a one-line cost.
+ProcessScanRecord = ProcessRecord
+
+
+class PsscanResult(BaseModel):
+    """Result envelope for the `windows.psscan.PsScan` Volatility plugin.
+
+    Same shape as PslistResult — different `plugin_name` Literal. Pool-tag
+    scanning surfaces processes the EPROCESS linked-list walk in pslist
+    misses (terminated, hidden, unlinked). Most psscan rows on a normal
+    Windows host have non-null ExitTime (~90% on Rocba); the load-bearing
+    finding for the week-6 cross-plugin validator is the *delta* between
+    the two plugins' result sets, not the raw counts. See `vol_psscan` in
+    `server.tools.memory` for the docstring on cost and runtime profile.
+    """
+
+    evidence_id: str
+    plugin_name: Literal["windows.psscan.PsScan"]
+    volatility_version: str = Field(min_length=1)
+    processes: list[ProcessScanRecord]
+    command_executed: str = Field(min_length=1)
+    runtime_seconds: float = Field(ge=0)
+    invoked_at: datetime
+
+    @field_validator("evidence_id")
+    @classmethod
+    def _validate_evidence_id(cls, v: str) -> str:
+        try:
+            parsed = UUID(v)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
+        if parsed.version != 4:
+            raise ValueError(
+                f"evidence_id must be UUID version 4, got version {parsed.version}"
+            )
+        return str(parsed)
+
+    @field_validator("invoked_at")
+    @classmethod
+    def _validate_invoked_at(cls, v: datetime) -> datetime:
+        return _enforce_utc("invoked_at", v)
+
+
 __all__ = [
     "ArtifactClass",
     "AuditLogEntry",
     "EvidenceRecord",
     "ProcessRecord",
+    "ProcessScanRecord",
     "PslistResult",
+    "PsscanResult",
     "UntrustedString",
 ]

@@ -4,11 +4,12 @@ Spawns `server/main.py` as a subprocess via stdio, exercises the real MCP
 protocol the way Claude Code will, and verifies:
 
 (1) the tool surface exposes exactly the registered tools — currently
-    `register_evidence` and `vol_pslist`. Each tool's input schema is
-    locked to its declared parameters only (no `case_dir` leak); this
-    is the architectural lock for CLAUDE.md rule 3.
+    `register_evidence`, `vol_pslist`, and `vol_psscan`. Each tool's
+    input schema is locked to its declared parameters only (no
+    `case_dir` leak); this is the architectural lock for CLAUDE.md
+    rule 3.
 (2) human-readable warnings reach the LLM over the wire (IRREVERSIBLE
-    on register_evidence, latency cost on vol_pslist).
+    on register_evidence, latency cost on vol_pslist and vol_psscan).
 (3) registration succeeds end-to-end and produces the expected on-disk
     side effects (chmod 444, CASE.yaml, audit JSONL).
 (4) a bad input produces a protocol-level error response, not a crash;
@@ -151,11 +152,19 @@ def _extract_record(call_result) -> dict | None:
 
 
 class TestToolSurface:
-    def test_register_evidence_and_vol_pslist_are_exposed(self, tmp_path: Path):
+    def test_three_tool_surface_is_locked(self, tmp_path: Path):
+        # Surface lock: every new MCP tool added to server/main.py
+        # forces an explicit update here. Adding a tool without
+        # extending this set means the surface grew silently — which
+        # is exactly the failure mode the test is here to prevent.
         listing = _run_async(_list_tools_only(tmp_path))
         tool_names = {t.name for t in listing.tools}
-        assert tool_names == {"register_evidence", "vol_pslist"}, (
-            f"expected exactly the two tools register_evidence and vol_pslist; "
+        assert tool_names == {
+            "register_evidence",
+            "vol_pslist",
+            "vol_psscan",
+        }, (
+            f"expected exactly register_evidence, vol_pslist, vol_psscan; "
             f"got {sorted(tool_names)}"
         )
 
@@ -221,6 +230,46 @@ class TestToolSurface:
         assert tool.description, "vol_pslist must carry a description"
         assert "5-15 seconds" in tool.description, (
             "vol_pslist description must surface its latency cost — "
+            "the LLM uses this to decide whether to invoke. Found: "
+            f"{tool.description!r}"
+        )
+
+    def test_vol_psscan_parameters_are_locked_to_evidence_id(
+        self, tmp_path: Path
+    ):
+        # Symmetric to vol_pslist's lock. Same architectural rule:
+        # no `case_dir`, no `plugin_name`, no path leak — only
+        # `evidence_id`. Schema-introspection test
+        # `test_no_path_fields.py` is the systemic guard; this is
+        # the per-tool tripwire that surfaces a failure with a
+        # vol_psscan-specific message rather than a generic one.
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = _tool_by_name(listing, "vol_psscan")
+        schema = tool.inputSchema
+
+        assert schema.get("type") == "object"
+        properties = schema.get("properties", {})
+        assert set(properties.keys()) == {"evidence_id"}, (
+            "vol_psscan must accept only `evidence_id`; got "
+            f"{sorted(properties.keys())}. If `case_dir`, `plugin_name`, or "
+            "any path field shows up here, CLAUDE.md rule 3 is broken."
+        )
+        assert properties["evidence_id"].get("type") == "string"
+        assert "evidence_id" in schema.get("required", []), (
+            "evidence_id must be required, not optional"
+        )
+
+    def test_vol_psscan_description_carries_cost_warning(self, tmp_path: Path):
+        # psscan is materially more expensive than pslist (~6m on
+        # Rocba vs ~5s for pslist). The LLM needs to see this so it
+        # doesn't fire the tool reflexively after every pslist call.
+        # "5-10 minutes" is the documented range; "Rocba: 6m36s" is
+        # the empirical anchor.
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = _tool_by_name(listing, "vol_psscan")
+        assert tool.description, "vol_psscan must carry a description"
+        assert "5-10 minutes" in tool.description, (
+            "vol_psscan description must surface its latency cost — "
             "the LLM uses this to decide whether to invoke. Found: "
             f"{tool.description!r}"
         )
@@ -330,4 +379,8 @@ class TestRoundTrip:
 
         # Server stays alive after both error kinds: list_tools succeeded.
         tool_names_after = {t.name for t in tools_after.tools}
-        assert tool_names_after == {"register_evidence", "vol_pslist"}
+        assert tool_names_after == {
+            "register_evidence",
+            "vol_pslist",
+            "vol_psscan",
+        }

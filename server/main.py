@@ -13,9 +13,12 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
-from server.schemas import EvidenceRecord, PslistResult
+from server.schemas import EvidenceRecord, PslistResult, PsscanResult
 from server.tools.evidence import register_evidence as _register_evidence_impl
-from server.tools.memory import vol_pslist as _vol_pslist_impl
+from server.tools.memory import (
+    vol_pslist as _vol_pslist_impl,
+    vol_psscan as _vol_psscan_impl,
+)
 
 
 # Fixed at server startup. The agent does NOT control where the case
@@ -55,6 +58,29 @@ def vol_pslist(evidence_id: str) -> PslistResult:
     Cost: typically 5-15 seconds per call against a 19GB Windows 10 image.
     """
     return _vol_pslist_impl(evidence_id, case_dir=CASE_DIR)
+
+
+@mcp.tool()
+def vol_psscan(evidence_id: str) -> PsscanResult:
+    """Run windows.psscan.PsScan against a registered memory image.
+
+    Pool-tag scans memory directly for _EPROCESS allocations rather than walking
+    the active linked list. Surfaces processes vol_pslist cannot see by
+    construction: terminated processes whose EPROCESS still lingers in the pool,
+    DKOM-hidden processes (unlinked from the active list while the pool tag
+    persists), and processes the kernel marked exited but not yet reaped. The
+    set difference between psscan and pslist is the cross-plugin contradiction
+    the validator surfaces.
+
+    Same evidence_id-only contract as vol_pslist; same sanitized rejection
+    messages and audited rejection lines under the `vol_psscan:rejected_*`
+    prefix.
+
+    Cost: typically 5-10 minutes per call against a 19GB Windows 10 image
+    (Rocba: 6m36s observed). About 30-50x slower than vol_pslist — pool-tag
+    scanning walks the full memory layer. Do not call back-to-back redundantly.
+    """
+    return _vol_psscan_impl(evidence_id, case_dir=CASE_DIR)
 
 
 if __name__ == "__main__":
