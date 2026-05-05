@@ -1,0 +1,239 @@
+"""Round-trip test of the SIFT-Guard MCP server's register_evidence tool.
+
+Spawns `server/main.py` as a subprocess via stdio, exercises the real MCP
+protocol the way Claude Code will, and verifies:
+
+(1) the tool surface is locked to `filepath` only — no `case_dir`, no
+    second tool. This is the architectural lock for CLAUDE.md rule 3.
+(2) the IRREVERSIBLE warning reaches the LLM over the wire.
+(3) registration succeeds end-to-end and produces the expected on-disk
+    side effects (chmod 444, CASE.yaml, audit JSONL).
+(4) a bad input produces a protocol-level error response, not a crash;
+    the server stays alive for further calls.
+
+Tests are synchronous at the pytest level and drive the async MCP client
+via `asyncio.run`, avoiding a pytest-asyncio dependency.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import secrets
+import stat
+from pathlib import Path
+
+import pytest
+
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PYTHON_EXE = str(PROJECT_ROOT / ".venv" / "bin" / "python")
+SESSION_TIMEOUT_SECONDS = 20
+
+
+def _server_params(cwd: Path) -> StdioServerParameters:
+    """Spawn the SIFT-Guard server with cwd inside the test's tmp_path so
+    the relative `case-data` path resolves there, not in the repo."""
+    env = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT)}
+    return StdioServerParameters(
+        command=PYTHON_EXE,
+        args=["-m", "server.main"],
+        env=env,
+        cwd=str(cwd),
+    )
+
+
+async def _list_tools_only(server_cwd: Path):
+    async with stdio_client(_server_params(server_cwd)) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            return await session.list_tools()
+
+
+async def _full_round_trip(tmp_path: Path) -> dict:
+    """Single MCP session: list → ok call → error call → list again.
+
+    Bundled into one session so the 'server stays alive after error'
+    assertion is meaningful — it would be trivial across new sessions.
+    """
+    fixture = tmp_path / "fixture.dat"
+    fixture.write_bytes(secrets.token_bytes(1024))
+
+    results: dict = {}
+
+    async with stdio_client(_server_params(tmp_path)) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+
+            results["ok"] = await session.call_tool(
+                "register_evidence",
+                arguments={"filepath": str(fixture)},
+            )
+
+            results["err"] = await session.call_tool(
+                "register_evidence",
+                arguments={"filepath": str(tmp_path / "does-not-exist.dat")},
+            )
+
+            # Verify the session is still healthy after a tool error.
+            results["tools_after"] = await session.list_tools()
+
+    return results
+
+
+def _run_async(coro):
+    return asyncio.run(asyncio.wait_for(coro, timeout=SESSION_TIMEOUT_SECONDS))
+
+
+def _extract_record(call_result) -> dict | None:
+    """Pull a structured EvidenceRecord out of a CallToolResult.
+
+    FastMCP attaches `structuredContent` as a dict when the tool returns
+    a typed model; older paths put the JSON in a TextContent block.
+    Try structured first, fall back to parsing the first text block.
+    """
+    structured = getattr(call_result, "structuredContent", None)
+    if isinstance(structured, dict) and structured:
+        # Some FastMCP versions wrap the model under a "result" key.
+        if "result" in structured and isinstance(structured["result"], dict):
+            return structured["result"]
+        return structured
+    if call_result.content:
+        first = call_result.content[0]
+        text = getattr(first, "text", None)
+        if text:
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return None
+            if isinstance(parsed, dict) and "result" in parsed and isinstance(
+                parsed["result"], dict
+            ):
+                return parsed["result"]
+            return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Architectural-lock tests (tools/list)
+# ---------------------------------------------------------------------------
+
+
+class TestToolSurface:
+    def test_only_register_evidence_is_exposed(self, tmp_path: Path):
+        listing = _run_async(_list_tools_only(tmp_path))
+        tools = listing.tools
+        assert len(tools) == 1, (
+            f"expected exactly one MCP tool, got {len(tools)}: "
+            f"{[t.name for t in tools]}"
+        )
+        assert tools[0].name == "register_evidence"
+
+    def test_register_evidence_parameters_are_locked_to_filepath(
+        self, tmp_path: Path
+    ):
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = listing.tools[0]
+        schema = tool.inputSchema
+
+        assert schema.get("type") == "object"
+        properties = schema.get("properties", {})
+        assert set(properties.keys()) == {"filepath"}, (
+            "register_evidence must accept only `filepath`; got "
+            f"{sorted(properties.keys())}. If `case_dir` (or any other path) "
+            "shows up here, CLAUDE.md rule 3 is broken."
+        )
+        assert properties["filepath"].get("type") == "string"
+        assert "filepath" in schema.get("required", []), (
+            "filepath must be required, not optional"
+        )
+
+    def test_tool_description_carries_irreversible_warning(self, tmp_path: Path):
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = listing.tools[0]
+        assert tool.description, "register_evidence must carry a description"
+        assert "IRREVERSIBLE" in tool.description, (
+            "the IRREVERSIBLE warning must reach the LLM over the wire — "
+            "this is the human-readable signal that calling this tool "
+            "permanently chmods the source file"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Full round-trip — call success, call error, recovery
+# ---------------------------------------------------------------------------
+
+
+class TestRoundTrip:
+    def test_full_session_call_then_error_then_recovery(self, tmp_path: Path):
+        results = _run_async(_full_round_trip(tmp_path))
+        ok = results["ok"]
+        err = results["err"]
+        tools_after = results["tools_after"]
+
+        # (a) success call did not error.
+        assert getattr(ok, "isError", False) is False, (
+            f"register_evidence with a valid path returned an error: {ok!r}"
+        )
+
+        # (b) structured EvidenceRecord parsed from the response.
+        record = _extract_record(ok)
+        assert record is not None, (
+            f"could not extract EvidenceRecord payload from {ok!r}"
+        )
+        for key in (
+            "evidence_id",
+            "original_filename",
+            "absolute_path",
+            "sha256",
+            "size_bytes",
+            "artifact_class",
+            "registered_at",
+            "file_mode_after_registration",
+        ):
+            assert key in record, f"EvidenceRecord missing field: {key}"
+        assert record["original_filename"] == "fixture.dat"
+        assert record["size_bytes"] == 1024
+        assert len(record["sha256"]) == 64
+        assert record["artifact_class"] == "unknown"
+        assert record["file_mode_after_registration"] == "0o444"
+
+        # (c) the actual file on disk is chmod 444.
+        fixture = tmp_path / "fixture.dat"
+        mode = stat.S_IMODE(fixture.stat().st_mode)
+        assert mode == 0o444, f"expected 0o444 after registration, got {oct(mode)}"
+
+        # (d) audit log exists with exactly one line.
+        audit = tmp_path / "case-data" / "audit" / "sift-guard-mcp.jsonl"
+        assert audit.exists(), "audit log was not written"
+        lines = audit.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1, f"expected one audit line, got {len(lines)}"
+        entry = json.loads(lines[0])
+        assert entry["tool_name"] == "register_evidence"
+        assert entry["evidence_id"] == record["evidence_id"]
+        assert entry["prev_line_hash"] == "0" * 64
+
+        # (e) CASE.yaml exists.
+        case_yaml = tmp_path / "case-data" / "CASE.yaml"
+        assert case_yaml.exists(), "CASE.yaml was not written"
+
+        # Error path: non-existent file becomes a protocol-level error
+        # response, not a crash.
+        assert getattr(err, "isError", False) is True, (
+            f"non-existent path should yield isError=True; got {err!r}"
+        )
+        # Audit log must NOT have grown — the chain doesn't include the
+        # failed registration.
+        lines_after = audit.read_text(encoding="utf-8").splitlines()
+        assert len(lines_after) == 1, (
+            "failed registration must not append to the audit chain; "
+            f"got {len(lines_after)} lines after error"
+        )
+
+        # Server stays alive after the error: list_tools succeeded.
+        assert len(tools_after.tools) == 1
+        assert tools_after.tools[0].name == "register_evidence"

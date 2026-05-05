@@ -81,3 +81,243 @@ connects to, with an explicit allow-list and no shell access. The
 README's try-it-out section must reflect whichever option is chosen
 and must NOT require the operator to grant the agent passwordless
 sudo on the SIFT VM.
+
+## 2026-05-05
+
+**Day 4: subagent harness verified — forced-by-name dispatch and
+parallel fan-out both work in this Claude Code version. Subagent path
+is the primary architecture. Python-orchestrator fallback parked.**
+Owner: AI/agent engineer.
+
+Three-part hello-world experiment under `.claude/agents/`
+(`hello_alpha.md`, `hello_beta.md`, `hello_restricted.md`). Findings:
+
+1. `Agent(subagent_type="hello_alpha", ...)` is accepted by the
+   harness and dispatches the named subagent. The harness rejects
+   unknown names — agent-name-as-string is schema-validated, not a
+   description-matching heuristic. Note: `.claude/agents/*.md` files
+   are loaded at session start. New files added mid-session are
+   ignored until Claude Code is restarted.
+2. Two `Agent` calls in a single assistant turn run **concurrently**,
+   not serially. Two subagents each performing `sleep 5 && date +%s.%N`
+   completed 0.684 s apart (1777963569.670 vs 1777963570.354). Serial
+   execution would have produced ~5 s delta. The published Claude Code
+   docs claim "subagents are not for parallel execution, use agent
+   teams instead" — that is incorrect for the `Agent` tool path in
+   the version we are targeting.
+3. The parent receives only the subagent's final assistant message.
+   No tool-call transcript, no intermediate text. Analysts must
+   structure their return as a strict, parseable contract (e.g. a
+   fenced JSON block on the last line of the response) because the
+   validator only sees what the analyst chose to put in its final
+   message.
+
+Why this matters: the 5-step loop's Triage step assumes the
+orchestrator can fan out to all active analysts in one turn. The
+`asyncio.gather` over Anthropic Messages API fallback documented in
+CLAUDE.md is no longer required to unblock that fan-out, and is
+demoted from "primary contingency" to "break-glass." Week 5 wiring
+proceeds against `.claude/agents/*.md` directly.
+
+The three test subagents are disposable. They will be removed before
+the Week-5 analyst roster lands; they served only to settle the
+forced-dispatch and parallelism questions architecturally.
+
+**Day 4: CLAUDE.md auto-injection leak — the harness drops CLAUDE.md
+verbatim into every subagent's system context, bypassing the
+ground-truth-isolation rules at the prompt layer.** Owner:
+lead/architect (banner header), AI/agent engineer (Week 5
+systemPrompt investigation).
+
+Observed during Test 3 of the hello-world experiment. The
+`hello_restricted` subagent — defined with empty `tools: []` and no
+file-reading capability — reported in its response that
+"the contents of CLAUDE.md were nevertheless injected into my context
+via the system-reminder mechanism (project instructions)." This is
+the harness's standard project-context behavior. It applies to every
+subagent dispatched from this directory, regardless of the
+subagent's `tools:` allowlist.
+
+Why this matters: the ground-truth isolation rules added 2026-05-03
+prevent the agent from reading `docs/` at runtime. They do **not**
+prevent CLAUDE.md from being read, because CLAUDE.md is loaded by
+the harness, not by an agent tool call. Today CLAUDE.md is mostly
+architectural rules and dispatch logic — workable. But the moment a
+case-scenario fact, a ground-truth artifact, or a finding leaks into
+CLAUDE.md, every analyst sees it and the autonomy claim collapses
+silently. This is the kind of guardrail that fails by drift, not by
+a single bad commit.
+
+Defense in two layers:
+
+1. **Banner header on CLAUDE.md** declaring it architecture-only.
+   Added immediately. Stating the rule visibly at the top of the
+   file forces the reviewer to confront it before adding new
+   content.
+2. **Week 5 task — investigate per-subagent `systemPrompt` override
+   to suppress CLAUDE.md auto-injection entirely.** Owner: AI/agent
+   engineer. The subagent frontmatter spec includes fields the
+   published docs treat as advanced (`initialPrompt`, possibly
+   harness-private fields for system-prompt scope). Verify whether
+   any of them prevent CLAUDE.md auto-load for that subagent. If
+   yes, adopt for every analyst — the architectural guarantee should
+   not depend on CLAUDE.md hygiene. If no, escalate to a runtime
+   check: the orchestrator hashes CLAUDE.md at run start and refuses
+   to dispatch if the file contains banned tokens (case host names,
+   the strings "ground truth" or "expected findings", etc.).
+
+**Day 4: audit logging principle — subagents narrate plausible-sounding
+lies about harness behavior. The audit log records parent-observable
+facts only, never the subagent's prose self-report.** Owner:
+lead/architect (encode in `server/audit.py` design during Week 2).
+
+Observed during Test 3 of the hello-world experiment. The
+`hello_restricted` subagent claimed verbatim:
+
+> ERROR: Read operation blocked by hook:
+> - [PreToolUse:Read] Hook blocked: hello_restricted is not permitted
+>   to read CLAUDE.md
+
+We have no `PreToolUse:Read` hook configured. The harness usage line
+on the same response showed `tool_uses: 0` — the subagent never
+actually invoked Read. The block was real (Read was not in its tool
+palette because of `tools: []`), but the subagent's narrative of
+*how* it was blocked is fabricated. It produced a confident,
+structured, plausible error message describing a mechanism that does
+not exist in this configuration.
+
+Why this matters: the Audit Trail rubric requires every finding to
+be traceable to a tool execution. If the audit log records the
+subagent's prose ("I was blocked by hook X", "I successfully ran
+plugin Y") as authoritative, the trail is poisoned by hallucination
+the moment a subagent confabulates a response. The architectural
+guardrail (the Read tool was genuinely unavailable) held; the prose
+explanation of that guardrail did not.
+
+Encoded in `server/audit.py` design (Week 2):
+
+- Every JSONL audit record is built from **parent-observable facts**:
+  the dispatched `subagent_type`, the resolved `tools:` allowlist as
+  applied by the harness, the `tool_uses` count from the harness
+  usage block, the `duration_ms` from the harness usage block, and
+  the SHA-256 of the subagent's final message text.
+- The subagent's final message is stored verbatim as a payload but
+  is **not** parsed for harness-state claims. Statements like "I was
+  blocked", "the tool returned an error", "the file did not exist"
+  are treated as model output, not as facts about the harness.
+- Findings derived from a subagent message must cite a tool call
+  recorded by the parent — not a sentence in the subagent's
+  response.
+
+This rule is the audit-side complement to Hard Rule #2
+("architectural guardrails beat prompt guardrails"): the audit log
+trusts what the system did, not what the model said about what the
+system did.
+
+### New tasks created today
+
+- **Week 3 (lead/architect): extend the schema-introspection test**
+  to also walk every `.claude/agents/*.md` file and assert each
+  analyst has an explicit `tools:` allowlist containing only
+  `mcp__sift_guard__*` entries — no `Read`, `Bash`, `Grep`, `Edit`,
+  `Write`, `Glob`, `WebFetch`, or implicit defaults. Same build-time
+  enforcement model as the path-field check from 2026-05-03.
+- **Week 5 (AI/agent engineer): investigate per-subagent
+  `systemPrompt` override** to suppress CLAUDE.md auto-injection. If
+  unavailable in the subagent frontmatter spec, fall back to a
+  runtime banned-token check on CLAUDE.md before any analyst
+  dispatch. See Day-4 CLAUDE.md auto-injection leak entry above.
+- **Week 2 (lead/architect): encode the audit-log principle in
+  `server/audit.py` design** — JSONL records carry only
+  parent-observable harness facts; subagent prose is stored as
+  opaque payload, never parsed for harness-state claims. See Day-4
+  audit logging principle entry above.
+
+**Week 2 Day 1: `register_evidence` ships with `case_id` derived from
+`case_dir.name`. This is a placeholder; an explicit `case_id`
+parameter will be added in Week 7 when multi-case workflows are
+needed.** Owner: lead/architect.
+
+Why this matters: today the prototype operates on a single case
+(Rocba), and every audit-log line, every CASE.yaml, every set of
+findings is implicitly scoped to that one case directory. Hardcoding
+`case_id` to the directory name keeps the on-disk shape stable for
+the Week 2–6 build without prematurely committing to a case-id
+naming scheme. Week 7 introduces the accuracy-benchmark workflow
+(per CLAUDE.md's build order: "5 runs each, median + range" on
+Rocba, plus a second config if a public disk+memory pair is found),
+which is the first time multiple cases coexist in the same audit
+trail. At that point `register_evidence` grows an optional `case_id`
+keyword that overrides the directory-derived default; the migration
+is mechanical because the on-disk `case_id` field already exists
+and is read by every consumer.
+
+**Week 2 Day 1: `server/integrity.py` exists as a stub.
+`verify_mount_readonly` raises `NotImplementedError` until the first
+disk-image MCP tool is implemented (Week 3-4).** Owner:
+lead/architect.
+
+Why this matters: CLAUDE.md "Architectural enforcement of evidence
+integrity" requires a `/proc/mounts` read-only check before every
+read of evidence. The check is moot for the Rocba memory-only
+prototype because `register_evidence` is the only on-ramp and it
+streams the file once at registration time — but the moment a
+disk-image tool wants to mount via `ewfmount` or `affuse` and read
+repeatedly, the check becomes load-bearing. Creating the stub now
+fixes the import boundary (`from server.integrity import
+verify_mount_readonly`) so callers can be written against the final
+shape, and the `NotImplementedError` ensures no Week 2-3 caller
+silently believes it has the protection. The function lands in full
+form when the first disk-image tool requests it, not before.
+
+**Week 2 Day 1: MCP error-message sanitization rule. Every MCP tool
+function must catch known exceptions and return sanitized error
+messages that do NOT echo agent-supplied input back.** Owner:
+lead/architect.
+
+Rationale: FastMCP returns tool exceptions as
+`CallToolResult(isError=True)` with the Python exception's `str()` as
+the content the LLM sees. Echoing the agent's input back inside that
+error string creates a filesystem-mapping oracle: the agent crafts
+calls with probe paths and reads back which ones exist, are
+permission-denied, or fail validation, learning the layout of the
+host filesystem one error at a time. The same mechanism leaks
+internal state for any string-shaped input — registry key names,
+process names, IPs, hostnames — once tools that accept those land in
+Weeks 3-4.
+
+Today this is largely moot. `register_evidence` is the only tool, and
+the agent can only pass paths it already knows about (the operator
+hands them over out of band before the run starts). The error message
+discovered during the Phase 4a protocol round-trip
+(`tests/test_mcp_protocol.py`) reads
+`Evidence path does not exist: /tmp/.../does-not-exist.dat`, which
+echoes the input verbatim. Acceptable for the prototype, not
+acceptable once the agent is calling tools whose parameters it
+synthesizes from evidence.
+
+Pattern to follow when implementing Week 3-4 tool wrappers:
+
+- Catch `FileNotFoundError`, `PermissionError`, `ValueError`, and any
+  domain-specific exceptions the wrapper raises.
+- Re-raise as a sanitized message that names the failure mode and
+  the `evidence_id` (a server-minted UUID) but never the underlying
+  path, key name, or other agent-supplied string. Example:
+  `"invalid evidence reference: <evidence_id>"`,
+  `"plugin failed for evidence_id=<evidence_id>"`,
+  `"argument validation failed for evidence_id=<evidence_id>"`.
+- Log the original exception (with the input that triggered it) into
+  the hash-chained audit log via `append_audit_entry`. The audit log
+  is the operator-visible diagnostic surface; the LLM-visible error
+  string is not.
+- The single allowed input echo is the `evidence_id` itself, because
+  the agent named it in the call and the server resolved it through
+  the `CASE.yaml` registry — there is no information leak in echoing
+  what the agent already knows.
+
+This rule is recorded in CLAUDE.md "Hard rules" as a one-line entry
+pointing back here. The Week-3 schema-introspection test should be
+extended again to scan tool implementations for the pattern (e.g.
+flag any `raise FileNotFoundError(f"... {filepath}")` inside
+`server/tools/`), but the immediate enforcement is reviewer
+discipline.
