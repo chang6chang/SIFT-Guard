@@ -1,11 +1,14 @@
-"""Round-trip test of the SIFT-Guard MCP server's register_evidence tool.
+"""Round-trip tests of the SIFT-Guard MCP server's tool surface.
 
 Spawns `server/main.py` as a subprocess via stdio, exercises the real MCP
 protocol the way Claude Code will, and verifies:
 
-(1) the tool surface is locked to `filepath` only — no `case_dir`, no
-    second tool. This is the architectural lock for CLAUDE.md rule 3.
-(2) the IRREVERSIBLE warning reaches the LLM over the wire.
+(1) the tool surface exposes exactly the registered tools — currently
+    `register_evidence` and `vol_pslist`. Each tool's input schema is
+    locked to its declared parameters only (no `case_dir` leak); this
+    is the architectural lock for CLAUDE.md rule 3.
+(2) human-readable warnings reach the LLM over the wire (IRREVERSIBLE
+    on register_evidence, latency cost on vol_pslist).
 (3) registration succeeds end-to-end and produces the expected on-disk
     side effects (chmod 444, CASE.yaml, audit JSONL).
 (4) a bad input produces a protocol-level error response, not a crash;
@@ -52,6 +55,17 @@ async def _list_tools_only(server_cwd: Path):
         async with ClientSession(read, write) as session:
             await session.initialize()
             return await session.list_tools()
+
+
+def _tool_by_name(listing, name: str):
+    """Find a tool by name in a list_tools() result. With more than one
+    tool exposed, ordering is not guaranteed by the protocol."""
+    for t in listing.tools:
+        if t.name == name:
+            return t
+    raise AssertionError(
+        f"tool {name!r} not found in listing; got {[t.name for t in listing.tools]!r}"
+    )
 
 
 async def _full_round_trip(tmp_path: Path) -> dict:
@@ -137,20 +151,19 @@ def _extract_record(call_result) -> dict | None:
 
 
 class TestToolSurface:
-    def test_only_register_evidence_is_exposed(self, tmp_path: Path):
+    def test_register_evidence_and_vol_pslist_are_exposed(self, tmp_path: Path):
         listing = _run_async(_list_tools_only(tmp_path))
-        tools = listing.tools
-        assert len(tools) == 1, (
-            f"expected exactly one MCP tool, got {len(tools)}: "
-            f"{[t.name for t in tools]}"
+        tool_names = {t.name for t in listing.tools}
+        assert tool_names == {"register_evidence", "vol_pslist"}, (
+            f"expected exactly the two tools register_evidence and vol_pslist; "
+            f"got {sorted(tool_names)}"
         )
-        assert tools[0].name == "register_evidence"
 
     def test_register_evidence_parameters_are_locked_to_filepath(
         self, tmp_path: Path
     ):
         listing = _run_async(_list_tools_only(tmp_path))
-        tool = listing.tools[0]
+        tool = _tool_by_name(listing, "register_evidence")
         schema = tool.inputSchema
 
         assert schema.get("type") == "object"
@@ -165,14 +178,51 @@ class TestToolSurface:
             "filepath must be required, not optional"
         )
 
+    def test_vol_pslist_parameters_are_locked_to_evidence_id(
+        self, tmp_path: Path
+    ):
+        # Symmetric to the register_evidence schema lock. CLAUDE.md
+        # rule 3: the agent never names a path or a plugin — only an
+        # evidence_id resolved through the registry. If `case_dir`,
+        # `plugin_name`, or any free-form path leaks into this schema,
+        # the architectural guarantee is broken.
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = _tool_by_name(listing, "vol_pslist")
+        schema = tool.inputSchema
+
+        assert schema.get("type") == "object"
+        properties = schema.get("properties", {})
+        assert set(properties.keys()) == {"evidence_id"}, (
+            "vol_pslist must accept only `evidence_id`; got "
+            f"{sorted(properties.keys())}. If `case_dir`, `plugin_name`, or "
+            "any path field shows up here, CLAUDE.md rule 3 is broken."
+        )
+        assert properties["evidence_id"].get("type") == "string"
+        assert "evidence_id" in schema.get("required", []), (
+            "evidence_id must be required, not optional"
+        )
+
     def test_tool_description_carries_irreversible_warning(self, tmp_path: Path):
         listing = _run_async(_list_tools_only(tmp_path))
-        tool = listing.tools[0]
+        tool = _tool_by_name(listing, "register_evidence")
         assert tool.description, "register_evidence must carry a description"
         assert "IRREVERSIBLE" in tool.description, (
             "the IRREVERSIBLE warning must reach the LLM over the wire — "
             "this is the human-readable signal that calling this tool "
             "permanently chmods the source file"
+        )
+
+    def test_vol_pslist_description_carries_cost_warning(self, tmp_path: Path):
+        # The LLM should see latency cost in the tool description so it
+        # can decide whether the call is worth making. "5-15 seconds"
+        # is the empirically-measured Rocba range from Phase B.4.
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = _tool_by_name(listing, "vol_pslist")
+        assert tool.description, "vol_pslist must carry a description"
+        assert "5-15 seconds" in tool.description, (
+            "vol_pslist description must surface its latency cost — "
+            "the LLM uses this to decide whether to invoke. Found: "
+            f"{tool.description!r}"
         )
 
 
@@ -279,5 +329,5 @@ class TestRoundTrip:
         )
 
         # Server stays alive after both error kinds: list_tools succeeded.
-        assert len(tools_after.tools) == 1
-        assert tools_after.tools[0].name == "register_evidence"
+        tool_names_after = {t.name for t in tools_after.tools}
+        assert tool_names_after == {"register_evidence", "vol_pslist"}

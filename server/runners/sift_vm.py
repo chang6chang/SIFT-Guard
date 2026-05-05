@@ -33,6 +33,15 @@ SIFT_VM_USER = os.environ.get("SIFT_VM_USER", "sansforensics")
 SIFT_VM_SSH_PORT = os.environ.get("SIFT_VM_SSH_PORT", "2222")
 SIFT_VM_VOL_BIN = os.environ.get("SIFT_VM_VOL_BIN", "vol")
 SIFT_VM_EVIDENCE_PREFIX = os.environ.get("SIFT_VM_EVIDENCE_PREFIX", "/mnt/rocba")
+# Volatility 3's CLI has no --version flag (verified empirically against
+# the SIFT 2026.1 build). The version lives in
+# `volatility3.framework.constants.PACKAGE_VERSION`, which can only be
+# read by running the vol venv's Python interpreter directly. Default
+# matches the SIFT layout where `/usr/local/bin/vol` is a symlink to
+# `/opt/volatility3/bin/vol`. Override via env if your install differs.
+SIFT_VM_VOL_PYTHON = os.environ.get(
+    "SIFT_VM_VOL_PYTHON", "/opt/volatility3/bin/python3"
+)
 
 
 def _detect_default_gateway() -> str:
@@ -77,6 +86,53 @@ SIFT_VM_HOST = os.environ.get("SIFT_VM_HOST") or _detect_default_gateway()
 _PLUGIN_NAME_RE = re.compile(
     r'^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\.[A-Z][A-Za-z0-9]*$'
 )
+
+
+_VERSION_PROBE_SCRIPT = (
+    "from volatility3.framework import constants; "
+    "print(constants.PACKAGE_VERSION)"
+)
+
+
+def get_vol_version(timeout_seconds: int = 10) -> str:
+    """Capture the Volatility 3 PACKAGE_VERSION from the SIFT VM via SSH.
+
+    Volatility 3's CLI has no ``--version`` / ``-V`` flag (verified
+    empirically against the SIFT 2026.1 build); the version lives in
+    ``volatility3.framework.constants.PACKAGE_VERSION``. We run the vol
+    venv's Python interpreter (``SIFT_VM_VOL_PYTHON``) and read the
+    constant.
+
+    Returns the bare version string (e.g. ``"2.27.0"``) — what's
+    actually captured from the source of truth, prefix-free. The
+    audit log's ``tool_name`` supplies the rest of the context.
+
+    The probe script contains a semicolon, so we hand SSH a single
+    pre-quoted command string instead of an argv list — SSH joins the
+    trailing argv with spaces and ships it to the remote shell, where
+    an unquoted ``;`` would split the command. ``shlex.quote`` is
+    defense-in-depth: every component is server-controlled, but
+    quoting keeps the failure mode local if a future env override
+    introduces a metacharacter.
+    """
+    remote_cmd = (
+        f"{shlex.quote(SIFT_VM_VOL_PYTHON)} "
+        f"-c {shlex.quote(_VERSION_PROBE_SCRIPT)}"
+    )
+    argv = [
+        "ssh",
+        "-p", SIFT_VM_SSH_PORT,
+        f"{SIFT_VM_USER}@{SIFT_VM_HOST}",
+        remote_cmd,
+    ]
+    result = subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+        check=True,
+    )
+    return result.stdout.strip()
 
 
 def run_vol_plugin(
@@ -209,7 +265,9 @@ __all__ = [
     "SIFT_VM_HOST",
     "SIFT_VM_SSH_PORT",
     "SIFT_VM_VOL_BIN",
+    "SIFT_VM_VOL_PYTHON",
     "SIFT_VM_EVIDENCE_PREFIX",
+    "get_vol_version",
     "parse_pslist_json",
     "run_vol_plugin",
 ]

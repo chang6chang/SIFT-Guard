@@ -343,3 +343,34 @@ chain-of-custody discipline.
 `Literal[...]` for `plugin_name` to architecturally prevent
 cross-plugin result confusion.** Pattern continues for every
 Volatility wrapper in Weeks 3-4.
+
+**Week 2 Day 2: Audit log `tool_name` namespacing convention.**
+Format: ``<tool_name>[:<sub_event>]``. Examples:
+
+- ``register_evidence`` (no sub-event)
+- ``vol_pslist`` (the main result line)
+- ``vol_pslist:record_validation_warning`` (per-record validation
+  failure during pslist)
+- ``vol_pslist:rejected_evidence_not_found`` (rejection-path line)
+
+Rationale: greppable, sortable, self-documenting, and per-call
+sequencing within the JSONL is preserved by `line_number`. Pattern
+continues for every Volatility wrapper in Weeks 3-4.
+
+**Week 2 close: first live `vol_pslist` invocation against Rocba
+returned 2186 processes — anomalously high (normal Win10 baseline:
+80-250).** This is precisely the kind of cross-plugin discrepancy the
+validator subagent (Week 6) will resolve via psscan vs pslist
+comparison. Hypotheses to test: terminated process artifacts in
+ActiveProcessLinks, real high-process workload, parser duplication.
+NOT treated as a defect — system surfaced an analytical question,
+which is the intended behavior.
+
+**Week 2 close: process name field `_EPROCESS.ImageFileName` is
+hard-truncated to 15 bytes by the Windows kernel.** The `vol_pslist`
+tool returns this value verbatim; downstream correlation in Week 6
+must use prefix matching, not equality, when comparing against full
+process names from cmdline or the PEB. Logged as a known kernel
+artifact, not a bug. Reference in `adversarial-robustness.md` when
+written: an attacker can engineer collisions in this field via 15+
+char executable names.

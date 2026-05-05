@@ -23,6 +23,7 @@ target-version = "py311"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+pythonpath = ["."]
 markers = [
     "integration: tests that need a live SIFT VM over SSH (skipped by default; run with `pytest -m integration`)",
 ]
