@@ -51,3 +51,4 @@ audit/
 # Claude Code local state
 .claude/state/
 .claude/transcripts/
+.claude/settings.local.json
