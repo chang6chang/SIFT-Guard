@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "sift-guard": {
+      "command": "python",
+      "args": ["-m", "server.main"],
+      "cwd": "."
+    }
+  }
+}
