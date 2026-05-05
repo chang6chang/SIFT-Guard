@@ -14,13 +14,19 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 
 from server.schemas import (
+    DraftFinding,
     EvidenceRecord,
+    EvidenceRef,
+    FindingCategory,
+    FindingConfidence,
+    FindingSeverity,
     NetscanResult,
     PslistResult,
     PsscanResult,
     PstreeResult,
 )
 from server.tools.evidence import register_evidence as _register_evidence_impl
+from server.tools.findings import record_finding as _record_finding_impl
 from server.tools.memory import (
     vol_netscan as _vol_netscan_impl,
     vol_pslist as _vol_pslist_impl,
@@ -140,6 +146,52 @@ def vol_netscan(evidence_id: str) -> NetscanResult:
     more object families. Do not call back-to-back redundantly.
     """
     return _vol_netscan_impl(evidence_id, case_dir=CASE_DIR)
+
+
+@mcp.tool()
+def record_finding(
+    evidence_id: str,
+    analyst: str,
+    category: FindingCategory,
+    severity: FindingSeverity,
+    confidence: FindingConfidence,
+    title: str,
+    description: str,
+    evidence_refs: list[EvidenceRef],
+    hypothesis: str | None = None,
+) -> DraftFinding:
+    """Commit a DRAFT finding to the case.
+
+    Analyst subagents call this to record what they found, with back-pointers
+    into the audit chain so every claim resolves to the tool calls that fed it.
+    The schema's Literal-validated category, severity, and confidence keep the
+    finding surface bounded; self-marking DISPUTED is rejected — that state
+    is set by the validator, not the analyst.
+
+    Required: a registered evidence_id; an analyst from {process_analyst,
+    network_analyst, validator}; at least one EvidenceRef whose audit_line
+    points at a real line in case-data/audit/sift-guard-mcp.jsonl AND whose
+    source_tool matches that line's tool_name. Server fills finding_id (UUIDv4),
+    created_at (UTC now), state ("DRAFT"), and tool_invocations (derived from
+    evidence_refs).
+
+    Errors are sanitized — invalid evidence_id, unknown analyst, DISPUTED
+    self-mark, mismatched audit refs, and pydantic constraint failures all
+    raise ValueError with generic messages while the audit chain captures the
+    full rejection context for operator review.
+    """
+    return _record_finding_impl(
+        evidence_id=evidence_id,
+        analyst=analyst,
+        category=category,
+        severity=severity,
+        confidence=confidence,
+        title=title,
+        description=description,
+        evidence_refs=evidence_refs,
+        hypothesis=hypothesis,
+        case_dir=CASE_DIR,
+    )
 
 
 if __name__ == "__main__":

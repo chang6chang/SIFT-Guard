@@ -4,10 +4,10 @@ Spawns `server/main.py` as a subprocess via stdio, exercises the real MCP
 protocol the way Claude Code will, and verifies:
 
 (1) the tool surface exposes exactly the registered tools — currently
-    `register_evidence`, `vol_pslist`, `vol_psscan`, `vol_pstree`, and
-    `vol_netscan`. Each tool's input schema is locked to its declared
-    parameters only (no `case_dir` leak); this is the architectural lock
-    for CLAUDE.md rule 3.
+    `register_evidence`, `vol_pslist`, `vol_psscan`, `vol_pstree`,
+    `vol_netscan`, and `record_finding`. Each tool's input schema is
+    locked to its declared parameters only (no `case_dir` leak); this
+    is the architectural lock for CLAUDE.md rule 3.
 (2) human-readable warnings reach the LLM over the wire (IRREVERSIBLE
     on register_evidence, latency cost on every vol_* tool).
 (3) registration succeeds end-to-end and produces the expected on-disk
@@ -152,7 +152,7 @@ def _extract_record(call_result) -> dict | None:
 
 
 class TestToolSurface:
-    def test_five_tool_surface_is_locked(self, tmp_path: Path):
+    def test_six_tool_surface_is_locked(self, tmp_path: Path):
         # Surface lock: every new MCP tool added to server/main.py
         # forces an explicit update here. Adding a tool without
         # extending this set means the surface grew silently — which
@@ -165,9 +165,11 @@ class TestToolSurface:
             "vol_psscan",
             "vol_pstree",
             "vol_netscan",
+            "record_finding",
         }, (
             f"expected exactly register_evidence, vol_pslist, vol_psscan, "
-            f"vol_pstree, vol_netscan; got {sorted(tool_names)}"
+            f"vol_pstree, vol_netscan, record_finding; got "
+            f"{sorted(tool_names)}"
         )
 
     def test_register_evidence_parameters_are_locked_to_filepath(
@@ -349,6 +351,55 @@ class TestToolSurface:
             f"{tool.description!r}"
         )
 
+    def test_record_finding_parameter_set(self, tmp_path: Path):
+        # record_finding is the analyst-write tool — different shape
+        # from the read-only vol_* tools but the same evidence_id-only
+        # boundary applies for the path-confinement question (no
+        # free-form path field). The schema-introspection test in
+        # test_no_path_fields.py is the systemic guard; here we check
+        # the explicit parameter set so a regression that adds, say,
+        # a `case_dir` parameter would surface immediately.
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = _tool_by_name(listing, "record_finding")
+        properties = tool.inputSchema.get("properties", {})
+        assert set(properties.keys()) == {
+            "evidence_id",
+            "analyst",
+            "category",
+            "severity",
+            "confidence",
+            "title",
+            "description",
+            "evidence_refs",
+            "hypothesis",
+        }, (
+            "record_finding parameter set drifted; got "
+            f"{sorted(properties.keys())}. If `case_dir`, `finding_id`, "
+            "`created_at`, `state`, or `tool_invocations` shows up here, "
+            "the server-controlled boundary is broken."
+        )
+
+    def test_record_finding_confidence_includes_disputed_for_validator(
+        self, tmp_path: Path
+    ):
+        # The Literal must include DISPUTED — not because analysts can
+        # set it (they can't; record_finding rejects + audits), but
+        # because the same DraftFinding schema is the type the week-6
+        # validator will use when it promotes a finding. If DISPUTED
+        # were absent from the protocol-level enum the validator's
+        # promotion call couldn't typecheck. This test pins the
+        # surface so that architectural choice is visible.
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = _tool_by_name(listing, "record_finding")
+        properties = tool.inputSchema.get("properties", {})
+        confidence = properties.get("confidence", {})
+        # JSON Schema for a Literal[a,b,c,d] surfaces as `enum: [...]`.
+        assert "DISPUTED" in confidence.get("enum", []), (
+            "DISPUTED must be in the protocol-level confidence enum; "
+            f"got {confidence!r}. The runtime check in record_finding "
+            "audits + rejects analyst-supplied DISPUTED."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Full round-trip — call success, call error, recovery
@@ -460,4 +511,5 @@ class TestRoundTrip:
             "vol_psscan",
             "vol_pstree",
             "vol_netscan",
+            "record_finding",
         }

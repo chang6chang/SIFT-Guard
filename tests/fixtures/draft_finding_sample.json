@@ -1,0 +1,70 @@
+[
+    {
+        "finding_id": "11111111-1111-4111-8111-111111111111",
+        "evidence_id": "550e8400-e29b-41d4-a716-446655440000",
+        "analyst": "process_analyst",
+        "state": "DRAFT",
+        "category": "process_anomaly",
+        "severity": "medium",
+        "confidence": "MEDIUM",
+        "title": "Suspicious LOLBin descendant of svchost.exe",
+        "description": "vol_pslist surfaced powershell.exe (PID 4321) with PPID 1244 (svchost.exe). svchost typically spawns service workers, not interactive shells; this combination is associated with scheduled-task lateral execution patterns documented in MITRE ATT&CK T1053.005.",
+        "evidence_refs": [
+            {
+                "source_tool": "vol_pslist",
+                "audit_line": 3,
+                "detail": "PID 4321 powershell.exe, PPID 1244 svchost.exe"
+            }
+        ],
+        "hypothesis": "scheduled-task abuse pre-promotes the powershell child via the service host",
+        "created_at": "2026-05-06T10:00:00+00:00",
+        "tool_invocations": ["vol_pslist:3"]
+    },
+    {
+        "finding_id": "22222222-2222-4222-8222-222222222222",
+        "evidence_id": "550e8400-e29b-41d4-a716-446655440000",
+        "analyst": "network_analyst",
+        "state": "DRAFT",
+        "category": "network_beacon",
+        "severity": "high",
+        "confidence": "HIGH",
+        "title": "Periodic outbound TLS to non-corporate IP from APSDaemon.exe",
+        "description": "vol_netscan shows APSDaemon.exe (PID 13224) with an ESTABLISHED TCPv4 connection to 17.57.144.165:5223. The remote address is outside RFC1918 / typical Apple Push (17.0.0.0/8) ranges and the destination port pattern matches XMPP-over-TLS beaconing periodicity worth correlating against process create_time.",
+        "evidence_refs": [
+            {
+                "source_tool": "vol_netscan",
+                "audit_line": 7,
+                "detail": "TCPv4 ESTABLISHED 192.168.1.5:53810 -> 17.57.144.165:5223 owner APSDaemon.exe PID 13224"
+            }
+        ],
+        "hypothesis": null,
+        "created_at": "2026-05-06T10:01:00+00:00",
+        "tool_invocations": ["vol_netscan:7"]
+    },
+    {
+        "finding_id": "33333333-3333-4333-8333-333333333333",
+        "evidence_id": "550e8400-e29b-41d4-a716-446655440000",
+        "analyst": "validator",
+        "state": "DRAFT",
+        "category": "process_hidden",
+        "severity": "critical",
+        "confidence": "MEDIUM",
+        "title": "PID 9999 in netscan but absent from pslist active list",
+        "description": "vol_netscan reports PID 9999 (owner svchost.exe) bound to TCPv4 LISTENING on 0.0.0.0:65500. vol_pslist's active EPROCESS walk does not contain PID 9999. The combination — port-bound endpoint with no entry in the active list — is a known DKOM-hiding signal documented in MITRE ATT&CK T1014.",
+        "evidence_refs": [
+            {
+                "source_tool": "vol_netscan",
+                "audit_line": 7,
+                "detail": "PID 9999 svchost.exe TCPv4 LISTENING 0.0.0.0:65500"
+            },
+            {
+                "source_tool": "vol_pslist",
+                "audit_line": 3,
+                "detail": "PID 9999 absent from pslist active list"
+            }
+        ],
+        "hypothesis": "DKOM hiding leaves the pool tag (netscan visible) while unlinking the EPROCESS (pslist invisible)",
+        "created_at": "2026-05-06T10:02:00+00:00",
+        "tool_invocations": ["vol_netscan:7", "vol_pslist:3"]
+    }
+]
