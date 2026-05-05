@@ -307,6 +307,52 @@ def parse_pstree_json(stdout: str) -> list[dict]:
     return [_map_pstree_node(node) for node in raw]
 
 
+# Netscan emits a flat list, but its row shape is entirely different
+# from EPROCESS — different keys, different semantics. Separate map
+# rather than a parameterized parser: each plugin family's parser is
+# small enough that a per-plugin function reads more cleanly than a
+# meta-parser. If a fourth distinct shape lands, revisit.
+_NETSCAN_FIELD_MAP = {
+    "Proto": "proto",
+    "LocalAddr": "local_addr",
+    "LocalPort": "local_port",
+    "ForeignAddr": "foreign_addr",
+    "ForeignPort": "foreign_port",
+    "State": "state",
+    "PID": "pid",
+    "Owner": "owner",
+    "Offset": "offset",
+    "Created": "created",
+}
+
+
+def parse_netscan_json(stdout: str) -> list[dict]:
+    """Parse Volatility 3 netscan JSON output into snake_case dicts.
+
+    Drops ``__children`` and any unknown keys (forward-compat). All
+    four protocol families share the same field set on Vol 3 2.27.0,
+    so a single mapping handles TCPv4 / TCPv6 / UDPv4 / UDPv6 — UDP
+    records simply have ``State == ""`` and ``ForeignAddr == "*"``
+    rather than a different field set, so no discriminated-union
+    complexity at the schema layer.
+
+    Datetime strings are left as ISO strings — pydantic parses them
+    when the dict is fed to ``NetworkRecord(**d)``.
+    """
+    raw = json.loads(stdout)
+    if not isinstance(raw, list):
+        raise ValueError("expected JSON array at top level")
+
+    rows: list[dict] = []
+    for row in raw:
+        mapped: dict = {}
+        for vol_key, schema_key in _NETSCAN_FIELD_MAP.items():
+            if vol_key in row:
+                mapped[schema_key] = row[vol_key]
+        rows.append(mapped)
+    return rows
+
+
 __all__ = [
     "SIFT_VM_USER",
     "SIFT_VM_HOST",
@@ -315,6 +361,7 @@ __all__ = [
     "SIFT_VM_VOL_PYTHON",
     "SIFT_VM_EVIDENCE_PREFIX",
     "get_vol_version",
+    "parse_netscan_json",
     "parse_pstree_json",
     "parse_volatility_json",
     "run_vol_plugin",

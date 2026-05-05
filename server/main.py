@@ -15,12 +15,14 @@ from mcp.server.fastmcp import FastMCP
 
 from server.schemas import (
     EvidenceRecord,
+    NetscanResult,
     PslistResult,
     PsscanResult,
     PstreeResult,
 )
 from server.tools.evidence import register_evidence as _register_evidence_impl
 from server.tools.memory import (
+    vol_netscan as _vol_netscan_impl,
     vol_pslist as _vol_pslist_impl,
     vol_psscan as _vol_psscan_impl,
     vol_pstree as _vol_pstree_impl,
@@ -112,6 +114,32 @@ def vol_pstree(evidence_id: str) -> PstreeResult:
     the same active EPROCESS list, just with hierarchy reconstruction.
     """
     return _vol_pstree_impl(evidence_id, case_dir=CASE_DIR)
+
+
+@mcp.tool()
+def vol_netscan(evidence_id: str) -> NetscanResult:
+    """Run windows.netscan.NetScan against a registered memory image.
+
+    Pool-tag scans the network object table for TCP/UDP endpoints across IPv4
+    and IPv6. Returns a flat list of connections — one record per endpoint
+    with proto, local_addr/port, foreign_addr/port, state, pid, and owner
+    image name. UDP records use empty-string state and "*" foreign_addr per
+    netstat convention. PID and owner can both be null for kernel-only
+    endpoints.
+
+    Same evidence_id-only contract as the other vol_* tools; same sanitized
+    rejection messages and audited rejection lines under
+    `vol_netscan:rejected_*`.
+
+    Cross-source value: combined with vol_pslist / vol_psscan, the validator
+    can flag ports bound by PIDs that don't appear in the active-list walk —
+    a DKOM-hiding signature.
+
+    Cost: typically 5-12 minutes per call against a 19GB Windows 10 image
+    (Rocba: 8m57s observed). Slower than vol_psscan because netscan pool-scans
+    more object families. Do not call back-to-back redundantly.
+    """
+    return _vol_netscan_impl(evidence_id, case_dir=CASE_DIR)
 
 
 if __name__ == "__main__":

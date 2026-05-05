@@ -419,10 +419,99 @@ class PstreeResult(BaseModel):
         return _enforce_utc("invoked_at", v)
 
 
+class NetworkRecord(BaseModel):
+    """One network endpoint or connection from `windows.netscan.NetScan`.
+
+    Pool-tag scans the network object table and recovers TCP / UDP
+    endpoint structures plus connection state. The same field set
+    applies across all four protocol families — UDP records use
+    ``state == ""`` (UDP is connectionless) and ``foreign_addr == "*"``
+    when the endpoint is unbound, rather than null. This is the
+    netstat convention; the validator should treat `state == ""` as
+    "no TCP-style state, this is a UDP endpoint".
+
+    `pid` and `owner` may both be null for kernel-only endpoints or
+    sockets whose owning process exited but whose pool entry survives
+    — same recovery semantic as psscan's exited rows. On Rocba 7 of
+    430 records had null PID + null owner.
+
+    Strings (`local_addr`, `foreign_addr`, `owner`) are stored raw
+    from the evidence; the tool's return boundary wraps them in
+    ``UntrustedString`` for analyst consumption. Same convention as
+    ProcessRecord.image_file_name. IP-address strings are not length-
+    capped — IPv6 zone-id'd link-local forms can be long.
+    """
+
+    proto: Literal["TCPv4", "TCPv6", "UDPv4", "UDPv6"]
+    local_addr: str
+    local_port: int = Field(ge=0, le=65535)
+    foreign_addr: str
+    foreign_port: int = Field(ge=0, le=65535)
+    # TCP states observed on Rocba: LISTENING, ESTABLISHED, CLOSED,
+    # CLOSE_WAIT, SYN_RCVD. The full Windows TCP state set is larger
+    # (TIME_WAIT, FIN_WAIT_*, LAST_ACK, ...). Using `str` rather than
+    # an enum keeps schema construction tolerant of any state Vol
+    # surfaces; the validator can pattern-match on values it cares
+    # about. Empty string for UDP records — see class docstring.
+    state: str = ""
+    pid: int | None = Field(default=None, ge=0)
+    owner: str | None = None
+    offset: int = Field(ge=0)
+    created: datetime | None = None
+
+    @field_validator("created")
+    @classmethod
+    def _validate_optional_utc(cls, v: datetime | None) -> datetime | None:
+        if v is None:
+            return v
+        return _enforce_utc("created", v)
+
+
+class NetscanResult(BaseModel):
+    """Result envelope for the `windows.netscan.PsScan` Volatility plugin.
+
+    Same provenance shape as the other memory-tool results — different
+    `plugin_name` Literal and `connections: list[NetworkRecord]`.
+
+    Cross-source within memory: combined with vol_psscan/vol_pstree's
+    process artifacts, the week-6 validator can flag "PID is bound to
+    a port in netscan but absent from pslist's active-list walk" —
+    a classic DKOM-hidden process signal.
+    """
+
+    evidence_id: str
+    plugin_name: Literal["windows.netscan.NetScan"]
+    volatility_version: str = Field(min_length=1)
+    connections: list[NetworkRecord]
+    command_executed: str = Field(min_length=1)
+    runtime_seconds: float = Field(ge=0)
+    invoked_at: datetime
+
+    @field_validator("evidence_id")
+    @classmethod
+    def _validate_evidence_id(cls, v: str) -> str:
+        try:
+            parsed = UUID(v)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
+        if parsed.version != 4:
+            raise ValueError(
+                f"evidence_id must be UUID version 4, got version {parsed.version}"
+            )
+        return str(parsed)
+
+    @field_validator("invoked_at")
+    @classmethod
+    def _validate_invoked_at(cls, v: datetime) -> datetime:
+        return _enforce_utc("invoked_at", v)
+
+
 __all__ = [
     "ArtifactClass",
     "AuditLogEntry",
     "EvidenceRecord",
+    "NetscanResult",
+    "NetworkRecord",
     "ProcessRecord",
     "ProcessScanRecord",
     "ProcessTreeRecord",

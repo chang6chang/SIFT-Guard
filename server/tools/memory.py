@@ -1,7 +1,7 @@
-"""Typed MCP tools for the Volatility 3 `windows.{pslist,psscan,pstree}`
-plugins.
+"""Typed MCP tools for the Volatility 3
+`windows.{pslist,psscan,pstree,netscan}` plugins.
 
-All three tools compose the same Phase B layers:
+All four tools compose the same Phase B layers:
   - the agent supplies an `evidence_id`
   - the tool resolves it via case-data/CASE.yaml to an EvidenceRecord
   - validates `artifact_class is memory_image`
@@ -48,6 +48,7 @@ from server.audit import append_audit_entry
 from server.runners.sift_vm import (
     SIFT_VM_EVIDENCE_PREFIX,
     get_vol_version,
+    parse_netscan_json,
     parse_pstree_json,
     parse_volatility_json,
     run_vol_plugin,
@@ -55,6 +56,8 @@ from server.runners.sift_vm import (
 from server.schemas import (
     ArtifactClass,
     EvidenceRecord,
+    NetscanResult,
+    NetworkRecord,
     ProcessRecord,
     ProcessScanRecord,
     ProcessTreeRecord,
@@ -67,10 +70,12 @@ from server.schemas import (
 _PSLIST_PLUGIN = "windows.pslist.PsList"
 _PSSCAN_PLUGIN = "windows.psscan.PsScan"
 _PSTREE_PLUGIN = "windows.pstree.PsTree"
+_NETSCAN_PLUGIN = "windows.netscan.NetScan"
 _CASE_FILENAME = "CASE.yaml"
 _PSLIST_TOOL_NAME = "vol_pslist"
 _PSSCAN_TOOL_NAME = "vol_psscan"
 _PSTREE_TOOL_NAME = "vol_pstree"
+_NETSCAN_TOOL_NAME = "vol_netscan"
 
 # Pool-tag scanning walks the full memory layer rather than the active
 # EPROCESS list, so psscan is materially slower than pslist. On Rocba
@@ -79,6 +84,13 @@ _PSTREE_TOOL_NAME = "vol_pstree"
 # 900s gives ~2x the observed runtime as headroom for slower disks or
 # the cold-cache case where Volatility re-resolves PDB symbols.
 _PSSCAN_TIMEOUT_SECONDS = 900
+
+# Netscan also pool-scans, walks more pool families than psscan
+# (TCP endpoint, TCP listener, UDP endpoint), and is empirically
+# slower on Rocba: 8m57s observed. 1200s gives ~33% headroom over
+# that. Vol 3 sometimes hits a slow path on heavily-fragmented
+# heaps; the cushion is for that, not normal operation.
+_NETSCAN_TIMEOUT_SECONDS = 1200
 
 
 class _ToolRecordWarning(BaseModel):
@@ -518,4 +530,125 @@ def vol_pstree(evidence_id: str, case_dir: str = "case-data") -> PstreeResult:
     return result
 
 
-__all__ = ["translate_to_vm_path", "vol_pslist", "vol_psscan", "vol_pstree"]
+def vol_netscan(evidence_id: str, case_dir: str = "case-data") -> NetscanResult:
+    """Run windows.netscan.NetScan against a registered memory_image.
+
+    Pool-tag scans the network object table and recovers TCP / UDP
+    endpoint structures across IPv4 and IPv6. Returns a flat list of
+    NetworkRecord rows — one per endpoint or connection. The same
+    field set applies across all four protocol families; UDP records
+    use ``state == ""`` and ``foreign_addr == "*"`` rather than null,
+    matching the netstat convention.
+
+    Resolves ``evidence_id`` via CASE.yaml. Validates ``artifact_class``
+    is ``memory_image``. Translates the host path to the VM path under
+    ``SIFT_VM_EVIDENCE_PREFIX``. Captures the Volatility version,
+    invokes the runner, parses the output, and returns a typed
+    NetscanResult. Per-record validation failures are audit-logged as
+    `vol_netscan:record_validation_warning` entries and the bad row
+    is skipped.
+
+    Cross-source value: combined with vol_pslist / vol_psscan /
+    vol_pstree, the validator can flag PIDs bound to ports in netscan
+    that are missing from pslist's active-list walk — DKOM hiding
+    leaves a pool entry the network plugin still sees.
+
+    Cost: typically 5-12 minutes per call against a 19 GB Windows 10
+    image (Rocba: 8m57s observed). Slower than psscan because netscan
+    walks more pool families (TCP endpoint, TCP listener, UDP endpoint).
+    Runner timeout is bumped to 1200s; the LLM should not call this
+    redundantly.
+
+    Null-tolerant fields: ``pid`` and ``owner`` are both optional in
+    NetworkRecord (kernel-only endpoints, or sockets whose owning
+    process exited but whose pool entry survives — same recovery
+    semantic as psscan's exited rows).
+    """
+    case_dir_path = Path(case_dir).resolve()
+
+    record = _resolve_evidence(evidence_id, case_dir_path)
+    if record is None:
+        _log_tool_rejection(
+            case_dir_path,
+            _NETSCAN_TOOL_NAME,
+            _RejectionReason.EVIDENCE_NOT_FOUND,
+            evidence_id,
+        )
+        raise ValueError("evidence_id not found in CASE.yaml")
+
+    if record.artifact_class is not ArtifactClass.MEMORY_IMAGE:
+        _log_tool_rejection(
+            case_dir_path,
+            _NETSCAN_TOOL_NAME,
+            _RejectionReason.WRONG_ARTIFACT_CLASS,
+            evidence_id,
+        )
+        raise ValueError("evidence is not a memory image")
+
+    host_prefix = str(case_dir_path / "evidence")
+    try:
+        vm_path = translate_to_vm_path(
+            record.absolute_path, host_prefix, SIFT_VM_EVIDENCE_PREFIX
+        )
+    except ValueError:
+        _log_tool_rejection(
+            case_dir_path,
+            _NETSCAN_TOOL_NAME,
+            _RejectionReason.PATH_TRANSLATION_FAILED,
+            evidence_id,
+        )
+        raise
+
+    volatility_version = get_vol_version()
+    invoked_at = datetime.now(tz=timezone.utc)
+    stdout, command_string, runtime_seconds = run_vol_plugin(
+        _NETSCAN_PLUGIN, vm_path, timeout_seconds=_NETSCAN_TIMEOUT_SECONDS
+    )
+    raw_rows = parse_netscan_json(stdout)
+
+    connections: list[NetworkRecord] = []
+    for index, raw in enumerate(raw_rows):
+        try:
+            connections.append(NetworkRecord(**raw))
+        except ValidationError as exc:
+            warning = _ToolRecordWarning(
+                warning_type="vol_netscan_record_validation_failed",
+                record_index=index,
+                validation_error=str(exc),
+            )
+            append_audit_entry(
+                case_dir=case_dir_path,
+                tool_name=f"{_NETSCAN_TOOL_NAME}:record_validation_warning",
+                evidence_id=evidence_id,
+                input_args={"record_index": index},
+                output=warning,
+            )
+
+    result = NetscanResult(
+        evidence_id=evidence_id,
+        plugin_name=_NETSCAN_PLUGIN,
+        volatility_version=volatility_version,
+        connections=connections,
+        command_executed=command_string,
+        runtime_seconds=runtime_seconds,
+        invoked_at=invoked_at,
+    )
+
+    append_audit_entry(
+        case_dir=case_dir_path,
+        tool_name=_NETSCAN_TOOL_NAME,
+        evidence_id=evidence_id,
+        input_args={"evidence_id": evidence_id},
+        output=result,
+    )
+
+    return result
+
+
+__all__ = [
+    "translate_to_vm_path",
+    "vol_netscan",
+    "vol_pslist",
+    "vol_psscan",
+    "vol_pstree",
+]

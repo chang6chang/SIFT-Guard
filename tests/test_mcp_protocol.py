@@ -4,10 +4,10 @@ Spawns `server/main.py` as a subprocess via stdio, exercises the real MCP
 protocol the way Claude Code will, and verifies:
 
 (1) the tool surface exposes exactly the registered tools — currently
-    `register_evidence`, `vol_pslist`, `vol_psscan`, and `vol_pstree`.
-    Each tool's input schema is locked to its declared parameters only
-    (no `case_dir` leak); this is the architectural lock for CLAUDE.md
-    rule 3.
+    `register_evidence`, `vol_pslist`, `vol_psscan`, `vol_pstree`, and
+    `vol_netscan`. Each tool's input schema is locked to its declared
+    parameters only (no `case_dir` leak); this is the architectural lock
+    for CLAUDE.md rule 3.
 (2) human-readable warnings reach the LLM over the wire (IRREVERSIBLE
     on register_evidence, latency cost on every vol_* tool).
 (3) registration succeeds end-to-end and produces the expected on-disk
@@ -152,7 +152,7 @@ def _extract_record(call_result) -> dict | None:
 
 
 class TestToolSurface:
-    def test_four_tool_surface_is_locked(self, tmp_path: Path):
+    def test_five_tool_surface_is_locked(self, tmp_path: Path):
         # Surface lock: every new MCP tool added to server/main.py
         # forces an explicit update here. Adding a tool without
         # extending this set means the surface grew silently — which
@@ -164,9 +164,10 @@ class TestToolSurface:
             "vol_pslist",
             "vol_psscan",
             "vol_pstree",
+            "vol_netscan",
         }, (
             f"expected exactly register_evidence, vol_pslist, vol_psscan, "
-            f"vol_pstree; got {sorted(tool_names)}"
+            f"vol_pstree, vol_netscan; got {sorted(tool_names)}"
         )
 
     def test_register_evidence_parameters_are_locked_to_filepath(
@@ -312,6 +313,42 @@ class TestToolSurface:
             f"{tool.description!r}"
         )
 
+    def test_vol_netscan_parameters_are_locked_to_evidence_id(
+        self, tmp_path: Path
+    ):
+        # Symmetric to the other vol_* locks. Same architectural rule:
+        # no case_dir, no plugin_name, no path leak — only evidence_id.
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = _tool_by_name(listing, "vol_netscan")
+        schema = tool.inputSchema
+
+        assert schema.get("type") == "object"
+        properties = schema.get("properties", {})
+        assert set(properties.keys()) == {"evidence_id"}, (
+            "vol_netscan must accept only `evidence_id`; got "
+            f"{sorted(properties.keys())}. If `case_dir`, `plugin_name`, or "
+            "any path field shows up here, CLAUDE.md rule 3 is broken."
+        )
+        assert properties["evidence_id"].get("type") == "string"
+        assert "evidence_id" in schema.get("required", []), (
+            "evidence_id must be required, not optional"
+        )
+
+    def test_vol_netscan_description_carries_cost_warning(
+        self, tmp_path: Path
+    ):
+        # netscan is the slowest of the four vol_* tools (~9m on
+        # Rocba). The LLM must see the cost so it doesn't queue it
+        # reflexively after every other call.
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = _tool_by_name(listing, "vol_netscan")
+        assert tool.description, "vol_netscan must carry a description"
+        assert "5-12 minutes" in tool.description, (
+            "vol_netscan description must surface its latency cost — "
+            "the LLM uses this to decide whether to invoke. Found: "
+            f"{tool.description!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Full round-trip — call success, call error, recovery
@@ -422,4 +459,5 @@ class TestRoundTrip:
             "vol_pslist",
             "vol_psscan",
             "vol_pstree",
+            "vol_netscan",
         }

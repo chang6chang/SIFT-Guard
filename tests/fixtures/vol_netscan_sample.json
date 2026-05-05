@@ -1,0 +1,67 @@
+[
+    {
+        "Created": "2020-11-11T08:13:14+00:00",
+        "ForeignAddr": "0.0.0.0",
+        "ForeignPort": 0,
+        "LocalAddr": "0.0.0.0",
+        "LocalPort": 445,
+        "Offset": 201816072367632,
+        "Owner": "System",
+        "PID": 4,
+        "Proto": "TCPv4",
+        "State": "LISTENING",
+        "__children": []
+    },
+    {
+        "Created": "2020-11-12T06:06:19+00:00",
+        "ForeignAddr": "17.57.144.165",
+        "ForeignPort": 5223,
+        "LocalAddr": "192.168.1.5",
+        "LocalPort": 53810,
+        "Offset": 201816005716512,
+        "Owner": "APSDaemon.exe",
+        "PID": 13224,
+        "Proto": "TCPv4",
+        "State": "ESTABLISHED",
+        "__children": []
+    },
+    {
+        "Created": "2020-11-14T05:11:17+00:00",
+        "ForeignAddr": "*",
+        "ForeignPort": 0,
+        "LocalAddr": "127.0.0.1",
+        "LocalPort": 1900,
+        "Offset": 201816005824128,
+        "Owner": "svchost.exe",
+        "PID": 3412,
+        "Proto": "UDPv4",
+        "State": "",
+        "__children": []
+    },
+    {
+        "Created": "2020-11-11T08:13:14+00:00",
+        "ForeignAddr": "::",
+        "ForeignPort": 0,
+        "LocalAddr": "fe80::d18c:bb1:3264:8c8",
+        "LocalPort": 49664,
+        "Offset": 201816072367800,
+        "Owner": "lsass.exe",
+        "PID": 840,
+        "Proto": "TCPv6",
+        "State": "LISTENING",
+        "__children": []
+    },
+    {
+        "Created": null,
+        "ForeignAddr": "*",
+        "ForeignPort": 0,
+        "LocalAddr": "0.0.0.0",
+        "LocalPort": 5353,
+        "Offset": 201816005900000,
+        "Owner": null,
+        "PID": null,
+        "Proto": "UDPv4",
+        "State": "",
+        "__children": []
+    }
+]
