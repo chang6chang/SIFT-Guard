@@ -13,7 +13,7 @@ import html
 import json
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -194,9 +194,80 @@ class UntrustedString(BaseModel):
         )
 
 
+class ProcessRecord(BaseModel):
+    """One process row from a Volatility memory plugin (pslist/psscan/pstree).
+
+    `image_file_name` is the raw evidence-derived string. The
+    `<evidence>`-delimited UntrustedString wrap happens at the tool's
+    return boundary where the analyst sees the value, NOT here. Storing
+    the raw string in the audit chain lets a future audit-replay
+    recompute the wrap deterministically; if the schema wrapped at
+    construction time, audit verification would couple to the wrap
+    function's stability across releases.
+    """
+
+    pid: int = Field(ge=0)
+    ppid: int = Field(ge=0)
+    image_file_name: str
+    offset_v: int = Field(ge=0)
+    threads: int = Field(ge=0)
+    handles: int | None = Field(default=None, ge=0)
+    session_id: int | None = None
+    wow64: bool
+    create_time: datetime | None = None
+    exit_time: datetime | None = None
+
+    @field_validator("create_time", "exit_time")
+    @classmethod
+    def _validate_optional_utc(cls, v: datetime | None, info) -> datetime | None:
+        if v is None:
+            return v
+        return _enforce_utc(info.field_name, v)
+
+
+class PslistResult(BaseModel):
+    """Result envelope for the `windows.pslist.PsList` Volatility plugin.
+
+    Carries the rows plus everything needed to reproduce the run from the
+    audit log: the pinned plugin name, the Volatility version captured at
+    runtime, the full command string. Volatility plugin output formats
+    drift between releases — recording the version with each result is
+    what lets the audit chain be replayed years later against the same
+    binary.
+    """
+
+    evidence_id: str
+    plugin_name: Literal["windows.pslist.PsList"]
+    volatility_version: str = Field(min_length=1)
+    processes: list[ProcessRecord]
+    command_executed: str = Field(min_length=1)
+    runtime_seconds: float = Field(ge=0)
+    invoked_at: datetime
+
+    @field_validator("evidence_id")
+    @classmethod
+    def _validate_evidence_id(cls, v: str) -> str:
+        try:
+            parsed = UUID(v)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
+        if parsed.version != 4:
+            raise ValueError(
+                f"evidence_id must be UUID version 4, got version {parsed.version}"
+            )
+        return str(parsed)
+
+    @field_validator("invoked_at")
+    @classmethod
+    def _validate_invoked_at(cls, v: datetime) -> datetime:
+        return _enforce_utc("invoked_at", v)
+
+
 __all__ = [
     "ArtifactClass",
     "AuditLogEntry",
     "EvidenceRecord",
+    "ProcessRecord",
+    "PslistResult",
     "UntrustedString",
 ]

@@ -321,3 +321,25 @@ extended again to scan tool implementations for the pattern (e.g.
 flag any `raise FileNotFoundError(f"... {filepath}")` inside
 `server/tools/`), but the immediate enforcement is reviewer
 discipline.
+
+**Week 2 Day 1: Hash transcription correction.** The earlier
+conversational reference to `Rocba-Memory.raw`'s SHA-256 starting with
+`be33...` was a transcription error. Authoritative pre-registration
+hash:
+
+```
+eb33bdf63730858a805463d171245b233335dd6d89ed458bc681f7d282e10563
+```
+
+(full 64 chars), captured to `docs/rocba-pre-registration-hash.txt`
+by `sha256sum` on 2026-05-05.
+
+Process rule going forward: hashes are never retyped from chat or
+memory; they are sourced from on-disk files or the audit log. This
+will become important in the accuracy report when we discuss
+chain-of-custody discipline.
+
+**Week 2 Day 2: `ProcessRecord` and `PslistResult` schemas use
+`Literal[...]` for `plugin_name` to architecturally prevent
+cross-plugin result confusion.** Pattern continues for every
+Volatility wrapper in Weeks 3-4.
