@@ -1,0 +1,30 @@
+=== hostname ===
+siftworkstation
+=== uname -a ===
+Linux siftworkstation 6.8.0-110-generic #110-Ubuntu SMP PREEMPT_DYNAMIC Thu Mar 19 15:09:20 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+=== claude ===
+claude not found
+=== ~/.claude/ ===
+total 44
+drwxrwxr-x  8 sansforensics sansforensics 4096 May  5 20:49 .
+drwxr-x--- 15 sansforensics sansforensics 4096 May  5 20:49 ..
+-rw-rw-r--  1 sansforensics sansforensics 3506 May  5 20:49 CLAUDE.md
+drwxrwxr-x  2 sansforensics sansforensics 4096 May  5 20:49 analysis-scripts
+drwxrwxr-x  2 sansforensics sansforensics 4096 May  5 20:49 backups
+drwxrwxr-x  2 sansforensics sansforensics 4096 May  5 20:49 cache
+drwxrwxr-x  2 sansforensics sansforensics 4096 May  5 20:49 case-templates
+drwxrwxr-x  2 sansforensics sansforensics 4096 May  5 20:49 downloads
+-rw-rw-r--  1 sansforensics sansforensics 3132 May  5 20:49 settings.json
+-rw-rw-r--  1 sansforensics sansforensics  170 May  5 20:49 settings.local.json
+drwxrwxr-x  7 sansforensics sansforensics 4096 May  5 20:49 skills
+=== which forensic tools ===
+/usr/local/bin/vol
+/usr/bin/fls
+/usr/bin/log2timeline.py
+/usr/bin/mactime
+=== vol --version ===
+usage: vol [-h] [-c CONFIG] [--parallelism [{processes,threads,off}]]
+           [-e EXTEND] [-p PLUGIN_DIRS] [-s SYMBOL_DIRS] [-v] [-l LOG]
+           [-o OUTPUT_DIR] [-q] [-f FILE] [--write-config]
+=== PATH ===
+/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin

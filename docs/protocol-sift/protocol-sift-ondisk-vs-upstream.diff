@@ -1,0 +1,14 @@
+=== Protocol SIFT on-disk vs upstream HEAD diff ===
+Upstream HEAD: 40bed7a96bfd986ea048c3b2aeb9d788b2f3400c
+Date: 2026-05-05T21:08:36+00:00
+
+=== global/CLAUDE.md ===
+=== global/settings.json ===
+=== global/settings.local.json ===
+=== skills/memory-analysis/SKILL.md ===
+=== skills/plaso-timeline/SKILL.md ===
+=== skills/sleuthkit/SKILL.md ===
+=== skills/windows-artifacts/SKILL.md ===
+=== skills/yara-hunting/SKILL.md ===
+=== analysis-scripts/generate_pdf_report.py ===
+=== case-templates/CLAUDE.md ===

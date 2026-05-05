@@ -1,0 +1,2796 @@
+================================================================
+STEP 3 — ON-DISK STATE OF ~/.claude/ ON SIFT VM
+Captured: 2026-05-05T21:07:54+00:00
+Host: siftworkstation
+================================================================
+
+=== ls -la --time-style=full-iso ~/.claude/ ===
+total 44
+drwxrwxr-x  8 sansforensics sansforensics 4096 2026-05-05 20:49:27.538851377 +0000 .
+drwxr-x--- 16 sansforensics sansforensics 4096 2026-05-05 21:06:44.430795150 +0000 ..
+-rw-rw-r--  1 sansforensics sansforensics 3506 2026-05-05 20:49:27.479849923 +0000 CLAUDE.md
+drwxrwxr-x  2 sansforensics sansforensics 4096 2026-05-05 20:49:27.535851304 +0000 analysis-scripts
+drwxrwxr-x  2 sansforensics sansforensics 4096 2026-05-05 20:49:01.311188268 +0000 backups
+drwxrwxr-x  2 sansforensics sansforensics 4096 2026-05-05 20:49:01.450191872 +0000 cache
+drwxrwxr-x  2 sansforensics sansforensics 4096 2026-05-05 20:49:27.542851476 +0000 case-templates
+drwxrwxr-x  2 sansforensics sansforensics 4096 2026-05-05 20:49:26.769832417 +0000 downloads
+-rw-rw-r--  1 sansforensics sansforensics 3132 2026-05-05 20:49:27.487850120 +0000 settings.json
+-rw-rw-r--  1 sansforensics sansforensics  170 2026-05-05 20:49:27.491850219 +0000 settings.local.json
+drwxrwxr-x  7 sansforensics sansforensics 4096 2026-05-05 20:49:27.530851180 +0000 skills
+
+=== ls -la --time-style=full-iso ~/.claude/skills/ ===
+total 28
+drwxrwxr-x 7 sansforensics sansforensics 4096 2026-05-05 20:49:27.530851180 +0000 .
+drwxrwxr-x 8 sansforensics sansforensics 4096 2026-05-05 20:49:27.538851377 +0000 ..
+drwxrwxr-x 2 sansforensics sansforensics 4096 2026-05-05 20:49:27.495850318 +0000 memory-analysis
+drwxrwxr-x 2 sansforensics sansforensics 4096 2026-05-05 20:49:27.510850687 +0000 plaso-timeline
+drwxrwxr-x 2 sansforensics sansforensics 4096 2026-05-05 20:49:27.520850934 +0000 sleuthkit
+drwxrwxr-x 2 sansforensics sansforensics 4096 2026-05-05 20:49:27.527851106 +0000 windows-artifacts
+drwxrwxr-x 2 sansforensics sansforensics 4096 2026-05-05 20:49:27.531851205 +0000 yara-hunting
+
+=== stat top-level config files ===
+  File: /home/sansforensics/.claude/CLAUDE.md
+  Size: 3506      	Blocks: 8          IO Block: 4096   regular file
+Device: 252,0	Inode: 1601085     Links: 1
+Access: (0664/-rw-rw-r--)  Uid: ( 1000/sansforensics)   Gid: ( 1000/sansforensics)
+Access: 2026-05-05 20:49:27.479849923 +0000
+Modify: 2026-05-05 20:49:27.479849923 +0000
+Change: 2026-05-05 20:49:27.479849923 +0000
+ Birth: 2026-05-05 20:49:27.479849923 +0000
+  File: /home/sansforensics/.claude/settings.json
+  Size: 3132      	Blocks: 8          IO Block: 4096   regular file
+Device: 252,0	Inode: 1601086     Links: 1
+Access: (0664/-rw-rw-r--)  Uid: ( 1000/sansforensics)   Gid: ( 1000/sansforensics)
+Access: 2026-05-05 20:49:27.484850047 +0000
+Modify: 2026-05-05 20:49:27.487850120 +0000
+Change: 2026-05-05 20:49:27.487850120 +0000
+ Birth: 2026-05-05 20:49:27.484850047 +0000
+  File: /home/sansforensics/.claude/settings.local.json
+  Size: 170       	Blocks: 8          IO Block: 4096   regular file
+Device: 252,0	Inode: 1601087     Links: 1
+Access: (0664/-rw-rw-r--)  Uid: ( 1000/sansforensics)   Gid: ( 1000/sansforensics)
+Access: 2026-05-05 20:49:27.491850219 +0000
+Modify: 2026-05-05 20:49:27.491850219 +0000
+Change: 2026-05-05 20:49:27.491850219 +0000
+ Birth: 2026-05-05 20:49:27.491850219 +0000
+
+================================================================
+FILE: ~/.claude/CLAUDE.md
+================================================================
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## DFIR Orchestrator — SANS SIFT Workstation
+
+| Setting | Value |
+|---------|-------|
+| **Environment** | SANS SIFT Ubuntu Workstation (Ubuntu, x86-64) |
+| **Role** | Principal DFIR Orchestrator |
+| **Evidence Mode** | Strict read-only (chain of custody) |
+
+---
+
+## Operator Preferences
+
+- **NEVER ask questions during a task.** Run every workflow fully autonomously start-to-finish. No check-ins, no confirmations, no "shall I proceed?". Deliver final findings only. If blocked, pick the most reasonable path and note it in the output.
+
+---
+
+## Forensic Constraints
+
+- **No hallucinations** — Never guess, assume, or fabricate forensic artifacts, file contents, or system states.
+- **Deterministic execution** — Use court-vetted CLI tools to generate facts; ground all conclusions in raw tool output.
+- **Evidence integrity** — Never modify files in `/cases/`, `/mnt/`, `/media/`, or any `evidence/` directory.
+- **Output routing** — Write all scripts, CSVs, JSON, and reports to `./analysis/`, `./exports/`, or `./reports/`. Never write to `/` or evidence directories.
+- **Timestamps** — Always output in UTC.
+- **Verification** — Verify tool success after every run. On failure: read stderr → hypothesize → correct → retry.
+
+---
+
+## Installed Tool Paths
+
+| Tool | Invocation | Notes |
+|------|-----------|-------|
+| **Volatility 3** | `python3 /opt/volatility3-2.20.0/vol.py` | Do NOT use `/usr/local/bin/vol.py` — that is Vol2 |
+| **Memory Baseliner** | `python3 /opt/memory-baseliner/baseline.py` | |
+| **EZ Tools (root)** | `dotnet /opt/zimmermantools/<Tool>.dll` | Runtime only; no SDK |
+| **EZ Tools (subdir)** | `dotnet /opt/zimmermantools/<Subdir>/<Tool>.dll` | e.g. `EvtxeCmd/EvtxECmd.dll` |
+| **YARA** | `/usr/local/bin/yara` (v4.1.0) | |
+| **Sleuth Kit** | `fls`, `icat`, `ils`, `blkls`, `mactime`, `tsk_recover` | System PATH |
+| **EWF tools** | `ewfmount`, `ewfinfo`, `ewfverify` | System PATH |
+| **Plaso** | `log2timeline.py`, `psort.py`, `pinfo.py` | GIFT PPA v20240308 |
+| **bulk_extractor** | `bulk_extractor` (v2.0.3) | Defaults to 4 threads |
+| **photorec** | `sudo photorec` | File carving by signature |
+| **dotnet runtime** | `/usr/bin/dotnet` (v6.0.36) | Runtime only — `dotnet --version` will error |
+
+**Not available on this instance:** MemProcFS, VSCMount (Windows-only).
+
+### Shell Aliases (`.bash_aliases`)
+
+```bash
+vss_carver            # sudo python /opt/vss_carver/vss_carver.py
+vss_catalog_manipulator
+lr                    # getfattr -Rn ntfs.streams.list  (list NTFS ADS)
+workbook-update       # update FOR508 workbook
+```
+
+---
+
+## Tool Routing
+
+> Consult the relevant skill file before executing a forensic utility.
+
+| Domain | Skill File |
+|--------|-----------|
+| Case scope & metadata | `@./CLAUDE.md` (project working directory) |
+| Timeline generation (Plaso) | `@~/.claude/skills/plaso-timeline/SKILL.md` |
+| File system & carving (Sleuth Kit) | `@~/.claude/skills/sleuthkit/SKILL.md` |
+| Memory forensics (Volatility 3 / Memory Baseliner) | `@~/.claude/skills/memory-analysis/SKILL.md` |
+| Windows artifacts (EZ Tools / Event Logs / Registry) | `@~/.claude/skills/windows-artifacts/SKILL.md` |
+| Threat hunting & IOC sweeps (YARA / Velociraptor) | `@~/.claude/skills/yara-hunting/SKILL.md` |
+
+EZ Tools prefer native .NET over WINE. GUI tools (TimelineExplorer, RegistryExplorer) require WINE or the Windows analysis VM.
+
+================================================================
+FILE: ~/.claude/settings.json
+================================================================
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read",
+      "Write(./analysis/*)",
+      "Write(./reports/*)",
+      "Write(./exports/*)",
+
+      "Bash(log2timeline.py *)",
+      "Bash(psort.py *)",
+      "Bash(pinfo.py *)",
+      "Bash(image_export.py *)",
+      "Bash(mactime *)",
+
+      "Bash(fls *)",
+      "Bash(ils *)",
+      "Bash(icat *)",
+      "Bash(istat *)",
+      "Bash(ifind *)",
+      "Bash(ffind *)",
+      "Bash(fsstat *)",
+      "Bash(blkcat *)",
+      "Bash(blkls *)",
+      "Bash(blkstat *)",
+      "Bash(blkcalc *)",
+      "Bash(mmls *)",
+      "Bash(mmstat *)",
+      "Bash(mmcat *)",
+      "Bash(tsk_recover *)",
+      "Bash(sorter *)",
+      "Bash(sigfind *)",
+      "Bash(jls *)",
+      "Bash(jcat *)",
+      "Bash(hfind *)",
+
+      "Bash(ewfmount *)",
+      "Bash(vshadowmount *)",
+      "Bash(bdemount *)",
+      "Bash(xmount *)",
+      "Bash(imagemounter *)",
+      "Bash(mount_ewf.py *)",
+      "Bash(qemu-nbd *)",
+      "Bash(partprobe *)",
+      "Bash(mount *)",
+      "Bash(umount *)",
+      "Bash(losetup *)",
+
+      "Bash(volatility *)",
+      "Bash(vol.py *)",
+      "Bash(vol *)",
+      "Bash(rekall *)",
+
+      "Bash(dotnet *)",
+      "Bash(mftecmd *)",
+      "Bash(evtxecmd *)",
+      "Bash(recmd *)",
+      "Bash(pecmd *)",
+      "Bash(amcacheparser *)",
+      "Bash(appcompatcacheparser *)",
+      "Bash(jlecmd *)",
+      "Bash(lecmd *)",
+      "Bash(sqlecmd *)",
+      "Bash(srumecmd *)",
+      "Bash(vtecmd *)",
+      "Bash(rbcmd *)",
+      "Bash(bstrings *)",
+      "Bash(rip.pl *)",
+      "Bash(regripper *)",
+
+      "Bash(bulk_extractor *)",
+      "Bash(foremost *)",
+      "Bash(photorec *)",
+      "Bash(scalpel *)",
+      "Bash(strings *)",
+      "Bash(floss *)",
+      
+      "Bash(tshark *)",
+      "Bash(tcpdump *)",
+      "Bash(ngrep *)",
+      "Bash(tcpxtract *)",
+
+      "Bash(exiftool *)",
+      "Bash(yara *)",
+      "Bash(clamscan *)",
+      "Bash(hayabusa *)",
+
+      "Bash(md5sum *)",
+      "Bash(sha1sum *)",
+      "Bash(sha256sum *)",
+      "Bash(sha512sum *)",
+      "Bash(ssdeep *)",
+      "Bash(md5deep *)",
+
+      "Bash(echo *)",
+      "Bash(printf *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(grep *)",
+      "Bash(rg *)",
+      "Bash(find *)",
+      "Bash(file *)",
+      "Bash(stat *)",
+      "Bash(hexdump *)",
+      "Bash(xxd *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(less *)",
+      "Bash(awk *)",
+      "Bash(sed *)",
+      "Bash(sort *)",
+      "Bash(uniq *)",
+      "Bash(wc *)",
+
+      "Edit(./analysis/*)",
+      "Edit(./reports/*)",
+      "Edit(./exports/*)"
+    ],
+    "defaultMode": "acceptEdits",
+    "ask": [],
+    "deny": [
+      "Read(./secrets/**)",
+      "Read(./**/*.key)",
+      "Read(./**/*.pem)",
+      "Bash(rm -rf:*)",
+      "Bash(dd:*)",
+      "Bash(wget:*)",
+      "Bash(curl:*)",
+      "Bash(ssh:*)",
+      "WebFetch"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mkdir -p ./analysis/ && echo \"$(date -u): $CONVERSATION_SUMMARY\" >> ./analysis/forensic_audit.log"
+          }
+        ]
+      }
+    ]
+  }
+}
+
+================================================================
+FILE: ~/.claude/settings.local.json
+================================================================
+{
+  "permissions": {
+    "allow": [
+      "Bash(~/.local/bin/claude:*)",
+      "Bash(sudo apt:*)",
+      "Bash(apt-cache search:*)",
+      "Bash(psort.py:*)"
+    ]
+  }
+}
+
+================================================================
+FILE: /home/sansforensics/.claude/skills/memory-analysis//SKILL.md
+================================================================
+# Skill: Memory Forensics (Volatility 3 / Memory Baseliner)
+
+## Overview
+Use this skill for all memory image analysis on the SIFT workstation. Always run as root
+(`sudo su`) — some plugins require elevated privileges to resolve symbols.
+
+## Tools
+
+| Tool | Binary | Purpose |
+|------|--------|---------|
+| Volatility 3 | `/opt/volatility3-2.20.0/vol.py` | Process, network, registry, injection, and artifact extraction |
+| Memory Baseliner | `/opt/memory-baseliner/baseline.py` | Diff suspect image against clean baseline |
+
+> **CRITICAL:** `/usr/local/bin/vol.py` is **Volatility 2** (Python 2) — do NOT use it.
+> Always use the full path: `/opt/volatility3-2.20.0/vol.py`
+
+> **Symbol Downloads:** Volatility 3 downloads PDB symbol tables from Microsoft on first use
+> per OS version. Requires internet access unless symbols are already cached locally.
+> Test with `ping 8.8.8.8`. Use `--offline` to fail fast rather than hanging.
+
+---
+
+## Quick Setup (Recommended)
+
+```bash
+# Add alias to avoid typing full path every command
+alias vol="/opt/volatility3-2.20.0/vol.py"
+
+# Elevate once per session — required for some plugins
+sudo su
+
+# Create output dirs before starting
+mkdir -p ./analysis/memory ./exports/dumpfiles ./exports/malfind ./exports/memdump
+```
+
+**Output renderers** (use `-r <renderer>` flag):
+| Renderer | Description |
+|----------|-------------|
+| `quick` | Default: fast tab-separated output |
+| `pretty` | Human-readable table with column headers (use for pstree) |
+| `csv` | Comma-separated (pipe to file for spreadsheet analysis) |
+| `json` | JSON output (for scripted processing) |
+| `jsonl` | JSON Lines (one JSON object per line — stream-friendly) |
+| `none` | Suppress output (useful for dump-only runs) |
+
+---
+
+## Plugin Reference by Category
+
+### Process Enumeration
+
+| Plugin | Method | Notes |
+|--------|--------|-------|
+| `windows.pslist` | EPROCESS linked list walk | Fast; misses unlinked (hidden) processes |
+| `windows.psscan` | Pool tag scan (`Proc`) | **Finds hidden + exited processes** — use this |
+| `windows.pstree` | EPROCESS hierarchy | Parent-child relationships |
+| `windows.psdisptree` | Dispatcher objects | Alternative tree view |
+
+```bash
+# Full process enumeration — run both, compare results
+vol -f <image.img> windows.psscan > ./analysis/memory/psscan.txt
+vol -f <image.img> windows.pstree > ./analysis/memory/pstree.txt
+
+# Readable pstree (trim to first 11 columns)
+vol -f <image.img> -r pretty windows.pstree | cut -d '|' -f 1-11 > ./analysis/memory/pstree-cut.txt
+
+# Filter to a specific PID and its children
+vol -f <image.img> -r pretty windows.pstree --pid <PID> | cut -d '|' -f 1-11
+
+# Identify exited processes (ExitTime is not N/A)
+grep -v "N/A" ./analysis/memory/psscan.txt | grep -v "^Offset"
+
+# Processes present in psscan but NOT in pslist = hidden
+diff <(awk '{print $3}' ./analysis/memory/psscan.txt | sort) \
+     <(vol -f <image.img> windows.pslist | awk '{print $2}' | sort)
+```
+
+### Process Details
+
+```bash
+# Command lines — most revealing for attacker activity
+vol -f <image.img> windows.cmdline > ./analysis/memory/cmdline.txt
+vol -f <image.img> windows.cmdline --pid <PID>
+
+# Environment variables (reveals injected env, working directory)
+vol -f <image.img> windows.envars > ./analysis/memory/envars.txt
+vol -f <image.img> windows.envars --pid <PID>
+
+# Security identifiers / account context
+vol -f <image.img> windows.getsids --pid <PID>
+
+# Token privileges (look for SeDebugPrivilege, SeTcbPrivilege)
+vol -f <image.img> windows.privs --pid <PID>
+
+# Loaded DLLs (check for spoofed or injected DLLs)
+vol -f <image.img> windows.dlllist --pid <PID>
+
+# Open handles (files, registry keys, mutexes, events, threads)
+vol -f <image.img> windows.handles --pid <PID>
+vol -f <image.img> windows.handles --pid <PID> --object-type File
+vol -f <image.img> windows.handles --pid <PID> --object-type Mutant
+vol -f <image.img> windows.handles --pid <PID> --object-type Key
+```
+
+### Network Connections
+
+```bash
+# Walk TCP/IP structures (active connections at capture time)
+vol -f <image.img> windows.netstat  > ./analysis/memory/netstat.txt
+
+# Pool-tag scan (finds closed/historical connections too)
+vol -f <image.img> windows.netscan  > ./analysis/memory/netscan.txt
+
+# Extract all unique remote IPs for IOC pivot
+grep -v "^Offset\|127.0.0.1\|0.0.0.0" ./analysis/memory/netscan.txt | \
+  awk '{print $5}' | sort -u
+```
+
+`netscan` uses pool scanning and finds historical connections; `netstat` reflects current state.
+
+### Services
+
+```bash
+# Enumerate services (pool scan — finds hidden services)
+vol -f <image.img> windows.svcscan > ./analysis/memory/svcscan.txt
+
+# Cross-reference service SIDs against known list
+vol -f <image.img> windows.getservicesids
+
+# Look for services with unusual binary paths
+grep -i "\\\\temp\\|\\\\appdata\\|\\\\users\\" ./analysis/memory/svcscan.txt
+```
+
+### Registry
+
+```bash
+# List all loaded hive virtual addresses
+vol -f <image.img> windows.registry.hivelist > ./analysis/memory/hivelist.txt
+
+# Read a specific key
+vol -f <image.img> windows.registry.printkey \
+  --key "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+
+vol -f <image.img> windows.registry.printkey \
+  --key "SYSTEM\CurrentControlSet\Services"
+
+# UserAssist — GUI execution evidence (programs launched via Explorer)
+vol -f <image.img> windows.registry.userassist > ./analysis/memory/userassist.txt
+```
+
+### Code Injection & Anomalous Memory
+
+```bash
+# Primary injection scanner — finds RWX regions with PE headers or shellcode
+vol -f <image.img> windows.malfind > ./analysis/memory/malfind.txt
+vol -f <image.img> windows.malfind --dump --output-dir ./exports/malfind/
+
+# VAD (Virtual Address Descriptor) tree — inspect all memory regions for a process
+vol -f <image.img> windows.vadinfo --pid <PID> > ./analysis/memory/vadinfo_<PID>.txt
+
+# Look for MZ-headed regions not backed by a file (classic hollowing indicator)
+grep -A5 "MZ" ./analysis/memory/malfind.txt
+
+# YARA scan of process VAD regions directly from memory
+vol -f <image.img> windows.vadyarascan --yara-rules /path/to/rules.yar
+vol -f <image.img> windows.vadyarascan --pid <PID> --yara-rules /path/to/rules.yar
+
+# Kernel module enumeration
+vol -f <image.img> windows.modules   > ./analysis/memory/modules.txt    # linked list
+vol -f <image.img> windows.modscan   > ./analysis/memory/modscan.txt    # pool scan (hidden)
+
+# Modules in modscan but NOT in modules = hidden/rootkit driver
+```
+
+### File & Code Extraction
+
+```bash
+# List all files cached in memory (use for finding dropped malware)
+vol -f <image.img> windows.filescan > ./analysis/memory/filescan.txt
+
+# Dump a file by virtual offset (from filescan)
+vol -f <image.img> windows.dumpfiles \
+  --virtaddr <0xffffff...> \
+  --output-dir ./exports/dumpfiles/
+
+# Dump a process executable to disk
+vol -f <image.img> windows.pslist --dump --pid <PID>
+
+# Dump all mapped memory pages for a process
+vol -f <image.img> windows.memmap --dump --pid <PID> --output-dir ./exports/memdump/
+```
+
+### Strings Extraction from Process Memory
+
+```bash
+# Step 1: dump process memory
+vol -f <image.img> windows.memmap --dump --pid <PID> --output-dir ./exports/memdump/
+
+# Step 2: extract ASCII and Unicode strings (min 8 chars to reduce noise)
+strings -a -n 8  ./exports/memdump/pid.<PID>.dmp > ./analysis/memory/strings_<PID>_ascii.txt
+strings -a -el -n 8 ./exports/memdump/pid.<PID>.dmp > ./analysis/memory/strings_<PID>_unicode.txt
+
+# Step 3: hunt for IOC patterns
+grep -Ei "(https?://|ftp://|\\\\\\\\|cmd\.exe|powershell|regsvr|certutil)" \
+  ./analysis/memory/strings_<PID>_ascii.txt
+```
+
+### Timeline
+
+```bash
+# Generate timeline of all memory artifacts
+vol -f <image.img> timeliner --create-bodyfile > ./analysis/memory/mem_bodyfile.txt
+mactime -b ./analysis/memory/mem_bodyfile.txt -z UTC > ./analysis/memory/mem_timeline.txt
+```
+
+---
+
+## Memory Baseliner Workflow
+
+Compares a suspect memory image against a known-good JSON baseline to surface
+anomalous processes, drivers, and services without requiring a second clean image.
+
+```bash
+sudo su
+cd /path/to/case/
+
+# Process comparison (-proc)
+python3 /opt/memory-baseliner/baseline.py \
+  -proc \
+  -i <suspect.img> \
+  --loadbaseline \
+  --jsonbaseline <baseline.json> \
+  -o ./analysis/memory/proc_baseline.csv
+
+# Driver comparison (-drv) — critical for rootkit detection
+python3 /opt/memory-baseliner/baseline.py \
+  -drv \
+  -i <suspect.img> \
+  --loadbaseline \
+  --jsonbaseline <baseline.json> \
+  -o ./analysis/memory/drv_baseline.csv
+
+# Service comparison (-svc)
+python3 /opt/memory-baseliner/baseline.py \
+  -svc \
+  -i <suspect.img> \
+  --loadbaseline \
+  --jsonbaseline <baseline.json> \
+  -o ./analysis/memory/svc_baseline.csv
+
+# Convert pipe-delimited output to true CSV
+sed -i 's/|/,/g' ./analysis/memory/proc_baseline.csv
+sed -i 's/|/,/g' ./analysis/memory/drv_baseline.csv
+sed -i 's/|/,/g' ./analysis/memory/svc_baseline.csv
+```
+
+> **IMPORTANT:** `--loadbaseline` is a standalone boolean flag. `--jsonbaseline <path>` is the
+> separate argument that specifies the JSON file path. They must both be present when loading
+> an existing baseline.
+
+**Creating a new JSON baseline from a known-good image:**
+```bash
+python3 /opt/memory-baseliner/baseline.py \
+  -proc \
+  -i <clean-baseline.img> \
+  --savebaseline \
+  --jsonbaseline <output_baseline.json>
+```
+
+**Comparison mode flags (what attributes to diff):**
+| Flag | Description |
+|------|-------------|
+| `--imphash` | Compare import hashes of processes/DLLs |
+| `--owner` | Compare process owner (username/SID) |
+| `--cmdline` | Compare full command line of each process |
+| `--state` | Compare process state (running, exited) |
+
+**Stacking flags (show only items unique to the suspect image):**
+| Flag | Description |
+|------|-------------|
+| `-procstack` | Stack-rank non-baseline processes |
+| `-dllstack` | Stack-rank non-baseline DLLs |
+| `-drvstack` | Stack-rank non-baseline drivers |
+| `-svcstack` | Stack-rank non-baseline services |
+
+**All Baseliner flags:**
+| Flag | Description |
+|------|-------------|
+| `-proc` | Compare processes and loaded DLLs |
+| `-drv` | Compare kernel drivers (rootkit detection) |
+| `-svc` | Compare services |
+| `--loadbaseline` | Load mode (boolean — use with `--jsonbaseline`) |
+| `--jsonbaseline <file>` | Path to JSON baseline file (load or save) |
+| `--savebaseline` | Save new baseline from this image |
+| `--showknown` | Include baseline-matching items (verbose output) |
+| `-o <file>` | Output CSV path |
+
+---
+
+## Six-Step Analysis Methodology
+
+1. **Identify rogue processes** — `windows.psscan` (pool scan finds hidden/exited); compare against `windows.pslist`
+2. **Analyze parent-child relationships** — `windows.pstree`; look for LOLBins spawned from unexpected parents
+3. **Examine process command lines & environment** — `windows.cmdline`, `windows.envars`, `windows.privs`
+4. **Review network connections** — `windows.netstat` + `windows.netscan`; extract unique external IPs
+5. **Look for code injection** — `windows.malfind`, `windows.vadinfo`, `windows.vadyarascan`; dump and triage hits
+6. **Baseline comparison** — Memory Baseliner `-proc`, `-drv`, `-svc`; pivot any non-baseline items
+
+---
+
+## Process Anomaly Indicators
+
+| Anomaly | What to Look For |
+|---------|-----------------|
+| Wrong binary path | `svchost.exe` not in `System32\`; `lsass.exe` anywhere but `System32\` |
+| Wrong parent | `svchost.exe` parent ≠ `services.exe`; `lsass.exe` parent ≠ `wininit.exe` |
+| `taskhostw.exe` sibling | Process launched as a scheduled task |
+| `conhost.exe` child | Console I/O attached — hands-on-keyboard attacker |
+| LOLBin with suspicious args | `cmd.exe`, `powershell.exe`, `net.exe`, `wmic.exe`, `mshta.exe`, `certutil.exe` |
+| Orphaned process | PPID not present in process list — possible hollowing or injection |
+| Very short-lived processes | Exited in < 5 seconds — atomic actions or AV termination |
+| Missing image path | No on-disk backing file (DLL injection / reflective loading) |
+| Unsigned kernel modules | In `modscan` but absent from `modules`, or no valid signature |
+| High privilege context | `SeDebugPrivilege` or `SeTcbPrivilege` in unexpected process |
+| RWX VAD without file backing | Classic shellcode injection indicator from `malfind` |
+
+---
+
+## Error Handling
+
+**Symbol download failure / hanging:**
+```bash
+# Force offline mode (fail fast on missing symbols)
+vol --offline -f <image.img> windows.pslist
+
+# Manually pre-download symbols for offline environments
+# ISF files: https://downloads.volatilityfoundation.org/volatility3/symbols/
+# Place in: /opt/volatility3-2.20.0/volatility3/symbols/windows/
+```
+
+**Plugin error / empty output:**
+```bash
+# Redirect both stdout and stderr for full diagnostic output
+vol -f <image.img> windows.pslist 2>&1 | tee ./analysis/memory/plugin_errors.txt
+
+# Check image format is recognized
+file <image.img>
+vol -f <image.img> windows.info
+```
+
+**Permission errors:**
+```bash
+# Ensure root for full plugin access
+sudo /opt/volatility3-2.20.0/vol.py -f <image.img> windows.psscan
+```
+
+---
+
+## Output Paths
+
+| Output | Path |
+|--------|------|
+| Volatility text output | `./analysis/memory/` |
+| Dumped files from filescan | `./exports/dumpfiles/` |
+| Malfind dumps | `./exports/malfind/` |
+| Process memory dumps | `./exports/memdump/` |
+| Baseline comparison CSVs | `./analysis/memory/proc_baseline.csv` etc. |
+| Memory bodyfile/timeline | `./analysis/memory/mem_timeline.txt` |
+
+---
+
+## Notes
+
+- Always run `windows.psscan` AND `windows.pslist` — discrepancies reveal hidden processes
+- `windows.malfind` produces false positives (JIT-compiled code, .NET CLR) — triage hits manually
+- `windows.netscan` may show connections from before image capture time — correlate with disk timeline
+- `windows.svcscan` surfaces services configured but not yet loaded, and deleted services still in memory
+- Volatility 3 plugins are `windows.X` format (not `windows.X.X` as in Vol2)
+
+================================================================
+FILE: /home/sansforensics/.claude/skills/plaso-timeline//SKILL.md
+================================================================
+# Skill: Timeline Generation (Plaso / log2timeline)
+
+> **Installation:** Plaso 20240308 installed from the GIFT PPA (`ppa:gift/stable`).
+> Packages: `python3-plaso`, `plaso-tools`, `python3-pytsk3`.
+> The standard Ubuntu jammy universe package conflicts with SIFT's libyal libraries —
+> always install from GIFT PPA:
+> ```bash
+> sudo add-apt-repository ppa:gift/stable
+> sudo apt install python3-plaso plaso-tools python3-pytsk3
+> ```
+
+## Overview
+Use this skill for all super-timeline creation, filtering, and analysis tasks using the
+Plaso suite on the SANS SIFT workstation. Plaso parses hundreds of artifact types from
+disk images, mounted filesystems, and individual files into a unified timeline.
+
+## Tools
+
+| Tool | Purpose |
+|------|---------|
+| `log2timeline.py` | Parse evidence sources into a Plaso storage file (.plaso) |
+| `psort.py` | Filter, sort, and export Plaso storage to CSV/JSON/other formats |
+| `pinfo.py` | Inspect Plaso storage file metadata and parser hit statistics |
+| `psteal.py` | One-step: parse + export without creating an intermediate .plaso file |
+| `image_export.py` | Extract specific files from disk images for targeted analysis |
+
+---
+
+## Workflow
+
+### 1. Verify Evidence (Read-Only)
+
+```bash
+# Inspect an existing .plaso file
+pinfo.py /path/to/existing.plaso
+
+# Confirm image type before ingestion
+file /mnt/ewf/ewf1
+```
+
+### 2a. Create Super-Timeline (Full Ingest)
+
+```bash
+log2timeline.py \
+  --storage-file ./analysis/<CASE_ID>.plaso \
+  --parsers win10 \
+  --hashers md5,sha256 \
+  --timezone UTC \
+  /mnt/ewf/ewf1
+
+# With Volume Shadow Copy (VSS) support — enumerates all shadow copies
+log2timeline.py \
+  --storage-file ./analysis/<CASE_ID>.plaso \
+  --parsers win10 \
+  --hashers md5 \
+  --vss-stores all \
+  --timezone UTC \
+  /mnt/ewf/ewf1
+```
+
+**Common parser presets:**
+| Parser Set | Use For |
+|------------|---------|
+| `win10` | Windows 10/11 / Server 2016–2022 (**preferred for modern Windows**) |
+| `win7` | Windows 7/8/8.1 — may work for Win10 but `win10` is more complete |
+| `win_gen` | Generic Windows artifacts (lighter than win10) |
+| `linux` | Linux system artifacts |
+| `webhist` | Browser history (all browsers) |
+| `android` | Android device artifacts |
+
+**To list all available parsers:**
+```bash
+log2timeline.py --parsers list
+```
+
+### 2b. One-Step Ingest + Export (psteal — No .plaso File)
+
+Use when you need a quick CSV and don't need the persistent .plaso storage:
+
+```bash
+psteal.py \
+  --source /mnt/ewf/ewf1 \
+  --output-format l2tcsv \
+  --write ./exports/<CASE_ID>_timeline.csv \
+  --parsers win10 \
+  --timezone UTC
+```
+
+### 2c. Targeted Ingest (Faster — Specific Paths or Artifact Types)
+
+Parse only specific directories or artifact types to reduce processing time:
+
+```bash
+# Parse only a mounted filesystem path (not raw image)
+log2timeline.py \
+  --storage-file ./analysis/<CASE_ID>.plaso \
+  --parsers win10 \
+  --timezone UTC \
+  /mnt/windows_mount/Windows/
+
+# Parse only event logs (winevtx parser)
+log2timeline.py \
+  --storage-file ./analysis/<CASE_ID>_evtx.plaso \
+  --parsers winevtx \
+  --timezone UTC \
+  ./exports/evtx/
+
+# Parse only registry hives
+log2timeline.py \
+  --storage-file ./analysis/<CASE_ID>_reg.plaso \
+  --parsers winreg \
+  --timezone UTC \
+  ./exports/registry/
+
+# Parse a bodyfile output from fls (filesystem MAC times)
+log2timeline.py \
+  --storage-file ./analysis/<CASE_ID>_fls.plaso \
+  --parsers mactime \
+  --timezone UTC \
+  ./analysis/bodyfile.txt
+```
+
+### 3. Inspect Storage
+
+```bash
+# Show parser statistics, source info, and event count
+pinfo.py ./analysis/<CASE_ID>.plaso
+
+# Verbose — show all parsers and their individual event counts
+pinfo.py -v ./analysis/<CASE_ID>.plaso
+```
+
+Always run `pinfo.py` after `log2timeline.py` to confirm parser hit counts.
+Zero hits from expected parsers indicates wrong parser set or a mount problem.
+
+### 4. Filter & Export
+
+```bash
+# Export all events to CSV (l2tcsv — compatible with Timeline Explorer)
+psort.py -o l2tcsv \
+  -w ./exports/<CASE_ID>_timeline.csv \
+  ./analysis/<CASE_ID>.plaso
+
+# Export to dynamic CSV (more columns, better for script-based pivoting)
+psort.py -o dynamic \
+  -w ./exports/<CASE_ID>_dynamic.csv \
+  ./analysis/<CASE_ID>.plaso
+
+# Export to JSON (for scripted processing)
+psort.py -o json \
+  -w ./exports/<CASE_ID>_timeline.json \
+  ./analysis/<CASE_ID>.plaso
+
+# Filter by date/time range (UTC)
+psort.py -o l2tcsv \
+  -w ./exports/<CASE_ID>_filtered.csv \
+  ./analysis/<CASE_ID>.plaso \
+  "date > '2023-01-01 00:00:00' AND date < '2023-02-01 00:00:00'"
+
+# Filter by keyword in the message/description field
+psort.py -o l2tcsv \
+  -w ./exports/<CASE_ID>_powershell.csv \
+  ./analysis/<CASE_ID>.plaso \
+  "message contains 'powershell'"
+
+# Combined filter: time range AND keyword
+psort.py -o l2tcsv \
+  -w ./exports/<CASE_ID>_combined.csv \
+  ./analysis/<CASE_ID>.plaso \
+  "date > '2023-01-24 00:00:00' AND date < '2023-01-26 00:00:00' AND message contains 'cmd.exe'"
+
+# Filter by parser/data source type
+psort.py -o l2tcsv \
+  -w ./exports/<CASE_ID>_evtx.csv \
+  ./analysis/<CASE_ID>.plaso \
+  "parser contains 'winevtx'"
+
+# Quick pivot: events within 5 minutes of a known timestamp
+psort.py -o l2tcsv \
+  -w ./exports/<CASE_ID>_slice.csv \
+  --slice '2023-01-25 14:52:00' \
+  ./analysis/<CASE_ID>.plaso
+```
+
+### 5. Merging Multiple .plaso Files
+
+When you've run separate ingest jobs (e.g., disk + evtx directory + memory bodyfile):
+
+```bash
+psort.py \
+  -o l2tcsv \
+  -w ./exports/<CASE_ID>_merged.csv \
+  ./analysis/<CASE_ID>_disk.plaso \
+  ./analysis/<CASE_ID>_evtx.plaso \
+  ./analysis/<CASE_ID>_fls.plaso
+```
+
+`psort.py` accepts multiple `.plaso` files and outputs them in a single chronological export.
+
+---
+
+## Extract Files from Image (image_export.py)
+
+Extract specific files from a disk image without mounting it:
+
+```bash
+# Export files matching a name pattern
+image_export.py \
+  --write ./exports/files/ \
+  --name "*.evtx" \
+  /mnt/ewf/ewf1
+
+# Export files by extension
+image_export.py \
+  --write ./exports/files/ \
+  --extension "pf,lnk" \
+  /mnt/ewf/ewf1
+
+# Export files using a filter file (one path pattern per line)
+# Example filter.txt contents:
+#   /Windows/System32/winevt/Logs/
+#   /Windows/Prefetch/
+#   /Users/*/AppData/Local/Microsoft/Windows/UsrClass.dat
+image_export.py \
+  --write ./exports/files/ \
+  --filter /path/to/filter.txt \
+  /mnt/ewf/ewf1
+```
+
+---
+
+## Key Flags Reference
+
+**log2timeline.py:**
+| Flag | Description |
+|------|-------------|
+| `--storage-file <file>` | Output .plaso storage file path |
+| `--parsers <set>` | Parser preset or comma-separated list |
+| `--hashers md5,sha256` | Hash all processed files |
+| `--timezone UTC` | Always use UTC |
+| `--vss-stores all` | Process all Volume Shadow Copies |
+| `--vss-stores 1,2` | Process specific VSS store numbers |
+| `--single-process` | Debug mode — slower, better error messages |
+| `-q` | Quiet mode (suppress progress bar) |
+| `--worker-memory-limit N` | Limit per-worker RAM in MB (default: 3072) |
+
+**psort.py:**
+| Flag | Description |
+|------|-------------|
+| `-o <format>` | Output format: `l2tcsv`, `dynamic`, `json` |
+| `-w <file>` | Write output to file |
+| `--slice <datetime>` | Events within 5 min of this timestamp (quick pivot) |
+| `-z UTC` | Force UTC output timezone |
+
+---
+
+## Filtering in Timeline Explorer (GUI)
+
+After exporting to CSV, open in Timeline Explorer (`wine` or Windows VM):
+
+```bash
+wine /opt/zimmermantools/TimelineExplorer/TimelineExplorer.exe
+```
+
+Key filtering strategy in Timeline Explorer:
+- **Source** column — filter to artifact type (EVT, FILE, REG, WEBHIST, etc.)
+- **Type** column — narrow to event sub-type (e.g., `Last Written Time`)
+- **Message** column — primary search target; use Ctrl+F for keyword search
+- **Tag** column — mark events of interest; export tagged-only subset
+
+---
+
+## Output Paths
+
+| Output | Path |
+|--------|------|
+| Plaso storage | `./analysis/<CASE_ID>.plaso` |
+| CSV timelines | `./exports/<CASE_ID>_timeline.csv` |
+| Filtered CSVs | `./exports/<CASE_ID>_filtered.csv` |
+| Extracted files | `./exports/files/` |
+
+---
+
+## Notes
+
+- `win10` parser preset is the correct choice for Windows 10/11 and Windows Server 2016+
+- `win7` parser still works on modern Windows images but may miss newer artifact types
+- `--vss-stores all` is essential for intrusion cases — attackers often delete files VSS preserves
+- NEVER write .plaso or CSV output to `/mnt/` or `/media/` — always use `./analysis/` or `./exports/`
+- `pinfo.py` after ingest is mandatory — zero parser hits means configuration error, not a clean system
+- Large images (>100 GB) can take hours; use targeted `--parsers` or path-scoped ingest to reduce time
+- `psort.py` accepts multiple .plaso files — merge disk + memory bodyfile + log timelines into one export
+- `--slice` in psort is invaluable for quick pivots around a known event timestamp
+
+================================================================
+FILE: /home/sansforensics/.claude/skills/sleuthkit//SKILL.md
+================================================================
+# Skill: File System & Carving (The Sleuth Kit / EWF Tools)
+
+## Overview
+Use this skill for disk image analysis, filesystem navigation, file extraction, and
+file carving on the SIFT workstation. Evidence images are commonly in E01 (Expert Witness
+Format). Always mount read-only to preserve evidence integrity.
+
+---
+
+## Tool Reference
+
+| Tool | Purpose |
+|------|---------|
+| `ewfinfo` | Display E01 image metadata and embedded hash values |
+| `ewfverify` | Verify E01 image integrity against stored hashes |
+| `ewfmount` | Mount E01/EWF images as a raw disk device |
+| `img_stat` | Display image format and sector size |
+| `mmls` | Display partition table (MBR and GPT) |
+| `fsstat` | Filesystem metadata (cluster size, MFT location, etc.) |
+| `fls` | List files and directories (includes deleted entries) |
+| `icat` | Extract file content by inode/MFT number |
+| `istat` | Display inode metadata (MAC times, size, allocated blocks) |
+| `ffind` | Find filename for an inode |
+| `ils` | List inodes (including orphan/deleted) |
+| `blkls` | Extract unallocated disk blocks (for carving) |
+| `tsk_recover` | Bulk extract all allocated and/or unallocated files |
+| `mactime` | Generate timeline from bodyfile |
+| `blkcat` | Extract raw data unit content |
+| `bulk_extractor` | Carve email addresses, URLs, domains, credit cards, etc. |
+| `photorec` | File carving by file signature |
+
+---
+
+## Workflow
+
+### 1. Verify the Image
+
+```bash
+# Display E01 metadata (acquisition hash, timestamps, notes)
+ewfinfo /cases/<casename>/<image>.E01
+
+# Verify integrity — compare computed vs stored hash
+ewfverify /cases/<casename>/<image>.E01
+```
+
+Record the MD5/SHA1 from `ewfinfo` output in your case notes. `ewfverify` must complete
+without errors before any analysis proceeds.
+
+### 2. Mount E01 Image (Read-Only)
+
+```bash
+# Create mount points
+sudo mkdir -p /mnt/ewf /mnt/windows_mount
+
+# Mount the E01 via ewfmount (exposes as /mnt/ewf/ewf1)
+# For multi-segment images (E01, E02, ... or .e01, .e02, ...), point to the first segment only
+sudo ewfmount /cases/<casename>/<image>.E01 /mnt/ewf/
+
+# Confirm the raw device is present
+ls /mnt/ewf/
+# Expected: ewf1
+```
+
+**Multi-segment E01:** `ewfmount` automatically detects and joins all segments when you
+specify the first segment. No glob or special syntax needed.
+
+### 3. Check Sector Size
+
+```bash
+# Default is 512 bytes; some modern drives use 4096 (4K) sector size
+img_stat /mnt/ewf/ewf1
+
+# Look for "Sector Size" in output — use this value in offset calculations
+# If 4096: OFFSET = Start_sector * 4096
+```
+
+### 4. Inspect Partition Table
+
+```bash
+sudo mmls /mnt/ewf/ewf1
+# Note the Start sector and sector size for the target partition (usually the largest NTFS)
+```
+
+Example output (512-byte sectors):
+```
+     Slot    Start        End          Length       Description
+00:  Meta    0000000000   0000000000   0000000001   Primary Table (#0)
+01:  -----   0000000000   0000002047   0000002048   Unallocated
+02:  000:00  0000002048   0000534527   0000532480   NTFS / exFAT (0x07)
+03:  000:01  0000534528   ...          ...          Recovery
+```
+
+**GPT disks:** `mmls` handles GPT automatically — look for partition type GUIDs.
+
+### 5. Mount Filesystem (Read-Only)
+
+```bash
+# Byte offset = Start_sector * sector_size (usually 512)
+OFFSET=$(( 2048 * 512 ))   # adjust sector start and size from mmls output
+
+sudo mount -o ro,loop,offset=${OFFSET} /mnt/ewf/ewf1 /mnt/windows_mount
+
+# Verify
+ls /mnt/windows_mount/
+```
+
+**If mount fails (filesystem dirty / hibernation):**
+```bash
+# Add norecovery for NTFS (no journal replay — preserves evidence state)
+sudo mount -o ro,loop,norecovery,offset=${OFFSET} /mnt/ewf/ewf1 /mnt/windows_mount
+```
+
+### 6. Filesystem Metadata
+
+```bash
+# Filesystem statistics (NTFS version, cluster size, MFT offset, volume ID)
+sudo fsstat /mnt/ewf/ewf1
+
+# With partition offset (if fsstat is run against the raw image directly)
+sudo fsstat -o 2048 /mnt/ewf/ewf1
+```
+
+### 7. Filesystem Navigation with TSK
+
+```bash
+# List all files recursively (includes deleted entries — marked with *)
+sudo fls -r -p /mnt/ewf/ewf1 > ./analysis/fls_output.txt
+
+# List with MAC times in bodyfile format (for timeline creation)
+sudo fls -r -m / /mnt/ewf/ewf1 > ./analysis/bodyfile.txt
+
+# List a specific directory by inode
+sudo fls /mnt/ewf/ewf1 <inode_number>
+
+# List root directory (inode 5 on NTFS; inode 2 on ext)
+sudo fls /mnt/ewf/ewf1 5
+
+# Show only deleted entries
+sudo fls -r -p /mnt/ewf/ewf1 | grep "^\*"
+
+# With partition offset (bypass filesystem mount)
+sudo fls -r -o 2048 /mnt/ewf/ewf1
+```
+
+**fls flags:**
+| Flag | Description |
+|------|-------------|
+| `-r` | Recursive |
+| `-p` | Full path (vs relative) |
+| `-m /` | Bodyfile format (prefix `/` = mount point) |
+| `-o <sectors>` | Partition offset in sectors |
+| `-f <type>` | Force filesystem type (`ntfs`, `fat32`, `ext4`) |
+| `-l` | Long format (include all timestamps) |
+| `-d` | Show only deleted entries |
+| `-D` | Show only directories |
+| `-F` | Show only files (non-dirs) |
+| `-h` | Hash file contents (MD5, for use with mactime) |
+| `-z ZONE` | Display timestamps in specified timezone (e.g., `UTC`) |
+
+### 8. Extract Files by Inode
+
+```bash
+# Get inode metadata (MAC times, allocated blocks, file size)
+sudo istat /mnt/ewf/ewf1 <inode_number>
+
+# Extract file content to local path
+sudo icat /mnt/ewf/ewf1 <inode_number> > ./exports/files/<filename>
+
+# Extract a deleted file (recover from unallocated blocks)
+sudo icat -r /mnt/ewf/ewf1 <inode_number> > ./exports/files/<filename>
+
+# Extract file slack space (data after EOF in last cluster)
+sudo icat -s /mnt/ewf/ewf1 <inode_number> > ./exports/files/<filename>_slack
+
+# Find filename for a known inode
+sudo ffind /mnt/ewf/ewf1 <inode_number>
+
+# With partition offset
+sudo icat -o 2048 /mnt/ewf/ewf1 <inode_number> > ./exports/files/<filename>
+```
+
+### 9. Inode and Block-Level Analysis
+
+```bash
+# List all inodes (orphan entries = deleted with no directory entry)
+sudo ils /mnt/ewf/ewf1 > ./analysis/ils_output.txt
+
+# List only orphan (unlinked) inodes — deleted files with no directory entry
+sudo ils -p /mnt/ewf/ewf1 > ./analysis/ils_orphan.txt
+
+# List all inodes (allocated + unallocated)
+sudo ils -e /mnt/ewf/ewf1 > ./analysis/ils_all.txt
+
+# List only allocated inodes
+sudo ils -a /mnt/ewf/ewf1 > ./analysis/ils_allocated.txt
+
+# List only unallocated inodes
+sudo ils -A /mnt/ewf/ewf1 > ./analysis/ils_unallocated.txt
+
+# Mactime bodyfile format (combine with fls bodyfile for timeline)
+sudo ils -m /mnt/ewf/ewf1 > ./analysis/ils_bodyfile.txt
+
+# Extract raw unallocated blocks (for carving on tight storage budgets)
+sudo blkls /mnt/ewf/ewf1 > ./analysis/unallocated.raw
+# or targeted:
+sudo blkls -a /mnt/ewf/ewf1 > ./analysis/allocated.raw     # allocated blocks only
+sudo blkls -A /mnt/ewf/ewf1 > ./analysis/unallocated.raw   # unallocated blocks only
+sudo blkls -s /mnt/ewf/ewf1 > ./analysis/slack.raw         # file slack space only
+sudo blkls -e /mnt/ewf/ewf1 > ./analysis/every.raw         # every block (all types)
+```
+
+### 10. Bulk File Recovery
+
+```bash
+# Recover all allocated files, preserving directory structure (default)
+sudo tsk_recover /mnt/ewf/ewf1 ./exports/tsk_recover/
+
+# Recover allocated files only (explicit)
+sudo tsk_recover -a /mnt/ewf/ewf1 ./exports/tsk_recover_alloc/
+
+# Recover ALL files including unallocated/deleted
+sudo tsk_recover -e /mnt/ewf/ewf1 ./exports/tsk_recover_all/
+
+# Recover from a specific directory inode only
+sudo tsk_recover -d <dir_inode> /mnt/ewf/ewf1 ./exports/tsk_recover_subdir/
+```
+
+### 11. Generate Filesystem Timeline
+
+```bash
+# Step 1: Create bodyfile
+sudo fls -r -m / /mnt/ewf/ewf1 > ./analysis/bodyfile.txt
+
+# Step 2: Convert to sorted timeline (UTC, default tab-separated)
+mactime -b ./analysis/bodyfile.txt -z UTC > ./exports/fs_timeline.txt
+
+# Step 2 (alt): CSV output (easier to open in Timeline Explorer)
+mactime -b ./analysis/bodyfile.txt -z UTC -d > ./exports/fs_timeline.csv
+
+# Step 2 (alt): ISO 8601 timestamps (sortable, unambiguous)
+mactime -b ./analysis/bodyfile.txt -z UTC -y > ./exports/fs_timeline_iso.txt
+
+# Step 3 (optional): Filter by date range
+mactime -b ./analysis/bodyfile.txt -z UTC -d 2023-01-01 2023-12-31 > ./exports/fs_timeline_filtered.txt
+
+# Step 4 (optional): Generate hourly/daily index for large timelines
+mactime -b ./analysis/bodyfile.txt -z UTC -i hour ./analysis/timeline_index.txt > ./exports/fs_timeline.txt
+
+# Step 5 (optional): Export as bodyfile for use with log2timeline
+# The bodyfile.txt IS the output — pass directly to log2timeline.py as a source
+```
+
+**mactime flags:**
+| Flag | Description |
+|------|-------------|
+| `-b <file>` | Input bodyfile |
+| `-z ZONE` | Timezone (always use `UTC`) |
+| `-d` | CSV output (comma-separated, easier for spreadsheet tools) |
+| `-y` | ISO 8601 date format (YYYY-MM-DD) instead of US format |
+| `-h` | Add session header with metadata and column names |
+| `-i [day\|hour] <file>` | Write hourly/daily index file for navigation |
+
+### 12. Targeted Artifact Extraction
+
+```bash
+# Windows event logs
+sudo find /mnt/windows_mount/Windows/System32/winevt/Logs/ -name "*.evtx" \
+  -exec cp {} ./exports/evtx/ \;
+
+# Registry hives
+for hive in SYSTEM SOFTWARE SECURITY SAM; do
+  sudo cp /mnt/windows_mount/Windows/System32/config/$hive ./exports/registry/
+done
+
+# User NTUSER.DAT hives (all users)
+sudo find /mnt/windows_mount/Users/ -name "NTUSER.DAT" \
+  -exec cp --parents {} ./exports/registry/ \;
+
+# UsrClass.dat (shellbags, file associations — in each user's Local profile)
+sudo find /mnt/windows_mount/Users/ -name "UsrClass.dat" \
+  -exec cp --parents {} ./exports/registry/ \;
+
+# Prefetch files
+sudo mkdir -p ./exports/prefetch/
+sudo cp -r /mnt/windows_mount/Windows/Prefetch/ ./exports/prefetch/
+
+# MFT (inode 0 on NTFS)
+sudo icat /mnt/ewf/ewf1 0 > ./exports/mft/\$MFT
+
+# UsnJrnl (inode 11 on NTFS) — $J data stream contains the change journal
+sudo icat /mnt/ewf/ewf1 11-128-4 > ./exports/mft/\$J 2>/dev/null || \
+sudo icat /mnt/ewf/ewf1 11 > ./exports/mft/\$J
+
+# Amcache
+sudo cp /mnt/windows_mount/Windows/AppCompat/Programs/Amcache.hve ./exports/registry/
+
+# SRUM database
+sudo mkdir -p ./exports/srum/
+sudo cp /mnt/windows_mount/Windows/System32/sru/SRUDB.dat ./exports/srum/
+
+# Browser profiles (Chrome/Edge)
+sudo find /mnt/windows_mount/Users/ \
+  -path "*/Google/Chrome/User Data/Default/History" \
+  -exec cp --parents {} ./exports/browser/ \;
+sudo find /mnt/windows_mount/Users/ \
+  -path "*/Microsoft/Edge/User Data/Default/History" \
+  -exec cp --parents {} ./exports/browser/ \;
+
+# Recycle Bin
+sudo cp -r "/mnt/windows_mount/\$Recycle.Bin/" ./exports/recyclebin/
+
+# Scheduled tasks (XML definitions)
+sudo cp -r /mnt/windows_mount/Windows/System32/Tasks/ ./exports/tasks/
+
+# PowerShell transcript logs (if enabled)
+sudo find /mnt/windows_mount/Users/ -name "PowerShell_transcript*.txt" \
+  -exec cp --parents {} ./exports/pslogs/ \;
+```
+
+---
+
+## File Carving
+
+### bulk_extractor
+
+```bash
+# Full carve from raw image (default: 4 threads in v2.0+)
+sudo bulk_extractor -o ./exports/carved/ /mnt/ewf/ewf1
+
+# Targeted feature types only (faster for specific IOC hunting)
+sudo bulk_extractor -o ./exports/carved/ -e email -e url -e domain /mnt/ewf/ewf1
+
+# Increase thread count for speed on multi-core SIFT
+sudo bulk_extractor -j 8 -o ./exports/carved/ /mnt/ewf/ewf1
+
+# Carve from unallocated space only
+sudo blkls -u /mnt/ewf/ewf1 > /tmp/unalloc.raw
+sudo bulk_extractor -o ./exports/carved_unalloc/ /tmp/unalloc.raw
+```
+
+Output: feature files for email addresses, URLs, domains, credit cards, BTC addresses,
+telephone numbers, and more — each with byte offset back to image.
+
+### PhotoRec (Signature-Based File Recovery)
+
+```bash
+sudo photorec /mnt/ewf/ewf1
+# Interactive: select partition → file types → output directory
+# Use ./exports/photorec/ as output directory
+```
+
+---
+
+## Hash Verification and Known-File Filtering
+
+```bash
+# Compute MD5 hash of an extracted file
+md5sum ./exports/files/<filename>
+
+# Generate MD5 hashes of all extracted files for case documentation
+find ./exports/files/ -type f -exec md5sum {} \; > ./exports/files/md5_manifest.txt
+
+# Filter against NSRL (known-good software) with hashdeep
+# (hashdeep must be installed: apt install hashdeep)
+hashdeep -r /mnt/windows_mount/Windows/ -l > ./analysis/windows_hashes.txt
+```
+
+---
+
+## Unmounting
+
+```bash
+# Always unmount in reverse order (filesystem first, then EWF)
+sudo umount /mnt/windows_mount
+sudo umount /mnt/ewf
+```
+
+---
+
+## Output Paths
+
+| Output | Path |
+|--------|------|
+| Bodyfile | `./analysis/` |
+| FLS output | `./analysis/fls_output.txt` |
+| Filesystem timeline | `./exports/fs_timeline.txt` |
+| Extracted files | `./exports/files/` |
+| Registry hives | `./exports/registry/` |
+| Event logs | `./exports/evtx/` |
+| MFT + UsnJrnl | `./exports/mft/` |
+| SRUM | `./exports/srum/` |
+| Prefetch | `./exports/prefetch/` |
+| Carved files | `./exports/carved/` |
+| Recovered files (tsk) | `./exports/tsk_recover/` |
+
+---
+
+## Notes
+
+- Never write to `/mnt/` paths — read-only mounts only
+- `fls -p` flag shows full paths (more readable than relative paths)
+- Deleted files appear with a `*` prefix in `fls` output
+- Use `-o <sectors>` flag with all TSK tools when bypassing mount (more reliable than loopback)
+- `img_stat` before `mmls` catches 4K sector drives — wrong sector size = wrong byte offset
+- `norecovery` mount option prevents NTFS journal replay that could alter analysis
+- `icat` is preferred over `cp` for extracting files — bypasses OS file locking and VSS
+- The bodyfile from `fls` can be fed directly to `log2timeline.py` as an input source
+- VSS (Volume Shadow Copies) can be mounted: use `mmls` on VSS metadata and `icat` with offsets
+
+================================================================
+FILE: /home/sansforensics/.claude/skills/windows-artifacts//SKILL.md
+================================================================
+# Skill: Windows Artifacts (EZ Tools / Autoruns / Event Logs)
+
+## Overview
+Use this skill for Windows host-based artifact analysis on the SIFT workstation.
+Covers Eric Zimmerman (EZ) Tools, ASEP/persistence analysis, Windows event log parsing,
+and execution/access evidence artifacts.
+
+---
+
+## EZ Tools — Running on Linux (SIFT)
+
+All EZ Tools are installed at `/opt/zimmermantools/`. On Linux they run via the
+.NET runtime using the `.dll` file — **not** the `.exe` (which is a Windows PE binary).
+
+```bash
+# Root-level tools:
+dotnet /opt/zimmermantools/<ToolName>.dll [options]
+
+# Subdirectory tools:
+dotnet /opt/zimmermantools/<Subdir>/<ToolName>.dll [options]
+```
+
+> **GUI tools** (TimelineExplorer, RegistryExplorer, MFTExplorer, ShellBagsExplorer)
+> are Windows PE applications. Run via `wine` on SIFT, or use the Windows analysis VM.
+
+### Tool Reference
+
+| Tool | Linux Command | Purpose |
+|------|--------------|---------|
+| PECmd | `dotnet /opt/zimmermantools/PECmd.dll` | Prefetch parser |
+| AppCompatCacheParser | `dotnet /opt/zimmermantools/AppCompatCacheParser.dll` | Shimcache parser |
+| AmcacheParser | `dotnet /opt/zimmermantools/AmcacheParser.dll` | Amcache.hve parser |
+| MFTECmd | `dotnet /opt/zimmermantools/MFTECmd.dll` | MFT / UsnJrnl parser |
+| JLECmd | `dotnet /opt/zimmermantools/JLECmd.dll` | Jump list parser |
+| LECmd | `dotnet /opt/zimmermantools/LECmd.dll` | LNK file parser |
+| WxTCmd | `dotnet /opt/zimmermantools/WxTCmd.dll` | Windows 10 Timeline parser |
+| SBECmd | `dotnet /opt/zimmermantools/SBECmd.dll` | Shellbags (CLI) |
+| RBCmd | `dotnet /opt/zimmermantools/RBCmd.dll` | Recycle Bin parser |
+| bstrings | `dotnet /opt/zimmermantools/bstrings.dll` | Binary string extractor |
+| SrumECmd | `dotnet /opt/zimmermantools/SrumECmd.dll` | SRUM database parser |
+| EvtxECmd | `dotnet /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll` | Event log parser |
+| RECmd | `dotnet /opt/zimmermantools/RECmd/RECmd.dll` | Registry batch parser |
+| SQLECmd | `dotnet /opt/zimmermantools/SQLECmd/SQLECmd.dll` | SQLite artifact parser |
+| TimelineExplorer | `wine /opt/zimmermantools/TimelineExplorer/TimelineExplorer.exe` | GUI CSV viewer |
+| RegistryExplorer | `wine /opt/zimmermantools/RegistryExplorer/RegistryExplorer.exe` | GUI registry browser |
+| VSCMount | **Windows only** — will NOT run on SIFT Linux | Volume Shadow Copy mount tool |
+
+> **VSCMount note:** `dotnet /opt/zimmermantools/VSCMount.dll` prints "Mounting VSCs only
+> supported on Windows. Exiting" on Linux. Use TSK's `mmls` + `icat` for VSS access on SIFT.
+
+---
+
+## Execution Evidence
+
+### Prefetch
+
+```bash
+# Parse all Prefetch files to CSV
+dotnet /opt/zimmermantools/PECmd.dll \
+  -d ./exports/prefetch/ \
+  --csv ./exports/prefetch/ \
+  --csvf prefetch_parsed.csv
+
+# Parse a single file (human-readable console output)
+dotnet /opt/zimmermantools/PECmd.dll -f ./exports/prefetch/<FILE>.pf
+```
+
+Key: confirms execution + last **8** run timestamps + referenced DLLs and files.
+Prefetch is disabled on Windows Server by default.
+
+### Shimcache / AppCompatCache
+
+```bash
+dotnet /opt/zimmermantools/AppCompatCacheParser.dll \
+  -f ./exports/registry/SYSTEM \
+  --csv ./exports/shimcache/ \
+  --csvf shimcache.csv
+
+# Specify ControlSet (useful when multiple ControlSets exist — check with hivelist first)
+dotnet /opt/zimmermantools/AppCompatCacheParser.dll \
+  -f ./exports/registry/SYSTEM \
+  --c 1 \
+  --csv ./exports/shimcache/ \
+  --csvf shimcache_cs1.csv
+
+# Sort by last modified time descending (most recent first)
+dotnet /opt/zimmermantools/AppCompatCacheParser.dll \
+  -f ./exports/registry/SYSTEM \
+  -t \
+  --csv ./exports/shimcache/
+```
+
+Key: presence confirms the file **existed** on disk. Does NOT confirm execution on Win8+.
+Ordered chronologically by last run on Win7; unordered on Win8+.
+
+**AppCompatCacheParser flags:**
+| Flag | Description |
+|------|-------------|
+| `-f <file>` | SYSTEM hive path |
+| `--c <N>` | ControlSet number to parse (default: auto-detect) |
+| `-t` | Sort output by last modified time descending |
+| `--nl` | Ignore transaction logs |
+| `--csv <dir>` | Output directory for CSV files |
+| `--csvf <name>` | Output CSV filename |
+
+### Amcache
+
+```bash
+dotnet /opt/zimmermantools/AmcacheParser.dll \
+  -f ./exports/registry/Amcache.hve \
+  --csv ./exports/amcache/ \
+  --csvf amcache.csv
+
+# Ignore transaction logs (faster, use when hive is not dirty)
+dotnet /opt/zimmermantools/AmcacheParser.dll \
+  -f ./exports/registry/Amcache.hve \
+  --nl \
+  --csv ./exports/amcache/
+
+# Filter out known-good hashes (SHA-1 blacklist) to reduce noise
+dotnet /opt/zimmermantools/AmcacheParser.dll \
+  -f ./exports/registry/Amcache.hve \
+  -w /path/to/known_good_sha1s.txt \
+  --csv ./exports/amcache/
+
+# Keep only known-bad hashes (SHA-1 whitelist — hunt for specific malware)
+dotnet /opt/zimmermantools/AmcacheParser.dll \
+  -f ./exports/registry/Amcache.hve \
+  -b /path/to/known_bad_sha1s.txt \
+  --csv ./exports/amcache/
+```
+
+Key: SHA1 hash of executed binaries + first execution time. Use hash for VirusTotal pivots.
+
+**AmcacheParser flags:**
+| Flag | Description |
+|------|-------------|
+| `-f <file>` | Amcache.hve path |
+| `--nl` | Ignore transaction logs (faster for forensic copies) |
+| `--mp` | High-precision timestamps (nanoseconds) |
+| `-w <file>` | Blacklist — exclude entries matching SHA-1s in file |
+| `-b <file>` | Whitelist — only return entries matching SHA-1s in file |
+| `--csv <dir>` | Output directory for CSV files |
+| `--csvf <name>` | Output CSV filename |
+
+### BAM / DAM (Background/Desktop Activity Moderator)
+
+Located in: `SYSTEM\CurrentControlSet\Services\bam\State\UserSettings\<SID>`
+
+```bash
+# Parse via RECmd batch (see RECmd section below)
+# Or extract raw key via registry hive viewer
+```
+
+Key: Records last execution time for each user's programs. Survived reboots until Win10 1809.
+
+---
+
+## MFT and Change Journal
+
+### MFT
+
+```bash
+dotnet /opt/zimmermantools/MFTECmd.dll \
+  -f ./exports/mft/\$MFT \
+  --csv ./exports/mft/ \
+  --csvf mft_parsed.csv
+
+# Include all timestamps (MACE + MACE for $STANDARD_INFO and $FILE_NAME)
+dotnet /opt/zimmermantools/MFTECmd.dll \
+  -f ./exports/mft/\$MFT \
+  --at \
+  --csv ./exports/mft/ \
+  --csvf mft_alltimestamps.csv
+
+# Generate bodyfile output (for integration with mactime / plaso)
+dotnet /opt/zimmermantools/MFTECmd.dll \
+  -f ./exports/mft/\$MFT \
+  --body ./exports/mft/ \
+  --bdl C \
+  --bodyf mft_bodyfile.txt
+
+# Recover slack space entries (files that partially overlap deleted records)
+dotnet /opt/zimmermantools/MFTECmd.dll \
+  -f ./exports/mft/\$MFT \
+  --rs \
+  --csv ./exports/mft/ \
+  --csvf mft_with_slack.csv
+
+# Dump a specific MFT entry by record number
+dotnet /opt/zimmermantools/MFTECmd.dll \
+  -f ./exports/mft/\$MFT \
+  --de <record_number>
+```
+
+### $UsnJrnl (NTFS Change Journal)
+
+```bash
+# The journal is extracted as $UsnJrnl:$J — parse it directly
+dotnet /opt/zimmermantools/MFTECmd.dll \
+  -f ./exports/mft/\$J \
+  --csv ./exports/mft/ \
+  --csvf usnjrnl_parsed.csv
+
+# Parse $J with VSS processing (finds entries from shadow copies)
+dotnet /opt/zimmermantools/MFTECmd.dll \
+  -f ./exports/mft/\$J \
+  --vss \
+  --csv ./exports/mft/ \
+  --csvf usnjrnl_vss.csv
+
+# Or extract $J from the MFT image inode (inode 11 on NTFS) via icat, then parse
+```
+
+Key: records every file create/modify/delete/rename with timestamps. Survives deletion.
+
+**MFTECmd flags:**
+| Flag | Description |
+|------|-------------|
+| `-f <file>` | Input: `$MFT`, `$J`, `$Boot`, `$SDS`, or `$I30` |
+| `--at` | Include ALL timestamps (both $SI and $FN attribute timestamps) |
+| `--rs` | Recover slack space entries from MFT |
+| `--vss` | Process Volume Shadow Copy entries in $J |
+| `--body <dir>` | Output as bodyfile (for mactime/plaso) |
+| `--bdl <letter>` | Drive letter for bodyfile paths (e.g., `C`) |
+| `--bodyf <name>` | Bodyfile output filename |
+| `--de <record>` | Dump details for specific MFT entry number |
+| `--csv <dir>` | CSV output directory |
+| `--csvf <name>` | CSV output filename |
+
+---
+
+## Registry Parsing
+
+### RECmd — Batch Mode (Recommended)
+
+RECmd batch mode runs an entire collection of community-maintained queries against
+one or more hive files simultaneously, extracting all known forensic artifacts.
+
+```bash
+# Single hive batch parse
+dotnet /opt/zimmermantools/RECmd/RECmd.dll \
+  -f ./exports/registry/NTUSER.DAT \
+  --bn /opt/zimmermantools/RECmd/BatchExamples/Kroll_Batch.reb \
+  --csv ./exports/registry/ \
+  --csvf ntuser_batch.csv
+
+# All hives in a directory
+dotnet /opt/zimmermantools/RECmd/RECmd.dll \
+  -d ./exports/registry/ \
+  --bn /opt/zimmermantools/RECmd/BatchExamples/Kroll_Batch.reb \
+  --csv ./exports/registry/ \
+  --csvf all_hives_batch.csv
+```
+
+Batch files are in `/opt/zimmermantools/RECmd/BatchExamples/`.
+`Kroll_Batch.reb` covers: UserAssist, RecentDocs, TypedPaths, MRU, USB, Run keys,
+WordWheelQuery, OpenSaveMRU, and many more.
+
+**RECmd targeted query flags:**
+| Flag | Description |
+|------|-------------|
+| `--kn <name>` | Search for specific key name |
+| `--vn <name>` | Search for specific value name |
+| `--bn <file>` | Batch file (.reb) for multi-query runs |
+| `--base64` | Decode Base64-encoded values in output |
+| `--minSize <N>` | Only return values with data size >= N bytes |
+| `--nl` | Ignore transaction logs |
+
+### Key Registry Artifacts
+
+| Artifact | Hive | Key Path |
+|----------|------|----------|
+| Run/RunOnce | NTUSER.DAT / SOFTWARE | `...\Windows\CurrentVersion\Run` |
+| UserAssist (GUI execution) | NTUSER.DAT | `...\Explorer\UserAssist\{GUID}\Count` |
+| RecentDocs | NTUSER.DAT | `...\Explorer\RecentDocs` |
+| TypedPaths (Explorer bar) | NTUSER.DAT | `...\Explorer\TypedPaths` |
+| MRU Lists | NTUSER.DAT | Various — use RECmd batch |
+| BAM/DAM execution | SYSTEM | `...\Services\bam\State\UserSettings` |
+| USB/USBSTOR | SYSTEM | `...\Enum\USBSTOR` |
+| USB VID/PID | SYSTEM | `...\Enum\USB` |
+| USB drive letter | SYSTEM / NTUSER.DAT | MountedDevices + Explorer\MountPoints2 |
+| Services | SYSTEM | `...\Services` |
+| Shimcache | SYSTEM | `...\Session Manager\AppCompatCache` |
+| Timezone | SYSTEM | `...\Control\TimeZoneInformation` |
+| Computer name | SYSTEM | `...\Control\ComputerName\ComputerName` |
+| Last shutdown | SYSTEM | `...\Control\Windows` → ShutdownTime |
+| Amcache programs | Amcache.hve | `Root\InventoryApplicationFile` |
+
+### USB Device Artifacts (Full Chain)
+
+```bash
+# USBSTOR — every USB storage device ever connected
+# SYSTEM hive: HKLM\SYSTEM\CurrentControlSet\Enum\USBSTOR
+
+# USB VID/PID — manufacturer/product identification
+# SYSTEM hive: HKLM\SYSTEM\CurrentControlSet\Enum\USB
+
+# Drive letter assignment (last mounted drive letter)
+# SYSTEM hive: HKLM\SYSTEM\MountedDevices
+
+# Volume GUID (links device to drive letter)
+# NTUSER.DAT: HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\MountPoints2
+
+# All parsed automatically by Kroll_Batch.reb
+```
+
+---
+
+## Shellbags
+
+Shellbags record folder browsing history (local, network, removable media) — persists
+even after directories/drives are removed.
+
+```bash
+dotnet /opt/zimmermantools/SBECmd.dll \
+  -d ./exports/registry/ \
+  --csv ./exports/shellbags/
+
+# Or target NTUSER.DAT directly
+dotnet /opt/zimmermantools/SBECmd.dll \
+  -f ./exports/registry/NTUSER.DAT \
+  --csv ./exports/shellbags/
+
+# Deduplicate entries (removes repeated identical shellbag records)
+dotnet /opt/zimmermantools/SBECmd.dll \
+  -d ./exports/registry/ \
+  --dedupe \
+  --csv ./exports/shellbags/
+
+# Force output timezone (default: local — always override to UTC)
+dotnet /opt/zimmermantools/SBECmd.dll \
+  -d ./exports/registry/ \
+  --tz UTC \
+  --csv ./exports/shellbags/
+```
+
+Key hives: `NTUSER.DAT` (user folders) and `UsrClass.dat` (desktop/network/ZIP).
+
+**SBECmd flags:**
+| Flag | Description |
+|------|-------------|
+| `-f <file>` | Single hive file |
+| `-d <dir>` | Directory containing hive files |
+| `--dedupe` | Remove duplicate shellbag entries |
+| `--tz <zone>` | Output timezone (use `UTC`) |
+| `--csv <dir>` | CSV output directory |
+
+---
+
+## Jump Lists & LNK Files
+
+```bash
+# Jump lists (AutomaticDestinations + CustomDestinations)
+dotnet /opt/zimmermantools/JLECmd.dll \
+  -d ./exports/jumplists/ \
+  --csv ./exports/jumplists/ \
+  --csvf jumplists_parsed.csv
+
+# LNK files (link files from Recent, Desktop, Startup)
+dotnet /opt/zimmermantools/LECmd.dll \
+  -d ./exports/lnk/ \
+  --csv ./exports/lnk/ \
+  --csvf lnk_parsed.csv
+```
+
+Key: reveals target file paths, MAC times, volume serial numbers, and network shares —
+even if the target file no longer exists.
+
+---
+
+## Windows 10 Activity Timeline (WxTCmd)
+
+```bash
+dotnet /opt/zimmermantools/WxTCmd.dll \
+  -f ./exports/WindowsTimeline/ActivitiesCache.db \
+  --csv ./exports/WindowsTimeline/
+
+# ActivitiesCache.db location on disk:
+# C:\Users\<user>\AppData\Local\ConnectedDevicesPlatform\<ID>\ActivitiesCache.db
+```
+
+Key: records application focus events with start/end time and duration (Win10 only).
+
+---
+
+## SRUM (System Resource Usage Monitor)
+
+```bash
+dotnet /opt/zimmermantools/SrumECmd.dll \
+  -f ./exports/srum/SRUDB.dat \
+  --csv ./exports/srum/ \
+  --csvf srum_parsed.csv
+
+# Optionally provide SOFTWARE hive for application name resolution
+dotnet /opt/zimmermantools/SrumECmd.dll \
+  -f ./exports/srum/SRUDB.dat \
+  -r ./exports/registry/SOFTWARE \
+  --csv ./exports/srum/
+```
+
+`SRUDB.dat` is located at `C:\Windows\System32\sru\SRUDB.dat`.
+
+Key: records per-application network bytes sent/received, CPU time, and energy use
+with timestamps. Confirms execution and C2 data transfer volumes.
+
+---
+
+## Browser Artifacts (SQLECmd)
+
+```bash
+# Parse all SQLite databases SQLECmd knows about (Chrome, Edge, Firefox)
+dotnet /opt/zimmermantools/SQLECmd/SQLECmd.dll \
+  -d ./exports/browser/ \
+  --csv ./exports/browser/parsed/
+
+# Key Chrome/Edge profile paths on disk:
+# C:\Users\<user>\AppData\Local\Google\Chrome\User Data\Default\
+# C:\Users\<user>\AppData\Local\Microsoft\Edge\User Data\Default\
+# Relevant files: History, Cookies, Web Data, Login Data, Downloads
+```
+
+---
+
+## ASEP Analysis (Autorunsc)
+
+### Standard Collection Command (run on Windows target)
+```
+autorunsc.exe /accepteula -a * -c -h -s '*' -nobanner
+```
+Options: `-a *` all categories, `-c` CSV output, `-h` file hashes, `-s` verify signatures.
+
+### ASEP Categories to Review
+
+| Category | Why It Matters |
+|----------|---------------|
+| **Services** | Common persistence; verify Image Path matches expected binary |
+| **Drivers** | Must be signed on 64-bit Windows; unsigned = high priority |
+| **Known DLLs** | DLL hijacking target |
+| **Logon** | Run/RunOnce keys, startup folders |
+| **Tasks** | Scheduled task persistence |
+| **Explorer** | Shell extensions, browser helper objects |
+| **Boot Execute** | Runs before user-mode — rootkit territory |
+| **WMI** | WMI subscriptions used for fileless persistence |
+
+### CLI Analysis of Autorunsc CSV
+
+```bash
+# Show column names
+head -1 <hostname>-Autorunsc.csv | tr ',' '\n' | nl
+
+# Find unsigned/unverified entries
+grep -i "not verified" <hostname>-Autorunsc.csv
+
+# Find enabled entries only
+grep -i ",enabled," <hostname>-Autorunsc.csv
+
+# Find entries with blank signer (column 8 in standard CSV)
+awk -F',' '$8 == ""' <hostname>-Autorunsc.csv
+
+# Find suspicious image paths (not in Windows or Program Files)
+grep -i ",enabled," <hostname>-Autorunsc.csv | \
+  grep -iv "c:\\\\windows\|c:\\\\program files\|c:\\\\program files (x86)"
+
+# Extract hashes for VirusTotal pivot
+awk -F',' '{print $10}' <hostname>-Autorunsc.csv | sort -u | grep -v "^$\|^Hash"
+```
+
+### Timeline Explorer ASEP Filtering Workflow
+
+After collecting Autorunsc CSV, open in Timeline Explorer:
+```bash
+wine /opt/zimmermantools/TimelineExplorer/TimelineExplorer.exe
+```
+
+**Step-by-step triage in Timeline Explorer:**
+1. Load the Autorunsc CSV file
+2. Filter **Signer** column → select **(Not Verified)** and **(Blanks)** — unsigned or unverifiable entries
+3. Filter **Enabled** column → keep only **enabled** entries (active persistence)
+4. Review **Image Path** for suspicious locations (`%TEMP%`, `%APPDATA%`, non-standard paths)
+5. Cross-reference **Entry Location** (what ASEP category — Driver, Service, Logon, Task, etc.)
+6. For drivers: compare against VanillaWindowsReference baseline (see below)
+
+### Driver Baseline (VanillaWindowsReference)
+
+Compare drivers found by Autorunsc against a clean Windows baseline to identify additions:
+- **Project:** https://github.com/AndrewRathbun/VanillaWindowsReference
+- Contains known-good driver lists for each major Windows version
+- Any driver absent from the baseline is high priority for investigation
+- A driver that is "not verified" AND absent from baseline = critical finding
+
+### Red Flags
+- Executable in `C:\Windows\` with a name that mimics a legitimate tool (typosquatting)
+- Service or driver with no valid digital signature
+- Driver absent from a clean Windows baseline (VanillaWindowsReference)
+- `File not found` in Image Path — artifact of deleted malware
+- Scheduled task running from `%TEMP%`, `%APPDATA%`, or unusual paths
+- WMI event subscriptions that weren't present in baseline
+
+---
+
+## Windows Event Log Parsing
+
+### EvtxECmd
+
+```bash
+# Parse a single EVTX file to CSV
+dotnet /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll \
+  -f ./exports/evtx/<logname>.evtx \
+  --csv ./exports/evtx/parsed/ \
+  --csvf <output>.csv
+
+# Parse all EVTX files in a directory (most common usage)
+dotnet /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll \
+  -d ./exports/evtx/ \
+  --csv ./exports/evtx/parsed/
+
+# Use Maps directory for rich field parsing (recommended — enables PayloadData columns)
+dotnet /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll \
+  -d ./exports/evtx/ \
+  --csv ./exports/evtx/parsed/ \
+  --maps /opt/zimmermantools/EvtxeCmd/Maps/
+
+# Filter to specific Event IDs only (comma-separated)
+dotnet /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll \
+  -d ./exports/evtx/ \
+  --inc 4624,4625,4648,4672,4688 \
+  --csv ./exports/evtx/parsed/ \
+  --csvf logon_and_execution.csv
+
+# Exclude noisy Event IDs
+dotnet /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll \
+  -d ./exports/evtx/ \
+  --exc 4688,4689 \
+  --csv ./exports/evtx/parsed/
+
+# Filter by date range (UTC)
+dotnet /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll \
+  -d ./exports/evtx/ \
+  --sd "2023-01-24 00:00:00" \
+  --ed "2023-01-26 23:59:59" \
+  --csv ./exports/evtx/parsed/ \
+  --csvf incident_window.csv
+
+# Export as XML (for manual inspection or custom parsing)
+dotnet /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll \
+  -f ./exports/evtx/Security.evtx \
+  --xml ./exports/evtx/xml/
+```
+
+**EvtxECmd flags:**
+| Flag | Description |
+|------|-------------|
+| `-f <file>` | Single EVTX file |
+| `-d <dir>` | Directory of EVTX files |
+| `--inc <ids>` | Include only specified Event IDs (comma-separated) |
+| `--exc <ids>` | Exclude specified Event IDs (comma-separated) |
+| `--sd <datetime>` | Start date filter (UTC: `YYYY-MM-DD HH:MM:SS`) |
+| `--ed <datetime>` | End date filter (UTC: `YYYY-MM-DD HH:MM:SS`) |
+| `--maps <dir>` | Maps directory for structured field parsing |
+| `--csv <dir>` | CSV output directory |
+| `--csvf <name>` | CSV output filename |
+| `--xml <dir>` | XML output directory |
+
+### Key Event IDs
+
+**Logon / Authentication** (`Security.evtx`)
+| Event ID | Description |
+|----------|-------------|
+| 4624 | Successful logon — note LogonType (2=interactive, 3=network, 10=remote interactive) |
+| 4625 | Failed logon |
+| 4647 | User-initiated logoff |
+| 4648 | Logon using explicit credentials (runas, PtH indicator) |
+| 4672 | Special privileges assigned at logon (admin session) |
+| 4776 | NTLM authentication attempt (NTLM vs Kerberos tells network topology) |
+| 4768 | Kerberos TGT request |
+| 4769 | Kerberos service ticket request |
+| 4771 | Kerberos pre-authentication failed |
+
+**Account & Privilege** (`Security.evtx`)
+| Event ID | Description |
+|----------|-------------|
+| 4720 | User account created |
+| 4722 | User account enabled |
+| 4723 / 4724 | Password change / reset |
+| 4726 | User account deleted |
+| 4728 / 4732 / 4756 | Member added to global / local / universal privileged group |
+| 4698 | Scheduled task created |
+| 4699 | Scheduled task deleted |
+| 4702 | Scheduled task updated |
+| 4703 | Token right adjusted |
+
+**Process / Execution** (`Security.evtx`)
+| Event ID | Description |
+|----------|-------------|
+| 4688 | Process created (includes full command line if audit policy enabled) |
+| 4689 | Process exited |
+
+**Object Access** (`Security.evtx`)
+| Event ID | Description |
+|----------|-------------|
+| 4663 | Attempt to access object (file/key read/write/delete) |
+| 4656 | Handle to object requested |
+| 4660 | Object deleted |
+
+**PowerShell** (`Microsoft-Windows-PowerShell%4Operational.evtx`)
+| Event ID | Description |
+|----------|-------------|
+| 4103 | Module logging (each cmdlet call) |
+| 4104 | Script block logging (**full script content — highest value**) |
+| 4105 / 4106 | Script start/stop |
+
+**PowerShell** (`Windows PowerShell.evtx`)
+| Event ID | Description |
+|----------|-------------|
+| 400 | PowerShell engine started (includes HostApplication = command line) |
+| 600 | Provider loaded |
+| 800 | Pipeline execution |
+
+**RDP** (`Microsoft-Windows-TerminalServices-RemoteConnectionManager%4Operational.evtx`)
+| Event ID | Description |
+|----------|-------------|
+| 1149 | RDP authentication success (source IP in event) |
+| 4778 | Session reconnected |
+| 4779 | Session disconnected |
+
+**Defender** (`Microsoft-Windows-Windows Defender%4Operational.evtx`)
+| Event ID | Description |
+|----------|-------------|
+| 1116 | Malware detected |
+| 1117 | Malware action taken (quarantine/delete) |
+| 1118 / 1119 | Malware remediation started/succeeded |
+| 5001 | Real-time protection disabled |
+
+**System** (`System.evtx`)
+| Event ID | Description |
+|----------|-------------|
+| 7034 | Service crashed unexpectedly |
+| 7035 | Service sent start/stop control |
+| 7036 | Service state change |
+| 7040 | Service start type changed |
+| 7045 | New service installed |
+
+**Scheduled Tasks** (`Microsoft-Windows-TaskScheduler%4Operational.evtx`)
+| Event ID | Description |
+|----------|-------------|
+| 106 | Task registered |
+| 129 | Task launched |
+| 200 | Action started |
+| 201 | Action completed |
+
+**WMI** (`Microsoft-Windows-WMI-Activity%4Operational.evtx`)
+| Event ID | Description |
+|----------|-------------|
+| 5857 | WMI provider loaded |
+| 5858 | WMI error (failed connection — recon indicator) |
+| 5860 | Temporary WMI subscription registered |
+| 5861 | Permanent WMI subscription registered (**persistence**) |
+
+---
+
+## Recycle Bin
+
+```bash
+dotnet /opt/zimmermantools/RBCmd.dll \
+  -d ./exports/recyclebin/ \
+  --csv ./exports/recyclebin/ \
+  --csvf recyclebin_parsed.csv
+
+# Recycle Bin location on disk: C:\$Recycle.Bin\<SID>\
+# $I files = metadata (original path, deletion time, size)
+# $R files = actual file content
+```
+
+---
+
+## Binary String Extraction
+
+```bash
+# Extract printable strings from a suspicious binary (min 5 chars)
+dotnet /opt/zimmermantools/bstrings.dll -f ./exports/files/<binary> --lr
+
+# Regex hunt within strings
+dotnet /opt/zimmermantools/bstrings.dll -f ./exports/files/<binary> \
+  --Pattern "(https?://|\\\\\\\\[0-9]{1,3}\\.)"
+```
+
+---
+
+## Output Paths
+
+| Output | Path |
+|--------|------|
+| Event log CSVs | `./exports/evtx/parsed/` |
+| Shimcache CSV | `./exports/shimcache/` |
+| Prefetch CSV | `./exports/prefetch/` |
+| Amcache CSV | `./exports/amcache/` |
+| MFT CSV | `./exports/mft/` |
+| UsnJrnl CSV | `./exports/mft/` |
+| SRUM CSV | `./exports/srum/` |
+| Registry batch CSV | `./exports/registry/` |
+| Shellbags CSV | `./exports/shellbags/` |
+| Jump lists CSV | `./exports/jumplists/` |
+| LNK CSV | `./exports/lnk/` |
+| Browser artifacts CSV | `./exports/browser/parsed/` |
+| Windows Timeline CSV | `./exports/WindowsTimeline/` |
+| Recycle Bin CSV | `./exports/recyclebin/` |
+| Reports | `./reports/` |
+
+---
+
+## Notes
+
+- Extract artifacts from the disk image first (see sleuthkit SKILL.md) before parsing
+- Cross-reference Autorunsc findings with Prefetch, Amcache, and memory process lists
+- A file in Shimcache but absent from the filesystem likely indicates deleted malware
+- EZ Tools output Windows-style paths in CSVs — use as pivot points, no need to convert
+- RECmd Kroll_Batch.reb covers most common registry forensics in a single pass
+- SRUM is highly valuable: confirms execution AND data volumes transferred (C2 exfil)
+- $UsnJrnl is the best source for file system activity after an event — predates Prefetch
+
+================================================================
+FILE: /home/sansforensics/.claude/skills/yara-hunting//SKILL.md
+================================================================
+# Skill: Threat Hunting & IOC Sweeps (YARA / Velociraptor)
+
+## Overview
+Use this skill for IOC sweeps, malware identification, and threat hunting.
+YARA 4.1.0 runs locally on SIFT Linux for scanning files and memory images.
+Velociraptor is an endpoint agent — hunts are deployed via its web console,
+not run directly from the SIFT command line.
+
+---
+
+## Tool Reference
+
+| Tool | Location | Platform |
+|------|----------|----------|
+| `yara` | `/usr/local/bin/yara` (v4.1.0) | SIFT Linux — local file/memory scanning |
+| `yarac` | `/usr/local/bin/yarac` | SIFT Linux — rule compiler |
+| Velociraptor | Enterprise endpoint deployment | Web console — not a local SIFT binary |
+
+---
+
+## YARA Rule Structure
+
+```yara
+rule RuleName
+{
+    meta:
+        description = "Detects X"
+        author      = "Analyst Name"
+        date        = "YYYY-MM-DD"
+        hash        = "SHA256 of reference sample"
+        reference   = "Case number or source"
+
+    strings:
+        // Hex patterns (use ?? for wildcard bytes)
+        $mz     = { 4D 5A }
+        $hex1   = { 48 8B ?? 48 89 ?? ?? 48 8B ?? }   // wildcarded opcodes
+
+        // String patterns
+        $str1   = "suspicious_string" nocase
+        $str2   = "another_string"    wide ascii        // scan both encodings
+        $str3   = "C:\\Windows\\Temp\\" wide nocase
+
+        // Regex
+        $re1    = /net\s+use\s+[A-Z]:\s+\\\\/
+        $re2    = /[A-Za-z0-9+\/]{40,}={0,2}/          // base64 blob
+
+    condition:
+        uint16(0) == 0x5A4D and   // MZ header
+        filesize < 5MB and
+        any of them
+}
+```
+
+---
+
+## YARA Module Imports
+
+### PE Module (Windows Executables)
+
+```yara
+import "pe"
+
+rule Suspicious_PE
+{
+    meta:
+        description = "PE with high section entropy and no exports"
+
+    condition:
+        pe.is_pe and
+        pe.number_of_sections > 3 and
+        pe.number_of_exports == 0 and
+        // Check for packed/encrypted section (entropy > 7.0)
+        for any section in pe.sections : (
+            section.name != ".rsrc" and
+            math.entropy(section.raw_offset, section.raw_size) > 7.0
+        )
+}
+```
+
+**Useful PE module fields:**
+| Field | Description |
+|-------|-------------|
+| `pe.is_pe` | True if valid PE header |
+| `pe.imphash()` | Import hash (pivots to related malware families) |
+| `pe.number_of_imports` | Import count |
+| `pe.number_of_exports` | Export count |
+| `pe.number_of_sections` | Section count |
+| `pe.timestamp` | Compile timestamp (can be forged) |
+| `pe.imports("kernel32.dll", "VirtualAlloc")` | Specific import check |
+| `pe.exports("DllEntryPoint")` | Specific export check |
+| `pe.sections[i].name` | Section name (`.text`, `.data`, etc.) |
+| `pe.sections[i].characteristics` | Section permissions flags |
+| `pe.version_info["CompanyName"]` | Version info strings |
+
+### Math Module (Entropy Detection)
+
+```yara
+import "math"
+
+rule High_Entropy_File
+{
+    meta:
+        description = "File with high overall entropy — likely packed or encrypted"
+
+    condition:
+        math.entropy(0, filesize) > 7.2
+}
+
+rule High_Entropy_Section_PE
+{
+    meta:
+        description = "PE with a high-entropy section (packed/obfuscated)"
+
+    condition:
+        uint16(0) == 0x5A4D and
+        for any i in (0..pe.number_of_sections - 1) : (
+            math.entropy(pe.sections[i].raw_offset, pe.sections[i].raw_size) > 7.0
+        )
+}
+```
+
+### Hash Module (Hash-Based IOC Matching)
+
+```yara
+import "hash"
+
+rule Known_Bad_Hash
+{
+    meta:
+        description = "Match by MD5 hash of known malware sample"
+
+    condition:
+        // hash.md5(offset, size) — use 0, filesize for whole file
+        hash.md5(0, filesize) == "d41d8cd98f00b204e9800998ecf8427e" or
+        hash.sha256(0, filesize) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}
+```
+
+---
+
+## YARA Scanning
+
+### Scan a Single File
+```bash
+yara /path/to/rules.yar /path/to/file
+```
+
+### Scan a Directory Recursively
+```bash
+yara -r /path/to/rules.yar /mnt/windows_mount/Windows/System32/
+```
+
+### Scan a Memory Image
+```bash
+yara /path/to/rules.yar /path/to/memory.img
+```
+
+### Scan Exported Files from Evidence
+```bash
+yara -r /path/to/rules.yar ./exports/files/
+```
+
+### Scan with Match Detail (Show Matching Strings)
+```bash
+yara -r -s /path/to/rules.yar ./exports/files/ 2>/dev/null | tee ./exports/yara_hits/hits.txt
+```
+
+### Scan with Metadata Output
+```bash
+yara -r -m /path/to/rules.yar /mnt/windows_mount/ 2>/dev/null
+```
+
+### Useful Flags
+| Flag | Description |
+|------|-------------|
+| `-r` | Recursive directory scan |
+| `-s` | Print matching strings (with offset) |
+| `-m` | Print rule metadata |
+| `-e` / `--print-namespace` | Print rule namespace in output |
+| `-n` | Print non-matching rules (invert — for testing) |
+| `-f` | Fast scan mode (first match only per rule) |
+| `-p N` | Use N threads for parallel scanning |
+| `--timeout N` | Skip file after N seconds |
+| `-t TAG` / `--tag=TAG` | Only apply rules tagged with TAG |
+| `--scan-list` | Input is a text file listing paths to scan (one per line) |
+| `-N` / `--no-follow-symlinks` | Do not follow symlinks (prevents loops in recursive scans) |
+| `--max-rules=NUMBER` | Abort scan after NUMBER rules match |
+| `-x <module>=<file>` | Load external module |
+| `-d <var>=<val>` | Define external variable |
+
+---
+
+## Rule Compilation (Repeated Large-Scale Scanning)
+
+```bash
+# Compile rules to binary for faster re-use (avoids re-parsing .yar each run)
+yarac rules.yar compiled.rules
+
+# Scan using compiled rules
+yara -C compiled.rules /target/path/
+```
+
+---
+
+## Performance Best Practices
+
+**Condition ordering matters — YARA evaluates left to right and short-circuits:**
+```yara
+condition:
+    // Put cheap, specific checks FIRST to eliminate non-matches early
+    uint16(0) == 0x5A4D and    // 1. Fast: 2-byte read at offset 0
+    filesize < 10MB and         // 2. Fast: metadata check
+    pe.is_pe and                // 3. Medium: PE structure validation
+    $str1 and                   // 4. Medium: string match
+    math.entropy(...) > 7.0    // 5. Expensive: full entropy scan — LAST
+```
+
+**Other tips:**
+- Use `filesize < X` as the first condition to skip large files when hunting small malware
+- Use `pe.is_pe` to scope rules to PE files only instead of scanning everything
+- Compile rules once with `yarac` before scanning large directories
+- Use `-f` (fast mode) for initial triage; rescan hits with `-s` for details
+- Use `-p 4` or more threads on multi-core SIFT for directory scans
+
+---
+
+## IOC Sweep Workflow
+
+1. **Build IOC list** from confirmed findings (file hashes, strings, IPs, domains, paths, mutex names)
+2. **Write YARA rules** targeting each IOC type — one rule per indicator family
+3. **Test rules for false positives** against a clean image or known-good file set first
+4. **Scan mounted evidence** — `yara -r -s <rules> /mnt/windows_mount/`
+5. **Scan memory image** — `yara <rules> /path/to/memory.img`
+6. **Scan extracted files** — `yara -r <rules> ./exports/files/`
+7. **Cross-reference hits** with filesystem timeline and process artifacts
+8. **Export findings** to `./exports/yara_hits/ioc_sweep_<CASE_ID>_<date>.txt`
+
+### False Positive Testing
+
+```bash
+# Test rules against a known-clean directory before sweeping evidence
+yara -r rules.yar /usr/bin/ 2>/dev/null
+
+# Use -n to see which rules did NOT match (verify scope coverage)
+yara -r -n rules.yar /path/to/sample/
+
+# Test a single rule in isolation
+yara -r /path/to/single_rule.yar /path/to/target/
+```
+
+---
+
+## Community Rulesets
+
+```bash
+# Check for community rulesets on SIFT (may be pre-installed)
+ls /opt/yara-rules/ 2>/dev/null
+ls /opt/signature-base/ 2>/dev/null
+
+# Common community sources to pull manually:
+# Neo23x0 / Florian Roth: https://github.com/Neo23x0/signature-base
+# Elastic Security: https://github.com/elastic/protections-artifacts
+# Mandiant / FireEye: Included in threat intel reports
+# CISA advisories: https://www.cisa.gov/resources-tools/resources/malware-analysis-reports
+
+# Use community rules with a filter to avoid noisy catches
+yara -r /opt/signature-base/yara/ /mnt/windows_mount/ 2>/dev/null | grep -v "^$"
+```
+
+---
+
+## Rule Storage
+
+```
+~/.claude/skills/yara-hunting/rules/    ← store reusable rules here
+./exports/yara_hits/                    ← scan output for current case
+./reports/                              ← finalized IOC sweep reports
+```
+
+---
+
+## Velociraptor (Enterprise Endpoint Hunting)
+
+Velociraptor is deployed on Windows endpoints in the environment under investigation.
+Connect to the Velociraptor web console to run hunts across live or collected endpoints.
+**It is NOT a local binary on the SIFT workstation.**
+
+### Key Concepts
+- **Artifact:** A named collection/query (e.g., `Windows.System.Pslist`)
+- **Hunt:** Deploy an artifact across multiple endpoints simultaneously
+- **VQL:** Velociraptor Query Language (SQL-like syntax for live system queries)
+
+### Common Artifacts for Threat Hunting
+
+| Artifact | Purpose |
+|----------|---------|
+| `Windows.System.Pslist` | Process listing |
+| `Windows.Sysinternals.Autoruns` | Persistence / ASEPs |
+| `Windows.Network.Netstat` | Active network connections |
+| `Windows.System.TaskScheduler` | Scheduled tasks |
+| `Windows.Forensics.Prefetch` | Execution evidence |
+| `Windows.Forensics.Lnk` | Recent files / LNK files |
+| `Windows.Forensics.SRUM` | SRUM resource usage |
+| `Windows.Forensics.MFT` | MFT parsing |
+| `Windows.EventLogs.EvtxHunter` | Search event logs by keyword |
+| `Windows.Detection.Yara.Process` | YARA scan of process memory |
+| `Windows.Detection.Yara.File` | YARA scan of files on disk |
+| `Windows.Detection.Yara.NTFS` | YARA scan via raw NTFS access |
+
+### Deploy a YARA Hunt (VQL reference)
+```vql
+SELECT * FROM Artifact.Windows.Detection.Yara.Process(
+    YaraRule='''
+rule ExampleRule {
+  strings: $s = "indicator_string" nocase
+  condition: $s
+}
+''')
+```
+
+### VQL — Quick Triage Queries
+
+```vql
+-- Find processes with no parent
+SELECT Name, Pid, Ppid, Exe
+FROM pslist()
+WHERE NOT Ppid IN (SELECT Pid FROM pslist())
+
+-- Find network connections to non-private IPs
+SELECT Pid, FamilyString, RemoteAddr, RemotePort, Status
+FROM netstat()
+WHERE NOT RemoteAddr =~ "^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|::1)"
+
+-- Hunt for scheduled tasks with suspicious paths
+SELECT Name, Command, Arguments
+FROM scheduledtasks()
+WHERE Command =~ "(temp|appdata|\\\\users\\\\)" OR
+      Arguments =~ "(powershell|cmd|wscript|mshta)"
+```
+
+================================================================
+FILE: ~/.claude/case-templates/CLAUDE.md
+================================================================
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+**Course:** SANS FOR508 — Advanced Incident Response, Threat Hunting & Digital Forensics
+**Scenario:** Stark Research Labs (SRL) — Lab 1.1 APT Incident Response Challenge
+
+---
+
+## Case Overview
+
+| Field | Value |
+|-------|-------|
+| **Client** | Stark Research Labs (SRL) |
+| **Domain** | SHIELDBASE (Windows Server 2022, 2022 DFL) |
+| **Threat Actor** | CRIMSON OSPREY (state-level APT) |
+| **Incident Declared** | 2023-01-24 |
+| **Your Role** | External IR consultant |
+| **Initial Responders** | Roger Sydow (IT Admin), Clint Barton (IT Security Analyst) |
+
+---
+
+## Evidence Files
+
+| File | System | Notes |
+|------|--------|-------|
+| `/cases/srl/base-dc-cdrive.E01` | dc01 — Domain Controller | C: drive (~12.5 GB) |
+| `/cases/srl/base-rd01-cdrive.E01` | rd01 — Remote Desktop Server | C: drive (~16.6 GB) — **primary compromise host** |
+| `/cases/memory/rd01-memory.img` | rd01 | RAM capture (5 GB, primary analysis image) |
+| `/cases/srl/base-rd_memory.img` | rd01 | RAM capture (3 GB, baseline-era image) |
+| `/cases/srl/base-dc_memory.img` | dc01 | RAM capture (5 GB) |
+
+**Read-only — do NOT modify evidence files.**
+Output all analysis to `./analysis/`, `./exports/`, or `./reports/` (relative to `/cases/srl/`).
+
+---
+
+## Common Commands
+
+### Mount E01 images (read-only)
+
+```bash
+# Mount rd01 C: drive
+sudo mkdir -p /mnt/ewf_rd01 /mnt/rd01
+sudo ewfmount /cases/srl/base-rd01-cdrive.E01 /mnt/ewf_rd01
+sudo mount -o ro,loop,noatime /mnt/ewf_rd01/ewf1 /mnt/rd01
+
+# Mount dc01 C: drive
+sudo mkdir -p /mnt/ewf_dc01 /mnt/dc01
+sudo ewfmount /cases/srl/base-dc-cdrive.E01 /mnt/ewf_dc01
+sudo mount -o ro,loop,noatime /mnt/ewf_dc01/ewf1 /mnt/dc01
+
+# Unmount when done
+sudo umount /mnt/rd01 && sudo umount /mnt/ewf_rd01
+sudo umount /mnt/dc01 && sudo umount /mnt/ewf_dc01
+```
+
+### Volatility 3 (memory — rd01)
+
+```bash
+VOL="python3 /opt/volatility3-2.20.0/vol.py"
+IMG="/cases/memory/rd01-memory.img"
+
+# Human-readable process tree
+$VOL -f $IMG -r pretty windows.pstree | cut -d '|' -f 1-11
+
+# All processes incl. exited
+$VOL -f $IMG windows.psscan | grep -v "N/A"
+
+# Command lines
+$VOL -f $IMG windows.cmdline | tee ./exports/cmdline.txt
+
+# Process SIDs
+$VOL -f $IMG windows.getsids | tee ./exports/getsids.txt
+
+# Network connections
+$VOL -f $IMG -r csv windows.netstat | tee ./exports/netstat.csv
+
+# DLL list for a specific PID
+$VOL -f $IMG -r csv windows.dlllist --pid 1912 | tee ./exports/dlllist-stun.csv
+```
+
+### Memory Baseliner (process / service / driver diff)
+
+```bash
+python3 /opt/memory-baseliner/baseline.py \
+  -proc -i /cases/memory/rd01-memory.img \
+  --loadbaseline \
+  --jsonbaseline /cases/memory/baseline/Win11x64_proc_baseline.json \
+  -o ./exports/proc_baseline_diff.csv
+```
+
+### EZ Tools (dotnet, Windows artifacts from mounted image)
+
+```bash
+# MFTECmd — parse MFT
+dotnet /opt/zimmermantools/MFTECmd.dll \
+  -f /mnt/rd01/\$MFT \
+  --csv ./exports/ --csvf rd01-mft.csv
+
+# EvtxECmd — parse event logs
+dotnet /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll \
+  -d /mnt/rd01/Windows/System32/winevt/Logs/ \
+  --csv ./exports/ --csvf rd01-evtx.csv \
+  --maps /opt/zimmermantools/EvtxeCmd/Maps/
+
+# RECmd — registry hives
+dotnet /opt/zimmermantools/RECmd/RECmd.dll \
+  -d /mnt/rd01/Windows/System32/config/ \
+  --csv ./exports/ --csvf rd01-registry.csv
+
+# AmcacheParser
+dotnet /opt/zimmermantools/AmcacheParser.dll \
+  -f /mnt/rd01/Windows/AppCompat/Programs/Amcache.hve \
+  --csv ./exports/ --csvf rd01-amcache.csv
+```
+
+### Sleuth Kit (filesystem, no mount required)
+
+```bash
+# List files — rd01 image
+fls -r -o 2048 /mnt/ewf_rd01/ewf1 | grep -i "stun"
+
+# Extract a file by inode
+icat -o 2048 /mnt/ewf_rd01/ewf1 <INODE> > ./exports/stun_extracted.exe
+
+# Verify image
+ewfverify /cases/srl/base-rd01-cdrive.E01
+```
+
+---
+
+## Network Topology
+
+| Network | Subnet | Key Hosts |
+|---------|--------|-----------|
+| **Management** | 172.16.8.0/24 | log01, assess01/02, sft01, trust01, adusa01 (ELF01 syslog) |
+| **Services** | 172.16.4.0/24 | dc01, file01, exchange01 (Exchange 2019), proxy01 (Squid), dev01, sql01 |
+| **Business Line** | 172.16.7.0/24 | wksta01–wksta10 (Windows 11) |
+| **R&D** | 172.16.6.0/24 | rd01–rd10 (Windows 11); lateral movement target: **172.16.6.12** |
+| **DMZ** | 172.16.19.0/24 | dns01, ftp01, smtp01 |
+| **VPN Client** | 172.16.30.0/24 | Remote workers |
+
+**External attacker IP:** 172.15.1.20
+
+---
+
+## Domain Accounts
+
+| Account | Role |
+|---------|------|
+| `rsydow-a` | Domain Admin — Roger Sydow (IT Admin) |
+| `cbarton-a` | Domain Admin — Clint Barton (IT Security Analyst) |
+| `srl.admin` | Emergency Domain Admin (break-glass) |
+| `srladmin` | Local Admin — all workstations |
+
+---
+
+## Known IOCs
+
+### Confirmed Malware
+
+| Indicator | Type | Detail |
+|-----------|------|--------|
+| `STUN.exe` | Malware binary | `C:\Windows\System32\STUN.exe`, PID 1912, parent svchost.exe PID 1244 |
+| `msedge.exe` | Masquerading | 7 instances from STUN.exe + explorer.exe; Trojan:Win32/PowerRunner.A |
+| `pssdnsvc.exe` | Suspicious service | `C:\Windows\` — name/path mismatch for PsShutdown |
+| `atmfd.dll` | Missing driver | In Autoruns but absent from filesystem |
+
+### Attacker Activity
+
+| Indicator | Detail |
+|-----------|--------|
+| Lateral movement | `net use H: \\172.16.6.12\c$\Users` — net.exe PID 9128 |
+| Execution | STUN.exe as scheduled task → svchost.exe → taskhostw.exe |
+| Evasion | msedge.exe masquerading; Defender detected + terminated repeatedly |
+
+---
+
+## Incident Timeline (UTC)
+
+| Timestamp (UTC) | Event |
+|-----------------|-------|
+| 2023-01-24 | Incident declared; F-Response agents deployed |
+| 2023-01-25 14:52:04 | Lateral movement — `net use H: \\172.16.6.12\c$\Users` |
+| 2023-01-25 14:56:42–15:04:43 | msedge.exe PIDs spawned |
+| 2023-01-25 15:00:56 | msedge.exe PID 2524 active at memory capture time |
+| 2023-01-29 12:23:16 | Kansa post-intrusion collection (Autorunsc timestamp) |
+
+---
+
+## Notes
+
+- **Kansa Autorunsc CSVs** (`rd01/dc01/file01/hunt01`) are on the Windows forensic workstation at `G:\SRL_Evidence\kansa\kansa-post-intrusion\Output_20230129122316\Autorunsc\` — not on this SIFT instance.
+- **MemProcFS** is not installed on this SIFT instance.
+- **VSCMount** is Windows-only — do not use on SIFT.
+- Timestamps: always report in UTC.
+- Vol3 binary: `/opt/volatility3-2.20.0/vol.py` — NOT `/usr/local/bin/vol.py` (that is Vol2).
+
+================================================================
+FILE: ~/.claude/analysis-scripts/generate_pdf_report.py (head -100)
+================================================================
+#!/usr/bin/env python3
+"""
+DFIR Executive PDF Report Generator
+Uses WeasyPrint to render styled HTML → PDF.
+Call generate_report(content_dict, output_path) from other scripts,
+or run directly to regenerate the baseline memory analysis report.
+"""
+
+import datetime
+from pathlib import Path
+
+try:
+    from weasyprint import HTML, CSS
+except ImportError:
+    raise SystemExit("weasyprint not installed. Run: pip3 install weasyprint")
+
+
+# ── Brand / Style ─────────────────────────────────────────────────────────────
+
+CSS_STYLE = """
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Roboto+Mono:wght@400;600&display=swap');
+
+@page {
+    size: A4;
+    margin: 0;
+    @bottom-right {
+        content: "Page " counter(page) " of " counter(pages);
+        font-family: 'Inter', sans-serif;
+        font-size: 8pt;
+        color: #9ca3af;
+        margin-right: 2cm;
+        margin-bottom: 0.6cm;
+    }
+    @bottom-left {
+        content: "CONFIDENTIAL — DFIR INTERNAL USE ONLY";
+        font-family: 'Inter', sans-serif;
+        font-size: 8pt;
+        color: #9ca3af;
+        margin-left: 2cm;
+        margin-bottom: 0.6cm;
+    }
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif;
+    font-size: 9.5pt;
+    color: #1f2937;
+    background: #ffffff;
+    line-height: 1.55;
+}
+
+/* ── Cover / Header ── */
+.cover {
+    background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 60%, #1d4ed8 100%);
+    color: white;
+    padding: 2.8cm 2.2cm 2cm 2.2cm;
+    page-break-after: always;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+
+.cover-top { }
+
+.org-tag {
+    font-size: 8pt;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: #93c5fd;
+    margin-bottom: 0.5cm;
+}
+
+.report-type {
+    font-size: 10pt;
+    font-weight: 400;
+    color: #bfdbfe;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    margin-bottom: 0.3cm;
+}
+
+.cover h1 {
+    font-size: 28pt;
+    font-weight: 700;
+    line-height: 1.15;
+    color: #ffffff;
+    margin-bottom: 0.4cm;
+}
+
+.cover-subtitle {
+    font-size: 13pt;
+    font-weight: 300;
+    color: #bfdbfe;
+    margin-bottom: 1cm;
+}
+
+
+================================================================
+EXTRA DIRECTORIES (not in install.sh manifest)
+================================================================
+=== ls -la ~/.claude/backups/ ===
+total 12
+drwxrwxr-x 2 sansforensics sansforensics 4096 May  5 20:49 .
+drwxrwxr-x 8 sansforensics sansforensics 4096 May  5 20:49 ..
+-rw------- 1 sansforensics sansforensics   50 May  5 20:49 .claude.json.backup.1778014141311
+
+=== ls -la ~/.claude/cache/ ===
+total 276
+drwxrwxr-x 2 sansforensics sansforensics   4096 May  5 20:49 .
+drwxrwxr-x 8 sansforensics sansforensics   4096 May  5 20:49 ..
+-rw-rw-r-- 1 sansforensics sansforensics 272923 May  5 20:49 changelog.md
+
+=== ls -la ~/.claude/downloads/ ===
+total 8
+drwxrwxr-x 2 sansforensics sansforensics 4096 May  5 20:49 .
+drwxrwxr-x 8 sansforensics sansforensics 4096 May  5 20:49 ..
+
+=== find timestamps (sorted, oldest first) ===
+1778014141.3111882680 2026-05-05 20:49:01.3111882680 /home/sansforensics/.claude/backups/.claude.json.backup.1778014141311
+1778014141.4501918720 2026-05-05 20:49:01.4501918720 /home/sansforensics/.claude/cache/changelog.md
+
+=== full analysis-scripts/ listing ===
+total 36
+drwxrwxr-x 2 sansforensics sansforensics  4096 2026-05-05 20:49:27.535851304 +0000 .
+drwxrwxr-x 8 sansforensics sansforensics  4096 2026-05-05 20:49:27.538851377 +0000 ..
+-rw-rw-r-- 1 sansforensics sansforensics 27937 2026-05-05 20:49:27.535851304 +0000 generate_pdf_report.py
+
+=== case-templates/ listing ===
+total 16
+drwxrwxr-x 2 sansforensics sansforensics 4096 2026-05-05 20:49:27.542851476 +0000 .
+drwxrwxr-x 8 sansforensics sansforensics 4096 2026-05-05 20:49:27.538851377 +0000 ..
+-rw-rw-r-- 1 sansforensics sansforensics 6472 2026-05-05 20:49:27.542851476 +0000 CLAUDE.md
