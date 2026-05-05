@@ -15,6 +15,15 @@ dev = [
     "pytest>=7.0",
     "ruff>=0.1.0",
 ]
+# Forensic RAG corpus + retrieval. Pulled by `pip install -e .[rag]`.
+# Kept out of the core install because torch/transformers add ~2 GB
+# (CUDA wheels are transitive deps of sentence-transformers); the MCP
+# server runs without them. Versions pinned so a fresh checkout
+# reproduces the same embeddings byte-for-byte. See rag/README.md.
+rag = [
+    "sentence-transformers==5.4.1",
+    "faiss-cpu==1.13.2",
+]
 
 [tool.ruff]
 line-length = 100

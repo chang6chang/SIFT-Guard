@@ -41,8 +41,8 @@ Thumbs.db
 *.pem
 secrets/
 
-# RAG index (large, regenerable)
-rag/index/
+# RAG corpus + index (large, regenerable from rag/ingest_attack.py)
+rag/data/
 
 # Extractions and audit logs (per-case, regenerable, can be huge)
 extractions/

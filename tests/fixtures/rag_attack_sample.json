@@ -1,0 +1,104 @@
+{
+  "type": "bundle",
+  "id": "bundle--test-fixture",
+  "objects": [
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--t1055",
+      "name": "Process Injection",
+      "description": "Adversaries may inject code into processes in order to evade process-based defenses as well as possibly elevate privileges. Process injection is a method of executing arbitrary code in the address space of a separate live process. Running code in the context of another process may allow access to the process's memory, system/network resources, and possibly elevated privileges. Execution via process injection may also evade detection from security products since the execution is masked under a legitimate process.",
+      "x_mitre_platforms": ["Windows", "Linux", "macOS"],
+      "kill_chain_phases": [
+        {"kill_chain_name": "mitre-attack", "phase_name": "defense-evasion"},
+        {"kill_chain_name": "mitre-attack", "phase_name": "privilege-escalation"}
+      ],
+      "external_references": [
+        {"source_name": "mitre-attack", "external_id": "T1055", "url": "https://attack.mitre.org/techniques/T1055/"}
+      ]
+    },
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--t1036",
+      "name": "Masquerading",
+      "description": "Adversaries may attempt to manipulate features of their artifacts to make them appear legitimate or benign to users and/or security tools. Masquerading occurs when the name or location of an object, legitimate or malicious, is manipulated or abused for the sake of evading defenses and observation.",
+      "x_mitre_platforms": ["Windows", "Linux", "macOS"],
+      "kill_chain_phases": [
+        {"kill_chain_name": "mitre-attack", "phase_name": "defense-evasion"}
+      ],
+      "external_references": [
+        {"source_name": "mitre-attack", "external_id": "T1036", "url": "https://attack.mitre.org/techniques/T1036/"}
+      ]
+    },
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--t1014",
+      "name": "Rootkit",
+      "description": "Adversaries may use rootkits to hide the presence of programs, files, network connections, services, drivers, and other system components. Rootkits are programs that hide the existence of malware by intercepting/hooking and modifying operating system API calls that supply system information.",
+      "x_mitre_platforms": ["Windows", "Linux", "macOS"],
+      "kill_chain_phases": [
+        {"kill_chain_name": "mitre-attack", "phase_name": "defense-evasion"}
+      ],
+      "external_references": [
+        {"source_name": "mitre-attack", "external_id": "T1014", "url": "https://attack.mitre.org/techniques/T1014/"}
+      ]
+    },
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--t1027",
+      "name": "Obfuscated Files or Information",
+      "description": "Adversaries may attempt to make an executable or file difficult to discover or analyze by encrypting, encoding, or otherwise obfuscating its contents on the system or in transit. This is common behavior that can be used across different platforms and the network to evade defenses.",
+      "x_mitre_platforms": ["Windows", "Linux", "macOS"],
+      "kill_chain_phases": [
+        {"kill_chain_name": "mitre-attack", "phase_name": "defense-evasion"}
+      ],
+      "external_references": [
+        {"source_name": "mitre-attack", "external_id": "T1027", "url": "https://attack.mitre.org/techniques/T1027/"}
+      ]
+    },
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--t1003",
+      "name": "OS Credential Dumping",
+      "description": "Adversaries may attempt to dump credentials to obtain account login and credential material, normally in the form of a hash or a clear text password. Credentials can then be used to perform Lateral Movement and access restricted information.",
+      "x_mitre_platforms": ["Windows", "Linux", "macOS"],
+      "kill_chain_phases": [
+        {"kill_chain_name": "mitre-attack", "phase_name": "credential-access"}
+      ],
+      "external_references": [
+        {"source_name": "mitre-attack", "external_id": "T1003", "url": "https://attack.mitre.org/techniques/T1003/"}
+      ]
+    },
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--t9999-revoked",
+      "name": "Revoked Sample",
+      "description": "This technique was revoked and must not appear in the corpus.",
+      "revoked": true,
+      "external_references": [
+        {"source_name": "mitre-attack", "external_id": "T9999", "url": "https://attack.mitre.org/techniques/T9999/"}
+      ]
+    },
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--t9998-deprecated",
+      "name": "Deprecated Sample",
+      "description": "This technique was deprecated and must not appear in the corpus.",
+      "x_mitre_deprecated": true,
+      "external_references": [
+        {"source_name": "mitre-attack", "external_id": "T9998", "url": "https://attack.mitre.org/techniques/T9998/"}
+      ]
+    },
+    {
+      "type": "course-of-action",
+      "id": "course-of-action--example",
+      "name": "Behavior Prevention on Endpoint",
+      "description": "This is a course-of-action object, not an attack-pattern; the filter must drop it."
+    },
+    {
+      "type": "malware",
+      "id": "malware--example",
+      "name": "Sample Malware",
+      "description": "Malware objects are not attack-patterns; the filter must drop this too."
+    }
+  ]
+}
