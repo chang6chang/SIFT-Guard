@@ -553,3 +553,35 @@ cited as evidence directly.
 The probe-finding workflow that contaminated `findings.jsonl` lines
 2-8 in the v2 experiment is no longer reachable: every tool the
 analyst can call surfaces the audit_line it just produced.
+
+## 2026-05-06 — network_analyst v1: Verdict A reproduced; cross-source data is correlatable on `pid`
+
+`network_analyst` v1 ran against Rocba immediately after
+`process_analyst` v2 and produced 4 substantive findings, 0 probes,
+0 server-side rejections of any class, in 13 tool calls / 14 turns /
+$0.51 (vs v2's 79 tool calls / 80 turns / $2.61). Verdict A.
+The d54636d audit_line plumbing was exercised end-to-end on a *fresh*
+tier-1 path for the first time (`vol_netscan` was uncached); the fix
+is empirically validated on the fresh-write path — see
+`docs/network-analyst-v1-results.md` § Failure modes.
+
+**Cross-source observation (data only; not implemented in this PR).**
+`findings.jsonl` now carries 5 substantive process findings (lines
+9-13) and 4 substantive network findings (lines 15-18) on the same
+evidence. The two sets are correlatable on the `pid` join key, but
+no PID appears as an anomaly in *both* sets: process_analyst flagged
+`7900` (hidden svchost), `4420`/`16480` (SearchFilterHost /
+SearchProtocolHost cohort), `29664` (b_only gap), `8908`/`11672`
+(Teams.exe fan-out parent); network_analyst pivoted on `1248`
+(TermService svchost) and `4` (System). The week-6 validator can
+compute meaningful cross_plugin corroborations from this join key —
+e.g. confirming that process_analyst's hidden PID 7900 owns *zero*
+netscan records (a hidden process should not have active sockets) is
+an automatic HIGH-confidence cross-validation, and confirming
+network_analyst's PID 1248 has a canonical pslist record
+(`PPID=828=services.exe`) reframes finding #1 from "host owns the
+connection" toward "RDP service canonical, inbound IPs are the
+anomaly". Neither correlation is computed in this PR — that is the
+validator's job. The observation here is that the substrate (shared
+findings.jsonl, shared evidence, schema-pinned join key on `pid`)
+is correlatable.
