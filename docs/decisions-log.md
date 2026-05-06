@@ -462,3 +462,55 @@ re-loading the extractions.
 ("did the cross-plugin counts move between iterations?") use the
 record counts. Pool-tag-aliasing context comes from the duplicate-key
 counts.
+
+## 2026-05-06 — Verdict A on subagent architecture
+
+process_analyst v2 produced 5 substantive findings on Rocba including
+PID 7900 caught with correct category (`process_hidden`).
+Tier-1→tier-2 workflow was discovered organically by the analyst from
+tool descriptions alone, not prompted. This validates:
+
+- Restricted MCP-only tool surface elicits useful analysis.
+- Literal-typed categories enforce classification architecturally.
+- Tier-1/tier-2 split is discoverable from schema alone.
+- `record_finding` contract holds; analyst does not drift to prose.
+
+The architecture-over-prompt rule is now empirically supported, not
+just claimed. See `docs/process-analyst-v2-results.md` for the full
+run analysis and Verdict A justification.
+
+## 2026-05-06 — Probe-finding pattern: `audit_line` not surfaced
+
+7 of 12 findings from process_analyst v2 were probe placeholders
+where the analyst was searching for valid `(audit_line, source_tool)`
+pairs because tool returns don't surface their own audit-chain line
+number. This is structurally the same class of problem as v1's
+oversized-return deadlock: the analyst needs metadata that the
+architecture withholds.
+
+**Fix:** add `audit_line: int` to `ExtractionRef` and the tier-2
+result models (`QueryRecordsResult`, `GroupByResult`,
+`SetDifferenceResult`, `SubtreeResult`). Migrate before
+`network_analyst` lands so the same probe pattern does not propagate
+into a second analyst.
+
+Documented as a failure mode in
+`docs/process-analyst-v2-results.md` and propagated to
+`docs/accuracy-report.md` as documented-failure-mode #1.
+
+## 2026-05-06 — Findings corpus state, end of week 5
+
+`case-data/findings.jsonl` now contains:
+
+- **line 1**: synthetic genesis from week-5 `record_finding`
+  live-verification (`analyst=process_analyst`, but pre-experiment
+  placeholder).
+- **lines 2-13**: process_analyst v2 actual output — 5 substantive
+  findings + 7 probe placeholders.
+
+The week-6 validator operates on substantive entries (filter:
+`finding.title` does not start with `"probe"`). The 7 probe lines are
+retained on disk per the experiment's "do NOT manually clean up
+findings.jsonl" rule and because the architecture has no revocation
+primitive — once a finding lands in the chain, the chain extends
+forward only.
