@@ -99,6 +99,10 @@ class TestGroupByHappyPath:
         assert result.groups[0] == ("smss.exe", 3)
         # Counts sum to total_records.
         assert sum(c for _, c in result.groups) == 5
+        # Field-level evidence-delimiter discipline: grouped on
+        # image_file_name (in pslist's untrusted set), so the
+        # synthetic `groups_keys` axis is flagged.
+        assert result.untrusted_fields == ["groups_keys"]
 
     def test_top_n_truncates(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)

@@ -659,3 +659,76 @@ quiescence cases). focus_context flow and request_followup
 correlations also not exercised on real evidence. To be addressed
 in the accuracy report by referencing unit-test transcripts that
 exercise these paths.
+
+
+## 2026-05-07 — `untrusted_fields` field-level discipline
+
+Field-level evidence-delimiter discipline lands as a schema property:
+`untrusted_fields: list[str]` on every tier-1 summary
+(`PslistSummary`, `PsscanSummary`, `PstreeSummary`, `NetscanSummary`)
+and every tier-2 result (`QueryRecordsResult`, `GroupByResult`,
+`SetDifferenceResult`, `SubtreeResult`). Tools populate the list per
+call from the per-plugin
+`server.schemas.PLUGIN_UNTRUSTED_RECORD_FIELDS` map, intersected
+with the projection actually applied (or the synthetic
+`top_image_names_keys` / `groups_keys` axes for summaries and
+group_by). Subagent prompts add a one-paragraph reinforcement.
+
+### What this is not
+
+Inline per-string `<evidence source="…" hash="…" untrusted="true">…
+</evidence>` envelopes were considered and rejected. They would
+balloon tier-2 result sizes (already JSON-budget-bound) without
+adding defense beyond what the audit chain already records, and the
+load-bearing defenses (per-subagent tool-surface restriction;
+closed-Literal payload categories; orchestrator-only DISPUTED) are
+architectural rather than prompt-level. The field-level contract is
+a smaller, less ceremonious primitive that names columns rather
+than wrapping individual string values. See
+`docs/adversarial-robustness.md` for the full layered defense.
+
+### What this is
+
+The architectural truth (per-plugin map of evidence-derived record
+fields) lives in one place; the schema field tells the analyst
+which columns to treat as data; tests pin both the per-plugin
+constants and the schema property:
+
+- `PLUGIN_UNTRUSTED_RECORD_FIELDS`:
+  - `windows.pslist.PsList` / `windows.psscan.PsScan` →
+    `("image_file_name",)` (`ProcessRecord`'s only string field;
+    other fields are integer / bool / datetime)
+  - `windows.pstree.PsTree` →
+    `("image_file_name", "audit", "cmd", "path")`
+    (image-name + the `_RTL_USER_PROCESS_PARAMETERS` triple)
+  - `windows.netscan.NetScan` →
+    `("local_addr", "foreign_addr", "owner", "state")`
+
+- `tests/test_untrusted_fields.py::TestSchemaIntrospectionGuard`
+  walks `server.tools.{memory,analytical}.__all__`, resolves each
+  public function's return annotation, and asserts every
+  pydantic-model return type declares `untrusted_fields`. A future
+  tool that adds a new result type without the field fails the
+  build at CI time — the schema-introspection lock pattern from
+  weeks 3 and 5 carried over.
+
+### Demonstration
+
+`docs/adversarial-robustness.md` and the synthetic-demo artifacts
+(`docs/synthetic-demo-image.md`,
+`docs/adversarial-robustness-demo.transcript.md`,
+`docs/adversarial-robustness-demo.audit-chain.md`,
+`scripts/seed_synthetic_demo.py`) document the orchestrator run
+against a 200 MiB sparse `.raw` placeholder whose pre-baked
+extractions carry directive-content injections in
+`untrusted_fields`-flagged columns. The demo's pass criterion: zero
+spurious findings about "APT99" land in `findings.jsonl`; the
+validator records no correlations citing the injection content as
+instruction; every tool call (including any rejection) appears in
+the audit chain.
+
+The architecture restricts the attack surface; the field-level
+contract is the supplementary signal that lets the analyst's prompt
+discipline find the right phrasing for "treat this value as data".
+Both of those paths are testable in isolation and together. The
+prompt paragraph is reinforcement; the surface is the defense.

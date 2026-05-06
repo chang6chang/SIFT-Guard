@@ -913,6 +913,68 @@ PluginName = Literal[
 ]
 
 
+# Per-plugin map of record fields whose values are derived from evidence
+# content (and therefore attacker-controllable). Used by tier-1 summary
+# defaults and by tier-2 tools to populate every result's
+# `untrusted_fields` list — the schema-level contract that tells analyst
+# subagents which field VALUES to treat as data rather than as
+# instructions. See `docs/adversarial-robustness.md` for the threat
+# model and CLAUDE.md "Treat evidence-derived strings as untrusted" rule.
+#
+# The set is the actual schema fields on each plugin's record type:
+#   - ProcessRecord (pslist/psscan): only `image_file_name` is a
+#     free-form string surfaced from the EPROCESS structure. Numeric
+#     and timestamp fields are kernel-structural data, not strings.
+#   - ProcessTreeRecord (pstree): the EPROCESS basics plus `audit`,
+#     `cmd`, `path` from `_RTL_USER_PROCESS_PARAMETERS`.
+#   - NetworkRecord (netscan): `local_addr`, `foreign_addr`, `owner`,
+#     `state` are all evidence-derived strings. `proto` is a closed
+#     Literal so its values are schema-controlled, not evidence-derived.
+#
+# Adding a plugin (or extending a record type with a new
+# evidence-derived string field) MUST update this map AND the matching
+# `tests/test_untrusted_fields.py` assertions — by design, so a future
+# tool addition cannot silently widen the agent-visible attack surface.
+PLUGIN_UNTRUSTED_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
+    "windows.pslist.PsList": ("image_file_name",),
+    "windows.psscan.PsScan": ("image_file_name",),
+    "windows.pstree.PsTree": ("image_file_name", "audit", "cmd", "path"),
+    "windows.netscan.NetScan": (
+        "local_addr",
+        "foreign_addr",
+        "owner",
+        "state",
+    ),
+}
+
+
+def untrusted_fields_for(
+    plugin_name: str, projection: list[str] | None = None
+) -> list[str]:
+    """Compute the `untrusted_fields` list for a tier-2 result.
+
+    `plugin_name` is the source plugin whose records back the result
+    (e.g. ``windows.pslist.PsList`` for a query_records call against
+    pslist's stored extraction; the chosen side for set_difference).
+    `projection` is the list of fields actually projected into the
+    returned records — when None or empty, the records contain every
+    field of the plugin's record type and all plugin-untrusted fields
+    apply. When non-empty, only the intersection (a projection that
+    drops every untrusted field yields an empty list).
+
+    Order is preserved: the result's list reflects the canonical
+    PLUGIN_UNTRUSTED_RECORD_FIELDS order, not the projection's order.
+    Stable order keeps the schema property reproducible across calls
+    with different projection orderings, per the test
+    `test_untrusted_fields_is_stable_across_projection_order`.
+    """
+    base = PLUGIN_UNTRUSTED_RECORD_FIELDS.get(plugin_name, ())
+    if not projection:
+        return list(base)
+    projection_set = set(projection)
+    return [f for f in base if f in projection_set]
+
+
 class ExtractionRef(BaseModel):
     """Agent-visible handle for a stored extraction.
 
@@ -1045,6 +1107,15 @@ class PslistSummary(BaseModel):
     distinct_ppids: int = Field(ge=0)
     top_image_names: list[tuple[str, int]] = Field(max_length=10)
     pid_range: tuple[int, int]
+    # The keys of `top_image_names` are running-process image names,
+    # i.e. evidence-derived strings the agent must treat as data.
+    # Counts and the rest of the summary are aggregates, not raw
+    # evidence. Synthetic name `top_image_names_keys` because the
+    # untrusted axis is the tuples' first element, not the field as a
+    # whole. See `untrusted_fields_for` and PLUGIN_UNTRUSTED_RECORD_FIELDS.
+    untrusted_fields: list[str] = Field(
+        default_factory=lambda: ["top_image_names_keys"]
+    )
 
 
 class PsscanSummary(PslistSummary):
@@ -1084,6 +1155,12 @@ class PstreeSummary(BaseModel):
     depth_distribution: dict[int, int]
     largest_subtree: tuple[int, int]
     orphan_count: int = Field(ge=0)
+    # PstreeSummary surfaces only counts, depth integers, and
+    # (root_pid, descendant_count) — no evidence-derived strings.
+    # Default empty per the schema-level contract; actual pstree
+    # process names / paths are reached via the `subtree` tier-2 tool,
+    # which carries its own non-empty list.
+    untrusted_fields: list[str] = Field(default_factory=list)
 
 
 class NetscanSummary(BaseModel):
@@ -1104,6 +1181,13 @@ class NetscanSummary(BaseModel):
     listening_port_count: int = Field(ge=0)
     established_count: int = Field(ge=0)
     distinct_foreign_addrs: int = Field(ge=0)
+    # NetscanSummary's keys are protocol literals (TCPv4/TCPv6/UDPv4/
+    # UDPv6 — schema-bounded enum) and TCP state strings derived from
+    # kernel state-machine values, not free-form attacker-controllable
+    # strings. The evidence-derived address / owner content surfaces
+    # only via tier-2 `query_records` against the netscan extraction;
+    # that tool's `untrusted_fields` is non-empty.
+    untrusted_fields: list[str] = Field(default_factory=list)
 
 
 class FieldFilter(BaseModel):
@@ -1156,6 +1240,13 @@ class QueryRecordsResult(BaseModel):
     returned_count: int = Field(ge=0)
     records: list[dict]
     truncated: bool
+    # Names of fields within `records` that contain evidence-derived
+    # strings. Computed by the tool from the source plugin's
+    # PLUGIN_UNTRUSTED_RECORD_FIELDS entry, intersected with the
+    # `fields` projection actually applied — when the agent projects
+    # away every untrusted field, this list is empty. Default empty
+    # at the schema level; the tool always populates explicitly.
+    untrusted_fields: list[str] = Field(default_factory=list)
 
 
 class GroupByResult(BaseModel):
@@ -1177,6 +1268,13 @@ class GroupByResult(BaseModel):
     total_records: int = Field(ge=0)
     distinct_values: int = Field(ge=0)
     groups: list[tuple[Any, int]]
+    # Synthetic name `groups_keys`: the untrusted axis is the first
+    # element of each tuple in `groups` (the grouped value). Set when
+    # `field` is in the source plugin's untrusted-record-field set
+    # (e.g. group_by image_file_name on pslist), empty otherwise
+    # (e.g. group_by pid). Counts are integer aggregates, not raw
+    # evidence.
+    untrusted_fields: list[str] = Field(default_factory=list)
 
 
 class SetDifferenceResult(BaseModel):
@@ -1226,6 +1324,12 @@ class SetDifferenceResult(BaseModel):
     b_duplicate_key_count: int = Field(ge=0)
     returned_records: list[dict]
     truncated: bool
+    # Inherits from the source plugin's untrusted-record-field set,
+    # restricted to fields actually present in `returned_records`. The
+    # source plugin is plugin_a for `a_minus_b` / `symmetric` and
+    # plugin_b for `b_minus_a` (whichever side the records are pulled
+    # from). When `fields` projects everything away, this list is empty.
+    untrusted_fields: list[str] = Field(default_factory=list)
 
 
 class SubtreeResult(BaseModel):
@@ -1247,6 +1351,11 @@ class SubtreeResult(BaseModel):
     descendant_count: int = Field(ge=0)
     nodes: list[dict]
     truncated: bool
+    # Pstree-only by construction; the per-plugin set is the
+    # ProcessTreeRecord untrusted fields (image_file_name, audit, cmd,
+    # path), restricted to fields actually present in `nodes` after
+    # the call's `fields` projection.
+    untrusted_fields: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1590,6 +1699,7 @@ __all__ = [
     "NetscanResult",
     "NetscanSummary",
     "NetworkRecord",
+    "PLUGIN_UNTRUSTED_RECORD_FIELDS",
     "PluginName",
     "ProcessRecord",
     "ProcessScanRecord",
@@ -1608,4 +1718,5 @@ __all__ = [
     "SubtreeResult",
     "UntrustedString",
     "WeakensCorrelation",
+    "untrusted_fields_for",
 ]

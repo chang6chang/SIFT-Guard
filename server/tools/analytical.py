@@ -48,6 +48,7 @@ from server.extractions import (
     load_extraction,
 )
 from server.schemas import (
+    PLUGIN_UNTRUSTED_RECORD_FIELDS,
     ExtractionRef,
     FieldFilter,
     GroupByResult,
@@ -55,6 +56,7 @@ from server.schemas import (
     QueryRecordsResult,
     SetDifferenceResult,
     SubtreeResult,
+    untrusted_fields_for,
 )
 from server.tools.memory import _resolve_evidence
 
@@ -463,6 +465,7 @@ def query_records(
         returned_count=len(projected),
         records=projected,
         truncated=truncated,
+        untrusted_fields=untrusted_fields_for(plugin_name, fields),
     )
 
     append_audit_entry(
@@ -545,6 +548,15 @@ def group_by(
 
     audit_line = peek_next_line_number(case_dir_path)
 
+    # `groups_keys` synthetic name: the untrusted axis is the value
+    # side of every (value, count) tuple in `groups`. Marked when the
+    # grouped field is itself in the plugin's untrusted record-field
+    # set; group_by on `pid` (integer) yields an empty list.
+    if field in PLUGIN_UNTRUSTED_RECORD_FIELDS.get(plugin_name, ()):
+        group_untrusted = ["groups_keys"]
+    else:
+        group_untrusted = []
+
     result = GroupByResult(
         extraction=ref,
         audit_line=audit_line,
@@ -552,6 +564,7 @@ def group_by(
         total_records=len(filtered),
         distinct_values=distinct_values,
         groups=groups,
+        untrusted_fields=group_untrusted,
     )
 
     append_audit_entry(
@@ -742,6 +755,20 @@ def set_difference(
 
     audit_line = peek_next_line_number(case_dir_path)
 
+    # Source plugin: whichever side `returned_records` were pulled
+    # from. For symmetric we returned a mix of both, but the source
+    # plugin's untrusted-field set is identical between any two
+    # plugins that share a record schema (pslist/psscan are aliased);
+    # a true cross-schema symmetric (e.g., pslist↔netscan) cannot
+    # happen because `key` must be valid on both, and only `pid`
+    # qualifies — which is integer-typed in both schemas.
+    source_plugin_for_untrusted = (
+        plugin_b if direction == "b_minus_a" else plugin_a
+    )
+    diff_untrusted = untrusted_fields_for(
+        source_plugin_for_untrusted, fields
+    )
+
     result = SetDifferenceResult(
         extraction_a=ref_a,
         extraction_b=ref_b,
@@ -757,6 +784,7 @@ def set_difference(
         b_duplicate_key_count=b_duplicate_key_count,
         returned_records=diff_records,
         truncated=truncated,
+        untrusted_fields=diff_untrusted,
     )
 
     append_audit_entry(
@@ -883,6 +911,10 @@ def subtree(
 
     audit_line = peek_next_line_number(case_dir_path)
 
+    # Subtree is pstree-only by construction; nodes carry whichever
+    # of pstree's untrusted record fields survived the projection
+    # (image_file_name, audit, cmd, path). Empty `fields` means no
+    # projection — every untrusted field is present in `nodes`.
     result = SubtreeResult(
         extraction=ref,
         audit_line=audit_line,
@@ -892,6 +924,7 @@ def subtree(
         descendant_count=descendant_count,
         nodes=nodes_visited,
         truncated=truncated_by_size,
+        untrusted_fields=untrusted_fields_for(plugin_name, fields),
     )
 
     append_audit_entry(

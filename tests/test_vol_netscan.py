@@ -262,6 +262,13 @@ class TestVolNetscanHappyPath:
         assert summary.listening_port_count >= 2  # SMB + IPv6
         assert summary.distinct_foreign_addrs >= 1
 
+        # Field-level evidence-delimiter discipline. NetscanSummary
+        # surfaces only protocol-Literal counts and TCP-state-machine
+        # counts — no evidence-derived strings escape. Address / owner
+        # content reaches the analyst only via tier-2 query_records,
+        # whose result carries its own non-empty list.
+        assert summary.untrusted_fields == []
+
         # Stored extraction has the full connection list.
         _, parsed = load_extraction(
             case_dir, VALID_EVIDENCE_ID, "windows.netscan.NetScan"

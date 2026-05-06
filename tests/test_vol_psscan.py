@@ -282,6 +282,10 @@ class TestVolPsscanHappyPath:
         assert summary.unique_image_names == 3
         assert summary.pid_range == (4, 7784)
 
+        # Field-level evidence-delimiter discipline (PsscanSummary
+        # inherits PslistSummary's default).
+        assert summary.untrusted_fields == ["top_image_names_keys"]
+
         # Stored extraction has the full record set with the original
         # provenance metadata we never expose in the summary.
         _, parsed = load_extraction(

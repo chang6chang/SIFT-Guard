@@ -276,6 +276,13 @@ class TestVolPstreeHappyPath:
         # three-record fixture.
         assert summary.orphan_count == 2
 
+        # Field-level evidence-delimiter discipline. PstreeSummary
+        # surfaces only counts and depth integers — no
+        # evidence-derived strings escape into the summary, so the
+        # list is empty. Untrusted strings (image_file_name, audit,
+        # cmd, path) are reached only via the tier-2 `subtree` tool.
+        assert summary.untrusted_fields == []
+
         # Stored extraction has the full recursive tree with the same
         # provenance metadata we never expose in the summary.
         _, parsed = load_extraction(

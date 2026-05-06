@@ -325,6 +325,11 @@ class TestVolPslistHappyPath:
         names_in_top = {n for n, _ in summary.top_image_names}
         assert names_in_top == {"System", "Registry", "smss.exe"}
 
+        # Field-level evidence-delimiter discipline: top_image_names
+        # carries evidence-derived strings as the keys; the schema-
+        # default `untrusted_fields` flags that for the analyst.
+        assert summary.untrusted_fields == ["top_image_names_keys"]
+
         # The full PslistResult is now on disk; loading it gives back
         # the three records with their original fields.
         loaded_ref, parsed = load_extraction(

@@ -136,6 +136,10 @@ class TestQueryRecordsHappyPath:
         assert result.returned_count == 2
         assert result.truncated is False
         assert {r["pid"] for r in result.records} == {4, 100}
+        # Field-level evidence-delimiter discipline: pslist's
+        # untrusted record-field set narrowed by the (here empty)
+        # projection.
+        assert result.untrusted_fields == ["image_file_name"]
 
     def test_eq_filter_narrows_records(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)

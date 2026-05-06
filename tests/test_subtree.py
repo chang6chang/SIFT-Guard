@@ -114,6 +114,12 @@ class TestSubtreeHappyPath:
         depths = [n["depth"] for n in result.nodes]
         assert depths == [0, 1, 2]
         assert result.truncated is False
+        # Field-level evidence-delimiter discipline: subtree is
+        # pstree-only; with no projection every untrusted record
+        # field is present in `nodes`.
+        assert result.untrusted_fields == [
+            "image_file_name", "audit", "cmd", "path",
+        ]
 
     def test_max_depth_bounds_traversal(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)

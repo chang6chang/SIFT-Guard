@@ -139,6 +139,12 @@ class TestSetDifferenceFlagshipCase:
         assert result.a_duplicate_key_count == 0
         assert result.b_duplicate_key_count == 0
 
+        # Field-level evidence-delimiter discipline: a_minus_b returns
+        # records from plugin_a (psscan), so untrusted_fields reflects
+        # psscan's record set. No projection here, so all of psscan's
+        # untrusted fields apply (just `image_file_name`).
+        assert result.untrusted_fields == ["image_file_name"]
+
         # Returned records are PER-RECORD (not deduped by key) and
         # pulled from plugin_a (psscan). With no duplicate keys here,
         # per-record == per-key count.
