@@ -154,7 +154,7 @@ def build_index_files(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     model = SentenceTransformer(embedding_model_version)
-    dim = model.get_sentence_embedding_dimension()
+    dim = model.get_embedding_dimension()
 
     # Empty corpus is a programmer error — refuse rather than emit an
     # empty FAISS index that retrieval will silently treat as "no
