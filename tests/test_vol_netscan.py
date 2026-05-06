@@ -24,6 +24,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from server.extractions import load_extraction
 from server.schemas import ArtifactClass, EvidenceRecord
 from server.tools.memory import translate_to_vm_path, vol_netscan
 
@@ -235,56 +236,77 @@ class TestVolNetscanHappyPath:
             "server.tools.memory.run_vol_plugin",
             return_value=(fixture_stdout, fake_command, 537.4),
         ) as mock_run:
-            result = vol_netscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
+            summary = vol_netscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
-        assert result.plugin_name == "windows.netscan.NetScan"
-        assert result.volatility_version == "2.27.0"
-        assert result.evidence_id == VALID_EVIDENCE_ID
-        assert result.runtime_seconds == 537.4
-        assert result.command_executed == fake_command
+        # Tier-1 contract: NetscanSummary + ExtractionRef returned;
+        # full NetscanResult on disk.
+        ref = summary.extraction
+        assert ref.plugin_name == "windows.netscan.NetScan"
+        assert ref.evidence_id == VALID_EVIDENCE_ID
+        assert ref.runtime_seconds == 537.4
+        assert ref.cached is False
+        assert ref.record_count == 5
 
-        assert len(result.connections) == 5
+        # Summary distribution fields reflect the five sample rows.
+        assert summary.protocol_distribution == {
+            "TCPv4": 2,
+            "UDPv4": 2,
+            "TCPv6": 1,
+        }
+        # TCP-only state distribution: LISTENING (smb) + ESTABLISHED
+        # (apsd) + LISTENING (the IPv6 row in the fixture).
+        assert summary.tcp_state_distribution.get("LISTENING", 0) >= 1
+        assert summary.tcp_state_distribution.get("ESTABLISHED", 0) >= 1
+        assert summary.null_owner_count == 1  # the kernel record
+        assert summary.established_count == 1
+        assert summary.listening_port_count >= 2  # SMB + IPv6
+        assert summary.distinct_foreign_addrs >= 1
+
+        # Stored extraction has the full connection list.
+        _, parsed = load_extraction(
+            case_dir, VALID_EVIDENCE_ID, "windows.netscan.NetScan"
+        )
+        assert parsed["plugin_name"] == "windows.netscan.NetScan"
+        assert parsed["volatility_version"] == "2.27.0"
+        assert parsed["runtime_seconds"] == 537.4
+        assert parsed["command_executed"] == fake_command
+        connections = parsed["connections"]
+        assert len(connections) == 5
 
         # (a) TCPv4 LISTENING — System PID 4 holding port 445.
-        smb = result.connections[0]
-        assert smb.proto == "TCPv4"
-        assert smb.state == "LISTENING"
-        assert smb.local_addr == "0.0.0.0"
-        assert smb.local_port == 445
-        assert smb.pid == 4 and smb.owner == "System"
+        smb = connections[0]
+        assert smb["proto"] == "TCPv4"
+        assert smb["state"] == "LISTENING"
+        assert smb["local_addr"] == "0.0.0.0"
+        assert smb["local_port"] == 445
+        assert smb["pid"] == 4 and smb["owner"] == "System"
 
-        # (b) TCPv4 ESTABLISHED — real outbound connection with both
-        # foreign address and foreign port populated.
-        apsd = result.connections[1]
-        assert apsd.proto == "TCPv4"
-        assert apsd.state == "ESTABLISHED"
-        assert apsd.foreign_addr == "17.57.144.165"
-        assert apsd.foreign_port == 5223
-        assert apsd.local_port == 53810
+        # (b) TCPv4 ESTABLISHED — real outbound connection.
+        apsd = connections[1]
+        assert apsd["proto"] == "TCPv4"
+        assert apsd["state"] == "ESTABLISHED"
+        assert apsd["foreign_addr"] == "17.57.144.165"
+        assert apsd["foreign_port"] == 5223
+        assert apsd["local_port"] == 53810
 
-        # (c) UDPv4 with empty state — UDP is connectionless; netscan
-        # emits state == "" rather than null. Schema accepts the empty
-        # string.
-        udp = result.connections[2]
-        assert udp.proto == "UDPv4"
-        assert udp.state == "", "UDP records must keep empty-string state"
-        assert udp.foreign_addr == "*"  # wildcard for unbound
-        assert udp.local_port == 1900
+        # (c) UDPv4 with empty state.
+        udp = connections[2]
+        assert udp["proto"] == "UDPv4"
+        assert udp["state"] == "", "UDP records must keep empty-string state"
+        assert udp["foreign_addr"] == "*"
+        assert udp["local_port"] == 1900
 
-        # (d) IPv6 — long colon-hex address must survive without
-        # truncation. (No length cap on local_addr.)
-        v6 = result.connections[3]
-        assert v6.proto == "TCPv6"
-        assert v6.local_addr == "fe80::d18c:bb1:3264:8c8"
-        assert ":" in v6.local_addr and len(v6.local_addr) > 15
+        # (d) IPv6 — long colon-hex address must survive without truncation.
+        v6 = connections[3]
+        assert v6["proto"] == "TCPv6"
+        assert v6["local_addr"] == "fe80::d18c:bb1:3264:8c8"
+        assert ":" in v6["local_addr"] and len(v6["local_addr"]) > 15
 
-        # (e) Null PID + null Owner — kernel-only endpoint or socket
-        # whose owning process exited but pool entry survived. Schema
-        # must accept None for both.
-        kernel = result.connections[4]
-        assert kernel.pid is None and kernel.owner is None
-        assert kernel.proto == "UDPv4"
-        assert kernel.local_port == 5353
+        # (e) Null PID + null Owner.
+        kernel = connections[4]
+        assert kernel["pid"] is None and kernel["owner"] is None
+        assert kernel["proto"] == "UDPv4"
+        assert kernel["local_port"] == 5353
 
         # The runner was called with the pinned plugin name AND the
         # 1200s netscan timeout — vol_pslist's 300s default would time
@@ -315,11 +337,14 @@ class TestVolNetscanRecordWarnings:
             "server.tools.memory.run_vol_plugin",
             return_value=(_bad_record_json(), "ssh ... vol ...", 540.0),
         ):
-            result = vol_netscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
+            summary = vol_netscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
         # Two valid records survived, the LocalPort=-1 row is gone.
-        assert len(result.connections) == 2
-        assert {c.local_port for c in result.connections} == {80, 443}
+        assert summary.extraction.record_count == 2
+        _, parsed = load_extraction(
+            case_dir, VALID_EVIDENCE_ID, "windows.netscan.NetScan"
+        )
+        assert {c["local_port"] for c in parsed["connections"]} == {80, 443}
 
         # Audit log: 1 warning + 1 main result line, in that order.
         # tool_name distinct from the other plugins' warnings so a

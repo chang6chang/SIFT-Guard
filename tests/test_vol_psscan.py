@@ -27,6 +27,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from server.extractions import load_extraction
 from server.schemas import ArtifactClass, EvidenceRecord
 from server.tools.memory import translate_to_vm_path, vol_psscan
 
@@ -244,7 +245,10 @@ class TestVolPsscanRejectionAudit:
 
 
 class TestVolPsscanHappyPath:
-    def test_returns_psscan_result_with_three_records(self, tmp_path: Path):
+    def test_returns_psscan_summary_with_three_records(self, tmp_path: Path):
+        """Tier-1 contract: psscan returns a PsscanSummary plus an
+        ExtractionRef; the full PsscanResult is on disk under
+        extractions/<evidence_id>/windows.psscan.PsScan.json."""
         case_dir = _make_case_dir(tmp_path)
         fixture_stdout = PSSCAN_FIXTURE.read_text(encoding="utf-8")
         # Runtime intentionally set well above the pslist test's value
@@ -262,28 +266,47 @@ class TestVolPsscanHappyPath:
             "server.tools.memory.run_vol_plugin",
             return_value=(fixture_stdout, fake_command, 396.3),
         ) as mock_run:
-            result = vol_psscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
+            summary = vol_psscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
-        assert result.plugin_name == "windows.psscan.PsScan"
-        assert result.volatility_version == "2.27.0"
-        assert result.evidence_id == VALID_EVIDENCE_ID
-        assert result.runtime_seconds == 396.3
-        assert result.command_executed == fake_command
+        ref = summary.extraction
+        assert ref.plugin_name == "windows.psscan.PsScan"
+        assert ref.evidence_id == VALID_EVIDENCE_ID
+        assert ref.runtime_seconds == 396.3
+        assert ref.cached is False
+        assert ref.record_count == 3
 
-        assert len(result.processes) == 3
-        assert result.processes[0].pid == 4
-        assert result.processes[0].image_file_name == "System"
-        assert result.processes[0].exit_time is None
-        assert result.processes[1].pid == 100
-        assert result.processes[1].image_file_name == "Registry"
+        # Summary distribution fields reflect the three sample rows.
+        # Two have null exit_time (System, Registry); one (Teams.exe)
+        # is non-null — the diagnostic value of psscan vs pslist.
+        assert summary.with_exit_time_count == 1
+        assert summary.unique_image_names == 3
+        assert summary.pid_range == (4, 7784)
 
+        # Stored extraction has the full record set with the original
+        # provenance metadata we never expose in the summary.
+        _, parsed = load_extraction(
+            case_dir, VALID_EVIDENCE_ID, "windows.psscan.PsScan"
+        )
+        assert parsed["plugin_name"] == "windows.psscan.PsScan"
+        assert parsed["volatility_version"] == "2.27.0"
+        assert parsed["evidence_id"] == VALID_EVIDENCE_ID
+        assert parsed["runtime_seconds"] == 396.3
+        assert parsed["command_executed"] == fake_command
+
+        records = parsed["processes"]
+        assert len(records) == 3
+        assert records[0]["pid"] == 4
+        assert records[0]["image_file_name"] == "System"
+        assert records[0]["exit_time"] is None
+        assert records[1]["pid"] == 100
+        assert records[1]["image_file_name"] == "Registry"
         # Third record exercises psscan's diagnostic value: a process
         # with a non-null ExitTime. pslist's linked-list walk on a
         # post-exit image typically would not surface this row.
-        assert result.processes[2].pid == 7784
-        assert result.processes[2].image_file_name == "Teams.exe"
-        assert result.processes[2].exit_time is not None
-        assert result.processes[2].exit_time.year == 2020
+        assert records[2]["pid"] == 7784
+        assert records[2]["image_file_name"] == "Teams.exe"
+        assert records[2]["exit_time"] is not None
+        assert records[2]["exit_time"].startswith("2020-")
 
         # The runner was called with the pinned plugin name AND the
         # bumped 900s timeout — psscan is ~30-50× slower than pslist
@@ -313,11 +336,14 @@ class TestVolPsscanRecordWarnings:
             "server.tools.memory.run_vol_plugin",
             return_value=(_bad_record_json(), "ssh ... vol ...", 396.0),
         ):
-            result = vol_psscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
+            summary = vol_psscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
         # The two valid records survived; the PID -1 row is gone.
-        assert len(result.processes) == 2
-        assert {p.pid for p in result.processes} == {4, 100}
+        assert summary.extraction.record_count == 2
+        _, parsed = load_extraction(
+            case_dir, VALID_EVIDENCE_ID, "windows.psscan.PsScan"
+        )
+        assert {r["pid"] for r in parsed["processes"]} == {4, 100}
 
         # Audit log: 1 warning entry + 1 main result entry, in that
         # order. The warning's tool_name names the failure mode so a

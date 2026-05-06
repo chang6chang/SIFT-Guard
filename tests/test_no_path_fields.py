@@ -46,14 +46,37 @@ import pytest
 from server.main import mcp
 
 
-# Substring (case-insensitive) match. Loose on purpose: catches
-# `image_path`, `mft_file`, `output_dir`, `target_directory`,
-# `image_filename`, `case_filepath` — every plausible mis-naming a
-# contributor might reach for. False positives (e.g., `profile_id`)
-# should be renamed rather than worked around; "evidence_id" is the
-# canonical pattern for naming registered artifacts.
+# Tokens that indicate a free-form filesystem path. Lowercased; the
+# match is on the whole token (split on underscores, plus the bare
+# field name as a fallback for one-word fields like `filepath`).
+# Token-level matching avoids false positives where a path token
+# would otherwise appear as a substring of an unrelated word — e.g.,
+# `set_difference.direction` should not match because `direction`
+# happens to contain `dir`.
+#
+# Catches the intended cases: `image_path` → ["image","path"],
+# `mft_file`, `output_dir`, `target_directory`, `image_filename`,
+# `case_filepath`, the bare `filepath`. False-positive guard against
+# `direction`, `descriptor`, `pidfile_locking_strategy`, etc.
+_PATH_TOKENS: frozenset[str] = frozenset(
+    {"path", "file", "filename", "filepath", "dir", "directory"}
+)
+
+
+def _is_path_shaped_name(field_name: str) -> bool:
+    """Tokenize on underscores; True if any token (or the bare name)
+    is in the path-token set."""
+    lowered = field_name.lower()
+    if lowered in _PATH_TOKENS:
+        return True
+    tokens = lowered.split("_")
+    return any(t in _PATH_TOKENS for t in tokens)
+
+
+# Kept for the symmetric self-test below — `filepath` is the canonical
+# allow-listed name and the test still pins the detector against it.
 _PATH_NAME_PATTERN = re.compile(
-    r"(path|file|filename|filepath|dir|directory)", re.IGNORECASE
+    r"\b(path|file|filename|filepath|dir|directory)\b", re.IGNORECASE
 )
 
 # (tool_name, field_name) pairs that are allowed to look path-shaped.
@@ -107,16 +130,14 @@ def _walk_tool_for_violations(tool) -> list[str]:
     for prop_name, prop_schema in properties.items():
         if (tool.name, prop_name) in ALLOWED_PATH_FIELDS:
             continue
-        name_hits = bool(_PATH_NAME_PATTERN.search(prop_name))
+        name_hits = _is_path_shaped_name(prop_name)
         format_hits = (
             isinstance(prop_schema, dict) and prop_schema.get("format") == "path"
         )
         if name_hits or format_hits:
             why = []
             if name_hits:
-                why.append(
-                    f"name matches /{_PATH_NAME_PATTERN.pattern}/"
-                )
+                why.append("name token-matches a path-shaped name")
             if format_hits:
                 why.append('JSON schema "format": "path"')
             violations.append(
@@ -171,9 +192,15 @@ def test_register_evidence_filepath_remains_the_only_exception():
         "now stale and must be removed or updated."
     )
 
-    # Symmetric: prove the name-regex would have flagged `filepath` but
+    # Symmetric: prove the detector would have flagged `filepath` but
     # for the allow-list — i.e., the test is doing real work, not a no-op.
-    assert _PATH_NAME_PATTERN.search("filepath"), (
-        "name regex no longer matches `filepath`; the allow-list cannot "
-        "be doing what it claims. Re-check _PATH_NAME_PATTERN."
+    assert _is_path_shaped_name("filepath"), (
+        "token detector no longer matches `filepath`; the allow-list "
+        "cannot be doing what it claims. Re-check _PATH_TOKENS."
+    )
+    # And that the false-positive guard holds: `direction` (contains
+    # the substring `dir` but not as a token) must NOT trigger.
+    assert not _is_path_shaped_name("direction"), (
+        "token detector flagged `direction` as path-shaped; the "
+        "regex-substring bug from the pre-week-5 version has resurfaced."
     )

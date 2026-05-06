@@ -29,6 +29,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from server.extractions import load_extraction
 from server.schemas import ArtifactClass, EvidenceRecord
 from server.tools.memory import translate_to_vm_path, vol_pstree
 
@@ -250,59 +251,81 @@ class TestVolPstreeHappyPath:
             "server.tools.memory.run_vol_plugin",
             return_value=(fixture_stdout, fake_command, 29.5),
         ) as mock_run:
-            result = vol_pstree(VALID_EVIDENCE_ID, case_dir=str(case_dir))
+            summary = vol_pstree(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
-        assert result.plugin_name == "windows.pstree.PsTree"
-        assert result.volatility_version == "2.27.0"
-        assert result.evidence_id == VALID_EVIDENCE_ID
-        assert result.runtime_seconds == 29.5
-        assert result.command_executed == fake_command
+        # Tier-1 contract: PstreeSummary returned, full tree on disk.
+        ref = summary.extraction
+        assert ref.plugin_name == "windows.pstree.PsTree"
+        assert ref.evidence_id == VALID_EVIDENCE_ID
+        assert ref.runtime_seconds == 29.5
+        assert ref.cached is False
+        assert ref.record_count == 3  # three top-level subtrees
 
-        # Three top-level subtrees: System, services.exe, chrome.exe.
-        assert len(result.processes) == 3
+        # Summary-level shape signal.
+        assert summary.top_level_root_count == 3
+        # System->smss.exe is depth 1; services.exe->svchost->consent
+        # is depth 2; chrome.exe (orphan) is depth 0. Max is 2.
+        assert summary.max_depth == 2
+        assert summary.depth_distribution[0] == 3  # three roots
+        # Orphans: services.exe (ppid 752 not in tree) AND chrome.exe
+        # (ppid 99999 not in tree). System's ppid=0 is excluded by
+        # definition (PID 4 / System is the canonical kernel root).
+        # Two orphans total — the fixture's services.exe-rooted
+        # subtree was a real Windows lineage in the live image, but
+        # the parent (likely wininit.exe / SMSS) is not in this
+        # three-record fixture.
+        assert summary.orphan_count == 2
+
+        # Stored extraction has the full recursive tree with the same
+        # provenance metadata we never expose in the summary.
+        _, parsed = load_extraction(
+            case_dir, VALID_EVIDENCE_ID, "windows.pstree.PsTree"
+        )
+        assert parsed["plugin_name"] == "windows.pstree.PsTree"
+        assert parsed["volatility_version"] == "2.27.0"
+        assert parsed["runtime_seconds"] == 29.5
+        assert parsed["command_executed"] == fake_command
+
+        records = parsed["processes"]
+        assert len(records) == 3
 
         # (a) Normal parent-child — System has one child (smss.exe).
-        system = next(p for p in result.processes if p.image_file_name == "System")
-        assert system.pid == 4 and system.ppid == 0
-        assert len(system.children) == 1
-        assert system.children[0].image_file_name == "smss.exe"
-        assert system.children[0].ppid == 4
+        system = next(p for p in records if p["image_file_name"] == "System")
+        assert system["pid"] == 4 and system["ppid"] == 0
+        assert len(system["children"]) == 1
+        assert system["children"][0]["image_file_name"] == "smss.exe"
+        assert system["children"][0]["ppid"] == 4
         # Pstree-specific: smss.exe has audit/cmd/path populated; System
         # itself is the kernel and has them all null.
-        assert system.audit is None
-        assert system.children[0].audit is not None
-        assert system.children[0].cmd is not None
-        assert system.children[0].path is not None
+        assert system["audit"] is None
+        assert system["children"][0]["audit"] is not None
+        assert system["children"][0]["cmd"] is not None
+        assert system["children"][0]["path"] is not None
 
         # (b) Deep-nested chain — services.exe → svchost.exe → consent.exe
         services = next(
-            p for p in result.processes if p.image_file_name == "services.exe"
+            p for p in records if p["image_file_name"] == "services.exe"
         )
-        assert len(services.children) == 1
-        svchost = services.children[0]
-        assert svchost.image_file_name == "svchost.exe"
-        assert svchost.cmd == "C:\\Windows\\system32\\svchost.exe -k netsvcs"
-        assert len(svchost.children) == 1
-        consent = svchost.children[0]
-        assert consent.image_file_name == "consent.exe"
-        assert consent.pid == 9876
-        # Depth: consent is at depth 3 from the result root (top-level,
-        # top.children, top.children[0].children)
-        # Verifying the recursive descent worked.
-        assert consent.children == []
+        assert len(services["children"]) == 1
+        svchost = services["children"][0]
+        assert svchost["image_file_name"] == "svchost.exe"
+        assert svchost["cmd"] == "C:\\Windows\\system32\\svchost.exe -k netsvcs"
+        assert len(svchost["children"]) == 1
+        consent = svchost["children"][0]
+        assert consent["image_file_name"] == "consent.exe"
+        assert consent["pid"] == 9876
+        assert consent["children"] == []
 
         # (c) Orphan — chrome.exe has PPID=99999, which is not any
-        # process's PID anywhere in the tree. Pstree placed it at the
-        # top level; the schema preserves the unresolvable PPID rather
-        # than reparenting silently.
+        # process's PID anywhere in the tree.
         chrome = next(
-            p for p in result.processes if p.image_file_name == "chrome.exe"
+            p for p in records if p["image_file_name"] == "chrome.exe"
         )
-        assert chrome.ppid == 99999, (
+        assert chrome["ppid"] == 99999, (
             "orphaned chrome.exe must keep its raw PPID — the "
             "validator will need it to detect that the parent is gone"
         )
-        assert chrome.children == []
+        assert chrome["children"] == []
 
         # Runner was called with the pinned plugin name and translated
         # VM path (no host path leaks).
@@ -327,12 +350,16 @@ class TestVolPstreeRecordWarnings:
             "server.tools.memory.run_vol_plugin",
             return_value=(_bad_subtree_json(), "ssh ... vol ...", 30.0),
         ):
-            result = vol_pstree(VALID_EVIDENCE_ID, case_dir=str(case_dir))
+            summary = vol_pstree(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
         # First top-level (services.exe with bad descendant) was
         # skipped; second (System, well-formed) survived.
-        assert len(result.processes) == 1
-        assert result.processes[0].image_file_name == "System"
+        assert summary.extraction.record_count == 1
+        _, parsed = load_extraction(
+            case_dir, VALID_EVIDENCE_ID, "windows.pstree.PsTree"
+        )
+        assert len(parsed["processes"]) == 1
+        assert parsed["processes"][0]["image_file_name"] == "System"
 
         # Audit chain: 1 warning + 1 main result line, in that order.
         # Warning's tool_name marks it as a pstree warning so a

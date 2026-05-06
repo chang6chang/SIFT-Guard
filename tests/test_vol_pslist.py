@@ -22,6 +22,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from server.extractions import load_extraction
 from server.schemas import ArtifactClass, EvidenceRecord
 from server.tools.memory import translate_to_vm_path, vol_pslist
 
@@ -283,7 +284,11 @@ class TestVolPslistRejectionAudit:
 
 
 class TestVolPslistHappyPath:
-    def test_returns_pslist_result_with_three_records(self, tmp_path: Path):
+    def test_returns_pslist_summary_with_three_records(self, tmp_path: Path):
+        """Tier-1 contract: vol_pslist returns a PslistSummary with an
+        ExtractionRef and shape signal; the full PslistResult lands on
+        disk under extractions/<evidence_id>/windows.pslist.PsList.json
+        and is loadable via `load_extraction`."""
         case_dir = _make_case_dir(tmp_path)
         fixture_stdout = PSLIST_FIXTURE.read_text(encoding="utf-8")
         fake_command = (
@@ -297,28 +302,66 @@ class TestVolPslistHappyPath:
             "server.tools.memory.run_vol_plugin",
             return_value=(fixture_stdout, fake_command, 14.7),
         ) as mock_run:
-            result = vol_pslist(VALID_EVIDENCE_ID, case_dir=str(case_dir))
+            summary = vol_pslist(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
-        # Plugin pinned in the tool, not agent-supplied.
-        assert result.plugin_name == "windows.pslist.PsList"
-        assert result.volatility_version == "2.27.0"
-        assert result.evidence_id == VALID_EVIDENCE_ID
-        assert result.runtime_seconds == 14.7
-        assert result.command_executed == fake_command
+        # ExtractionRef is the agent-visible handle for the stored data.
+        ref = summary.extraction
+        assert ref.plugin_name == "windows.pslist.PsList"
+        assert ref.evidence_id == VALID_EVIDENCE_ID
+        assert ref.record_count == 3
+        assert ref.cached is False
+        assert ref.runtime_seconds == 14.7
+        assert ref.extractions_chain_line == 1
+        assert len(ref.extraction_sha256) == 64
 
-        assert len(result.processes) == 3
-        assert result.processes[0].pid == 4
-        assert result.processes[0].image_file_name == "System"
-        assert result.processes[1].pid == 100
-        assert result.processes[1].image_file_name == "Registry"
-        assert result.processes[2].pid == 440
-        assert result.processes[2].image_file_name == "smss.exe"
+        # Summary distribution fields reflect the three sample rows.
+        assert summary.unique_image_names == 3
+        assert summary.distinct_ppids == len({0, 4})
+        assert summary.pid_range == (4, 440)
+        # top_image_names is ordered descending by count; for the
+        # three-row sample each name appears once so the order is
+        # whichever pydantic preserved from the Counter.most_common
+        # tie-break (insertion order).
+        names_in_top = {n for n, _ in summary.top_image_names}
+        assert names_in_top == {"System", "Registry", "smss.exe"}
+
+        # The full PslistResult is now on disk; loading it gives back
+        # the three records with their original fields.
+        loaded_ref, parsed = load_extraction(
+            case_dir, VALID_EVIDENCE_ID, "windows.pslist.PsList"
+        )
+        assert loaded_ref.cached is True
+        assert loaded_ref.runtime_seconds is None  # cache contract
+        assert parsed["plugin_name"] == "windows.pslist.PsList"
+        assert parsed["volatility_version"] == "2.27.0"
+        assert parsed["evidence_id"] == VALID_EVIDENCE_ID
+        assert parsed["runtime_seconds"] == 14.7
+        assert parsed["command_executed"] == fake_command
+        records = parsed["processes"]
+        assert len(records) == 3
+        assert records[0]["pid"] == 4
+        assert records[0]["image_file_name"] == "System"
+        assert records[1]["pid"] == 100
+        assert records[1]["image_file_name"] == "Registry"
+        assert records[2]["pid"] == 440
+        assert records[2]["image_file_name"] == "smss.exe"
 
         # The runner was called with the pinned plugin name and the
         # translated VM path — not the host path.
         plugin_arg, vm_path_arg = mock_run.call_args.args[:2]
         assert plugin_arg == "windows.pslist.PsList"
         assert vm_path_arg == "/mnt/rocba/Rocba-Memory.raw"
+
+        # Extractions chain line was created with matching hash.
+        chain_path = case_dir / "extractions.jsonl"
+        chain_lines = [
+            json.loads(l) for l in chain_path.read_text().splitlines() if l.strip()
+        ]
+        assert len(chain_lines) == 1
+        assert chain_lines[0]["evidence_id"] == VALID_EVIDENCE_ID
+        assert chain_lines[0]["plugin_name"] == "windows.pslist.PsList"
+        assert chain_lines[0]["record_count"] == 3
+        assert chain_lines[0]["extraction_sha256"] == ref.extraction_sha256
 
 
 # ---------------------------------------------------------------------------
@@ -337,12 +380,21 @@ class TestVolPslistRecordWarnings:
             "server.tools.memory.run_vol_plugin",
             return_value=(_bad_record_json(), "ssh ... vol ...", 1.0),
         ):
-            result = vol_pslist(VALID_EVIDENCE_ID, case_dir=str(case_dir))
+            summary = vol_pslist(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
-        # The two valid records survived; the PID -1 row is gone.
-        assert len(result.processes) == 2
-        assert {p.pid for p in result.processes} == {4, 100}
-        assert all(p.pid != -1 for p in result.processes)
+        # The summary's record_count reflects only the surviving rows;
+        # PID -1 was dropped during validation.
+        assert summary.extraction.record_count == 2
+
+        # Stored extraction: the two valid records survived, the bad
+        # row is gone, and the audited count matches.
+        _, parsed = load_extraction(
+            case_dir, VALID_EVIDENCE_ID, "windows.pslist.PsList"
+        )
+        records = parsed["processes"]
+        assert len(records) == 2
+        assert {r["pid"] for r in records} == {4, 100}
+        assert all(r["pid"] != -1 for r in records)
 
         # Audit log: 1 warning entry + 1 main result entry, in that
         # order. The warning's tool_name names the failure mode so a

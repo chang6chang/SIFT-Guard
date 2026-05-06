@@ -132,6 +132,54 @@ each other and against the VAD, flagging unlinks.
 | Spawn-pair anomaly: child `ImageFileName` is in the high-risk-shell set (`cmd.exe`, `powershell.exe`, `pwsh.exe`, `wscript.exe`, `cscript.exe`, `mshta.exe`, `rundll32.exe`, `regsvr32.exe`) AND parent `ImageFileName` is in the unusual-parent set (Office binaries, browsers, `lsass.exe`, `services.exe` outside its known service whitelist) | **HIGH** — known living-off-the-land spawn pattern | Re-run: `windows.cmdline.CmdLine` for both, RAG-search for the specific spawn pair |
 | Reasonable parent-child tree with no temporal or spawn-pair anomalies | INFORMATIONAL | Log only |
 
+## Memory baseline characteristics
+
+Live measurements from the registered Rocba memory image
+(`evidence_id 6770da81-…`) anchored against the tier-1 / tier-2
+architecture (week 5). The validator uses these as the reference
+shape for the case; deviation from these counts at re-run time is
+itself a signal.
+
+- `vol_pslist` extraction: 2186 records, 75 unique image names,
+  PPID set of 33, PID range [4, 30328], all with non-null
+  `CreateTime`, 1980 with non-null `ExitTime`. Top-10 image-name
+  fan-out is dominated by Teams.exe (1901 records — see Open
+  Question #4 below).
+- `vol_psscan` extraction: 2212 records, 78 unique image names,
+  2001 with non-null `ExitTime`. Wall time on the SIFT VM: ~10 min.
+- `vol_pstree` extraction: 58 top-level roots, max depth 8,
+  largest subtree rooted at PID 8908 (1730 descendants — Teams.exe
+  again), 55 orphan roots (PPID not in active list).
+- `psscan` vs `pslist` set difference (`set_difference` tool,
+  `key="pid"`):
+  - **11 PIDs in `psscan`, not in `pslist`.**
+    - 1 still active (PID 7900, `svchost.exe`, 2 pool aliases) —
+      DKOM candidate, validator priority.
+    - 10 exited, `ExitTime` within capture window (2020-11-13 to
+      2020-11-16) — normal lifecycle, INFORMATIONAL per Rule 1.
+  - **1 PID in `pslist`, not in `psscan`** — likely linked-list
+    churn between the two scan phases (psscan's wall time is ~10 min;
+    a process that arrived after the psscan walk completed but
+    before pslist ran will appear in pslist only). INFORMATIONAL
+    per Rule 1.
+  - Intersection: 2185 PIDs.
+  - Pool-tag aliasing across the whole psscan extraction:
+    `a_duplicate_key_count = 16` (16 records whose PID has been
+    seen earlier in the extraction). Of those, 15 are intersection
+    PIDs (same EPROCESS rediscovered across pool boundaries —
+    benign), 1 is the PID 7900 alias above.
+  - The simple record-count delta (`|psscan| − |pslist| = 26`) is
+    NOT a set-difference metric; it conflates entity-set
+    differences with pool-tag aliasing. Surfaced as
+    `a_record_count` / `b_record_count` for audit-style sanity
+    checks; the entity-anomaly signal is `a_only_count = 11`. See
+    `decisions-log.md` 2026-05-06.
+
+These numbers are baseline shape, not ground truth. The validator's
+job is to determine which of the 11 a_only PIDs and the 16
+duplicate-keyed records are real anomalies vs. expected pool-scan
+artifacts of a long-running Windows session.
+
 ## Severity → re-run dispatch (summary)
 
 The orchestrator turns each **HIGH** verdict into a targeted re-run.

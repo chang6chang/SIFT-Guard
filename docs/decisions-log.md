@@ -396,3 +396,69 @@ tiebreaker) and the hash-chained audit (#5).
 **Artifacts retained:** docs/protocol-sift/ (assessment + raw inputs)
 kept for reference. Protocol SIFT install on SIFT VM left in place,
 unused.
+
+## 2026-05-06 — Set vs record semantics in `set_difference`
+
+**Decision:** `set_difference` returns BOTH unique-key counts and
+record counts. The week-4 baseline note "psscan +26 unlinked" was a
+count-vs-set conflation; the forensically meaningful set-diff is 11
+unique PIDs.
+
+The `SetDifferenceResult` schema carries:
+
+- `a_only_count`, `b_only_count`, `intersection_count` —
+  SET-semantic on the join key (unique-PID counts on Rocba:
+  11, 1, 2185).
+- `a_record_count`, `b_record_count` — total record counts in each
+  extraction (2212, 2186 on Rocba). Surfaces the simple
+  length-delta the week-4 note referred to.
+- `a_duplicate_key_count`, `b_duplicate_key_count` — records in each
+  extraction whose key value has been seen earlier in the same
+  extraction ("extras beyond first occurrence"). On Rocba:
+  16 in psscan, 0 in pslist. The 16 captures pool-tag aliasing
+  across the whole psscan extraction; 15 of those are intersection
+  PIDs (same EPROCESS rediscovered across pool boundaries — benign
+  pool-scan noise), 1 is in the a_only set (PID 7900 svchost.exe,
+  the DKOM candidate).
+- `returned_records` is per-record (not deduped by key). PID 7900's
+  two pool-aliased EPROCESS records both return when querying
+  a_only — the agent typically wants every alias for forensic
+  evidence.
+
+**Rationale:** Both metrics answer different questions and the
+validator needs both. The set count answers "how many distinct
+entities are missing from plugin_b" (the DKOM-candidate count). The
+record count answers "is the record-count delta we see in the
+extraction sizes a real anomaly or pool-tag noise?" The
+duplicate-key counts let the agent reconcile the two without
+re-loading the extractions.
+
+**Live verification on Rocba reconciliation:**
+
+    record-count delta:     |psscan| - |pslist| = 2212 - 2186 = 26
+    set diff a_only:        11  (unique PIDs in psscan, not pslist)
+    set diff b_only:        1   (unique PIDs in pslist, not psscan)
+    psscan duplicate keys:  16  (pool-tag aliases across whole extraction)
+    psscan total records:   2212
+    pslist total records:   2186
+
+    reconciliation:
+        records in psscan with PID not in pslist key set
+            = 12 (11 unique PIDs + PID 7900 alias)
+        psscan extra-records due to pool-tag aliasing
+            = 16
+        records in pslist with PID not in psscan key set
+            = 1
+        |psscan| - |pslist| = 12 + 16 - 1 - 1
+                            = 26 ✓
+            (the trailing -1 accounts for PID 7900 being one of the
+            duplicate keys but ALSO one of the a_only PIDs — its
+            second alias is counted by both `a_duplicate_key_count`
+            and "records with PID not in pslist", so we subtract
+            once to avoid double-counting in the reconciliation.)
+
+**Validator usage rule:** hypotheses are formed against
+`a_only_count` (entity-set semantics). Audit-style sanity checks
+("did the cross-plugin counts move between iterations?") use the
+record counts. Pool-tag-aliasing context comes from the duplicate-key
+counts.

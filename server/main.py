@@ -7,6 +7,15 @@ Per CLAUDE.md "Ground truth isolation" rule 3, MCP tools never accept
 arbitrary case paths. `CASE_DIR` is a module-level constant resolved
 by the server, not a parameter the agent can set — the agent can only
 name evidence by `evidence_id` registered through `register_evidence`.
+
+Tool surface as of week 5 (10 tools):
+  Tier-0  register_evidence (read-only catalog)
+  Tier-1  vol_pslist, vol_psscan, vol_pstree, vol_netscan
+          — invoke Volatility, persist full output to extractions/,
+            return a small Summary
+  Tier-2  query_records, group_by, set_difference, subtree
+          — read stored extractions, compose narrowed answers
+  Tier-1  record_finding (analyst commits a DRAFT finding)
 """
 
 from __future__ import annotations
@@ -17,13 +26,25 @@ from server.schemas import (
     DraftFinding,
     EvidenceRecord,
     EvidenceRef,
+    FieldFilter,
     FindingCategory,
     FindingConfidence,
     FindingSeverity,
-    NetscanResult,
-    PslistResult,
-    PsscanResult,
-    PstreeResult,
+    GroupByResult,
+    NetscanSummary,
+    PluginName,
+    PslistSummary,
+    PsscanSummary,
+    PstreeSummary,
+    QueryRecordsResult,
+    SetDifferenceResult,
+    SubtreeResult,
+)
+from server.tools.analytical import (
+    group_by as _group_by_impl,
+    query_records as _query_records_impl,
+    set_difference as _set_difference_impl,
+    subtree as _subtree_impl,
 )
 from server.tools.evidence import register_evidence as _register_evidence_impl
 from server.tools.findings import record_finding as _record_finding_impl
@@ -57,95 +78,262 @@ def register_evidence(filepath: str) -> EvidenceRecord:
 
 
 @mcp.tool()
-def vol_pslist(evidence_id: str) -> PslistResult:
+def vol_pslist(evidence_id: str) -> PslistSummary:
     """Run windows.pslist.PsList against a registered memory image.
 
-    Resolves evidence_id via case-data/CASE.yaml. Validates the evidence is a
-    memory image. Invokes Volatility 3 in the SIFT VM via SSH. Returns the full
-    process list with provenance metadata (Volatility version, command executed,
-    runtime seconds).
+    Tier-1 tool. Resolves evidence_id via case-data/CASE.yaml. Validates
+    the evidence is a memory image. On first call: invokes Volatility 3
+    in the SIFT VM via SSH, persists the full PslistResult to
+    case-data/extractions/<evidence_id>/windows.pslist.PsList.json,
+    appends one line to case-data/extractions.jsonl, and returns a
+    PslistSummary (≤10 KB) carrying an ExtractionRef plus distribution
+    signal (unique image names, top-10 image-name counts, distinct
+    PPIDs, etc.). On re-invocation against the same evidence_id: serves
+    the recomputed summary from disk without re-running Volatility,
+    audited as `vol_pslist:cached` with `cached=True` and
+    `runtime_seconds=null`.
 
-    Errors are sanitized: invalid evidence_id, wrong artifact_class, or path
-    translation failures all raise ValueError with generic messages, while the
-    on-disk audit chain captures the original evidence_id for operator review.
+    Errors are sanitized: invalid evidence_id, wrong artifact_class, or
+    path translation failures all raise ValueError with generic
+    messages, while the audit chain captures the original evidence_id
+    for operator review. Cache-integrity failures (stored bytes do not
+    match the chain's recorded sha256 or the .sha256 sidecar) raise
+    ValueError and audit `vol_pslist:hash_mismatch`.
 
-    Cost: typically 5-15 seconds per call against a 19GB Windows 10 image.
+    Cost: typically 5-15 seconds per first call against a 19 GB Windows
+    10 image. Cache hits are essentially instant.
     """
     return _vol_pslist_impl(evidence_id, case_dir=CASE_DIR)
 
 
 @mcp.tool()
-def vol_psscan(evidence_id: str) -> PsscanResult:
+def vol_psscan(evidence_id: str) -> PsscanSummary:
     """Run windows.psscan.PsScan against a registered memory image.
 
-    Pool-tag scans memory directly for _EPROCESS allocations rather than walking
-    the active linked list. Surfaces processes vol_pslist cannot see by
-    construction: terminated processes whose EPROCESS still lingers in the pool,
-    DKOM-hidden processes (unlinked from the active list while the pool tag
-    persists), and processes the kernel marked exited but not yet reaped. The
-    set difference between psscan and pslist is the cross-plugin contradiction
-    the validator surfaces.
+    Tier-1 tool. Pool-tag scans memory directly for _EPROCESS allocations
+    rather than walking the active linked list. Surfaces processes
+    vol_pslist cannot see by construction: terminated processes whose
+    EPROCESS still lingers in the pool, DKOM-hidden processes (unlinked
+    from the active list while the pool tag persists), and processes
+    the kernel marked exited but not yet reaped. The cross-plugin diff
+    is what `set_difference` exposes for the validator.
 
-    Same evidence_id-only contract as vol_pslist; same sanitized rejection
-    messages and audited rejection lines under the `vol_psscan:rejected_*`
-    prefix.
+    Same cache contract as vol_pslist: persists to
+    case-data/extractions/<evidence_id>/windows.psscan.PsScan.json on
+    first call; serves recomputed PsscanSummary from disk on
+    re-invocation; same sanitized rejection messages and audited
+    rejection lines under the `vol_psscan:rejected_*` /
+    `vol_psscan:hash_mismatch` / `vol_psscan:cached` prefixes.
 
-    Cost: typically 5-10 minutes per call against a 19GB Windows 10 image
-    (Rocba: 6m36s observed). About 30-50x slower than vol_pslist — pool-tag
-    scanning walks the full memory layer. Do not call back-to-back redundantly.
+    Cost: typically 5-10 minutes per first call against a 19 GB Windows
+    10 image (Rocba: 6m36s observed). About 30-50x slower than
+    vol_pslist — pool-tag scanning walks the full memory layer. Do not
+    call back-to-back redundantly. Cache hits are instant.
     """
     return _vol_psscan_impl(evidence_id, case_dir=CASE_DIR)
 
 
 @mcp.tool()
-def vol_pstree(evidence_id: str) -> PstreeResult:
+def vol_pstree(evidence_id: str) -> PstreeSummary:
     """Run windows.pstree.PsTree against a registered memory image.
 
-    Reconstructs the parent-child process hierarchy from each EPROCESS's
-    InheritedFromUniqueProcessId. Returns a recursive tree of ProcessTreeRecord
-    nodes — top-level entries are roots, orphans (PPID no longer in the active
-    list), or System (PID 4 / PPID 0); descendants are nested in each node's
-    `children` field. Pstree-specific resolved fields (audit, cmd, path) are
-    populated when Volatility can read RTL_USER_PROCESS_PARAMETERS, which on
-    Rocba was ~9% of records — most rows have these as null because the
-    parameters block was paged out.
+    Tier-1 tool. Reconstructs the parent-child process hierarchy from
+    each EPROCESS's InheritedFromUniqueProcessId. Returns a
+    PstreeSummary (≤10 KB) with shape signal — top-level root count,
+    max depth, depth distribution, largest subtree by descendant
+    count, orphan count. The recursive tree itself lives in the stored
+    extraction; tier-2's `subtree` tool reads it.
 
-    Same evidence_id-only contract as vol_pslist; same sanitized rejection
-    messages and audited rejection lines under the `vol_pstree:rejected_*`
-    prefix. The week-6 validator uses this tree shape to detect masquerading
-    (svchost.exe with non-services.exe parent) and unusual process depth.
+    Same cache contract as vol_pslist. Per-record validation is
+    coarser here: pydantic validates whole subtrees when constructing
+    a top-level ProcessTreeRecord, so a malformed descendant skips its
+    entire top-level subtree (one
+    `vol_pstree:record_validation_warning` line per skipped subtree).
 
-    Cost: typically 25-45 seconds per call against a 19GB Windows 10 image
-    (Rocba: 29.5s observed). Comparable to vol_pslist's runtime — pstree walks
-    the same active EPROCESS list, just with hierarchy reconstruction.
+    Cost: typically 25-45 seconds per first call against a 19 GB
+    Windows 10 image (Rocba: 29.5s observed). Cache hits are instant.
     """
     return _vol_pstree_impl(evidence_id, case_dir=CASE_DIR)
 
 
 @mcp.tool()
-def vol_netscan(evidence_id: str) -> NetscanResult:
+def vol_netscan(evidence_id: str) -> NetscanSummary:
     """Run windows.netscan.NetScan against a registered memory image.
 
-    Pool-tag scans the network object table for TCP/UDP endpoints across IPv4
-    and IPv6. Returns a flat list of connections — one record per endpoint
-    with proto, local_addr/port, foreign_addr/port, state, pid, and owner
-    image name. UDP records use empty-string state and "*" foreign_addr per
-    netstat convention. PID and owner can both be null for kernel-only
-    endpoints.
+    Tier-1 tool. Pool-tag scans the network object table for TCP/UDP
+    endpoints across IPv4 and IPv6. Returns a NetscanSummary (≤10 KB)
+    with protocol distribution, TCP-state distribution, listening /
+    established / null-owner counts, and distinct foreign-address
+    count. The full NetscanResult (every endpoint row) lives in the
+    stored extraction; specific endpoints come from
+    `query_records(plugin_name="windows.netscan.NetScan", ...)`.
 
-    Same evidence_id-only contract as the other vol_* tools; same sanitized
-    rejection messages and audited rejection lines under
-    `vol_netscan:rejected_*`.
+    Same cache contract as vol_pslist. UDP records use empty-string
+    state and "*" foreign_addr per netstat convention; the validator
+    treats `state == ""` as "no TCP-style state, this is a UDP
+    endpoint". `pid` and `owner` may both be null for kernel-only
+    endpoints — same recovery semantic as psscan's exited rows.
 
-    Cross-source value: combined with vol_pslist / vol_psscan, the validator
-    can flag ports bound by PIDs that don't appear in the active-list walk —
-    a DKOM-hiding signature.
-
-    Cost: typically 5-12 minutes per call against a 19GB Windows 10 image
-    (Rocba: 8m57s observed). Slower than vol_psscan because netscan pool-scans
-    more object families. Do not call back-to-back redundantly.
+    Cost: typically 5-12 minutes per first call against a 19 GB
+    Windows 10 image (Rocba: 8m57s observed). Slower than vol_psscan
+    because netscan pool-scans more object families. Do not call
+    back-to-back redundantly. Cache hits are instant.
     """
     return _vol_netscan_impl(evidence_id, case_dir=CASE_DIR)
+
+
+@mcp.tool()
+def query_records(
+    evidence_id: str,
+    plugin_name: PluginName,
+    filters: list[FieldFilter] | None = None,
+    fields: list[str] | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> QueryRecordsResult:
+    """Project + filter records from a stored extraction.
+
+    Tier-2 analytical tool. Reads `case-data/extractions/<evidence_id>/
+    <plugin_name>.json` (verifying its hash chain), applies AND-combined
+    filters, applies projection, applies offset/limit, returns the
+    bounded record set with the pre-limit `matched_count`.
+
+    The agent uses tier-1 Summary fields to decide WHERE to query
+    (e.g., "psscan has 26 more records than pslist; query the diff");
+    query_records is HOW to retrieve specific rows.
+
+    Filter ops: eq, ne, lt, le, gt, ge, contains, starts_with,
+    is_null, is_not_null. AND-combined. Hard cap: limit ≤ 200 records.
+    Asking for more is rejected as `query_records:rejected_limit_too_large`.
+    Field references that are not in the plugin's schema are rejected
+    as `query_records:rejected_unknown_field`.
+
+    The result stays under 10 KB by construction: the limit cap × the
+    per-record projection size keeps the JSON return bounded.
+    """
+    return _query_records_impl(
+        evidence_id=evidence_id,
+        plugin_name=plugin_name,
+        filters=filters,
+        fields=fields,
+        limit=limit,
+        offset=offset,
+        case_dir=CASE_DIR,
+    )
+
+
+@mcp.tool()
+def group_by(
+    evidence_id: str,
+    plugin_name: PluginName,
+    field: str,
+    filters: list[FieldFilter] | None = None,
+    top_n: int = 50,
+) -> GroupByResult:
+    """Aggregate records by a single field; return descending counts.
+
+    Tier-2 analytical tool. Useful for "what process names are most
+    common" (group_by image_file_name on pslist), "what foreign IPs
+    do we talk to" (group_by foreign_addr on netscan), or "what
+    parents have spawned the most children" (group_by ppid on
+    pslist).
+
+    `groups` is sorted by count descending and capped at `top_n`
+    (hard max 200). `distinct_values` is the post-filter cardinality
+    of the field; if it exceeds `len(groups)`, truncation is hiding
+    tail values and the agent can re-query with a higher top_n or
+    add filters.
+
+    Same field validation and audited rejections as `query_records`.
+    """
+    return _group_by_impl(
+        evidence_id=evidence_id,
+        plugin_name=plugin_name,
+        field=field,
+        filters=filters,
+        top_n=top_n,
+        case_dir=CASE_DIR,
+    )
+
+
+@mcp.tool()
+def set_difference(
+    evidence_id: str,
+    plugin_a: PluginName,
+    plugin_b: PluginName,
+    key: str,
+    direction: str = "a_minus_b",
+    fields: list[str] | None = None,
+    limit: int = 200,
+) -> SetDifferenceResult:
+    """Compute the cross-plugin set difference on a join key.
+
+    Tier-2 analytical tool. The primary cross-plugin primitive — the
+    week-6 validator's "find PIDs in psscan that aren't in pslist
+    (DKOM-hidden candidates)" rule is one
+    `set_difference(plugin_a="windows.psscan.PsScan",
+    plugin_b="windows.pslist.PsList", key="pid",
+    direction="a_minus_b")` call.
+
+    `direction`:
+      - `a_minus_b` — keys in a but not in b (hidden-candidate set
+        when a=psscan, b=pslist)
+      - `b_minus_a` — keys in b but not in a
+      - `symmetric` — keys in exactly one of a or b
+
+    `key` must be a valid field on BOTH plugins. Hard cap: limit ≤
+    500 records. Same plugin on both sides is rejected as
+    `set_difference:rejected_same_plugin` (no useful self-diff).
+    Missing extraction on either side is rejected as
+    `set_difference:rejected_extraction_not_found` — the agent must
+    have invoked the matching tier-1 tool first.
+    """
+    return _set_difference_impl(
+        evidence_id=evidence_id,
+        plugin_a=plugin_a,
+        plugin_b=plugin_b,
+        key=key,
+        direction=direction,
+        fields=fields,
+        limit=limit,
+        case_dir=CASE_DIR,
+    )
+
+
+@mcp.tool()
+def subtree(
+    evidence_id: str,
+    plugin_name: PluginName,
+    root_pid: int,
+    max_depth: int = 3,
+    fields: list[str] | None = None,
+) -> SubtreeResult:
+    """Extract a subtree of process descendants rooted at `root_pid`.
+
+    Tier-2 analytical tool. Pstree-only — only pstree carries
+    parent-child structure. Returns a flat node list; each node has
+    its `depth` field added so the agent can reconstruct hierarchy
+    from `(pid, ppid, depth)` without the recursive shape blowing
+    the budget.
+
+    Hard cap: max_depth ≤ 10. The 200-node truncation is the final
+    size guard for wide subtrees (e.g., a process with thousands of
+    direct children — drops nodes past the 200th and sets
+    `truncated=True`).
+
+    Rejects `subtree:rejected_root_not_found` if `root_pid` is not
+    in the extraction. Rejects `subtree:rejected_invalid_key` if
+    plugin_name is not pstree (defense-in-depth — the MCP-level
+    Literal should normally catch this).
+    """
+    return _subtree_impl(
+        evidence_id=evidence_id,
+        plugin_name=plugin_name,
+        root_pid=root_pid,
+        max_depth=max_depth,
+        fields=fields,
+        case_dir=CASE_DIR,
+    )
 
 
 @mcp.tool()

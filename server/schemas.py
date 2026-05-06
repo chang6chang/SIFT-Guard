@@ -686,6 +686,353 @@ class FindingChainEntry(BaseModel):
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# Tier-1 / tier-2 architecture (week 5 refactor)
+#
+# Tier-1 memory tools (vol_pslist/psscan/pstree/netscan) persist their full
+# Volatility output to `case-data/extractions/<evidence_id>/<plugin_name>.json`
+# and return a small (≤10 KB) Summary object pointing at the stored
+# extraction. Tier-2 analytical tools (query_records, group_by,
+# set_difference, subtree) read stored extractions and compose narrowed
+# answers. Architecture rationale: the tool-result token budget collapses
+# the "tool returns full data" pattern on realistic Windows memory images
+# (process_analyst v1 experiment, 2026-05-05 — see
+# docs/process-analyst-v1-results.md).
+#
+# The schemas below split into:
+#   - PluginName: shared Literal across tier-1 and tier-2 schemas.
+#   - ExtractionRef: agent-visible handle for a stored extraction. Carries
+#     the fields the agent needs to know the extraction is real (sha256,
+#     chain-line, record_count) without containing the records themselves.
+#   - ExtractionChainEntry: one JSONL line of `extractions.jsonl`. Mirrors
+#     `AuditLogEntry`'s and `FindingChainEntry`'s chain shape with distinct
+#     hash field names so a line read out of context cannot be misread.
+#   - Tier-1 *Summary types (Pslist/Psscan/Pstree/Netscan): the thing the
+#     LLM actually sees — distribution / shape signal, not records.
+#   - Tier-2 result types (QueryRecords/GroupBy/SetDifference/Subtree):
+#     bounded composed answers, all under the 10 KB ceiling.
+#   - FieldFilter: shared filter primitive for tier-2 tools.
+# ---------------------------------------------------------------------------
+
+
+# All four supported Volatility memory plugins. Tier-1 tools each pin one
+# of these as their plugin_name; tier-2 tools accept it as an argument.
+# Adding a plugin requires extending this Literal AND extending the
+# matching test in tests/test_mcp_protocol.py — by design.
+PluginName = Literal[
+    "windows.pslist.PsList",
+    "windows.psscan.PsScan",
+    "windows.pstree.PsTree",
+    "windows.netscan.NetScan",
+]
+
+
+class ExtractionRef(BaseModel):
+    """Agent-visible handle for a stored extraction.
+
+    Returned inside every tier-1 Summary and every tier-2 result. Carries
+    enough provenance for the agent to reason about freshness and
+    reproducibility (the chain line, the hash, the record count) without
+    embedding records that would blow the token budget. The matching
+    extraction file lives at
+    `<case_dir>/extractions/<evidence_id>/<plugin_name>.json`; the agent
+    cannot construct that path (no file-tools surface), so the reference
+    is informational, not addressable.
+
+    `cached` distinguishes a fresh Volatility run (`False`,
+    `runtime_seconds` populated) from a re-read of a stored extraction
+    (`True`, `runtime_seconds` null per the cache contract). The
+    `extraction_id` is server-generated at first creation and stable
+    across re-reads — re-invoking a cached pair returns the same id.
+    """
+
+    evidence_id: str
+    plugin_name: PluginName
+    extraction_id: str
+    record_count: int = Field(ge=0)
+    extraction_sha256: str = Field(pattern=_HEX64_PATTERN)
+    extractions_chain_line: int = Field(ge=1)
+    runtime_seconds: float | None = Field(default=None, ge=0)
+    cached: bool
+
+    @field_validator("evidence_id", "extraction_id")
+    @classmethod
+    def _validate_uuid4(cls, v: str, info) -> str:
+        try:
+            parsed = UUID(v)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(
+                f"{info.field_name} must be a UUID string, got {v!r}"
+            ) from exc
+        if parsed.version != 4:
+            raise ValueError(
+                f"{info.field_name} must be UUID version 4, got version "
+                f"{parsed.version}"
+            )
+        return str(parsed)
+
+
+class ExtractionChainEntry(BaseModel):
+    """One JSONL line of the hash-chained extractions log.
+
+    Distinct field names (`prev_extraction_hash` / `this_extraction_hash`)
+    rather than reusing the audit chain's hash field names so a line read
+    from one file cannot be silently misread as the other. Same canonical
+    hash semantics as AuditLogEntry / FindingChainEntry (sorted JSON
+    keys, ISO timestamps, enum values rendered as strings).
+    """
+
+    line_number: int = Field(ge=1)
+    timestamp: datetime
+    evidence_id: str
+    plugin_name: str = Field(min_length=1)
+    extraction_id: str
+    extraction_sha256: str = Field(pattern=_HEX64_PATTERN)
+    record_count: int = Field(ge=0)
+    runtime_seconds: float = Field(ge=0)
+    prev_extraction_hash: str = Field(pattern=_HEX64_PATTERN)
+    this_extraction_hash: str = Field(pattern=_HEX64_PATTERN)
+
+    @field_validator("timestamp")
+    @classmethod
+    def _validate_timestamp(cls, v: datetime) -> datetime:
+        return _enforce_utc("timestamp", v)
+
+    @classmethod
+    def compute_this_extraction_hash(cls, **fields: Any) -> str:
+        """Deterministic sha256 over all fields except `this_extraction_hash`.
+
+        Same canonical-form rule as `AuditLogEntry.compute_this_line_hash`
+        and `FindingChainEntry.compute_this_finding_hash`. Passing
+        `this_extraction_hash` is a no-op so the helper accepts a full
+        `model_dump()` without filtering.
+        """
+        payload = {
+            k: v for k, v in fields.items() if k != "this_extraction_hash"
+        }
+        canonical = json.dumps(payload, sort_keys=True, default=_json_default)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+class PslistSummary(BaseModel):
+    """Tier-1 return for `vol_pslist`.
+
+    Carries shape and distribution signal — never specific records. The
+    agent uses this to decide *where* to look (e.g., "psscan has 26 more
+    records than pslist; query the diff"); it uses tier-2 tools to
+    actually look.
+
+    Field substitution note: the architecture spec listed
+    `null_cmdline_count` here, but `ProcessRecord` has no `cmdline` field
+    (only pstree carries `cmd`). `null_create_time_count` is the
+    structurally-analogous nullable EPROCESS field on pslist's actual
+    schema — equivalent shape signal (how many records have an unset
+    metadata field), implementable from the data we have.
+
+    `top_image_names` is bounded to 10 entries to keep the summary
+    serialization under 10 KB even on images with thousands of distinct
+    process names. Bounded count is verified in the tier-1 size budget
+    test (10000-row synthetic fixture).
+    """
+
+    extraction: ExtractionRef
+    unique_image_names: int = Field(ge=0)
+    null_create_time_count: int = Field(ge=0)
+    with_exit_time_count: int = Field(ge=0)
+    distinct_ppids: int = Field(ge=0)
+    top_image_names: list[tuple[str, int]] = Field(max_length=10)
+    pid_range: tuple[int, int]
+
+
+class PsscanSummary(PslistSummary):
+    """Tier-1 return for `vol_psscan`.
+
+    Identical shape to `PslistSummary` because the underlying record
+    schema is the same (`ProcessScanRecord = ProcessRecord` alias). The
+    differentiator surfaces via `extraction.plugin_name`; the
+    cross-plugin diff is what `set_difference` does. Reserved as a
+    distinct subclass so future psscan-specific fields (e.g., a
+    pool-tag-derived offset signal) land cleanly without changing
+    pslist's surface.
+    """
+
+    pass
+
+
+class PstreeSummary(BaseModel):
+    """Tier-1 return for `vol_pstree`.
+
+    Captures tree shape: how many top-level roots, how deep, how the
+    depth distribution looks, the largest single subtree, and how many
+    roots are orphans (PPID not present anywhere in the tree, excluding
+    PID 4 / System with PPID 0). The week-6 validator's masquerading
+    detection runs against the stored extraction via `subtree`; this
+    summary tells the validator where to start.
+
+    `depth_distribution` keys are depth integers; pydantic v2 emits them
+    as JSON object string keys per the spec. `largest_subtree` is
+    `(root_pid, descendant_count)` — the count is total descendants,
+    not just direct children.
+    """
+
+    extraction: ExtractionRef
+    top_level_root_count: int = Field(ge=0)
+    max_depth: int = Field(ge=0)
+    depth_distribution: dict[int, int]
+    largest_subtree: tuple[int, int]
+    orphan_count: int = Field(ge=0)
+
+
+class NetscanSummary(BaseModel):
+    """Tier-1 return for `vol_netscan`.
+
+    Distribution-only: which protocols are present and how often, what
+    TCP states show up, how many records have null owner (kernel-only or
+    exited-process residual), how many endpoints are listening vs
+    established, and how many distinct foreign addresses the host talked
+    to. The agent uses these to decide whether a beacon hunt is worth
+    `query_records` calls; specific endpoints come from query_records.
+    """
+
+    extraction: ExtractionRef
+    protocol_distribution: dict[str, int]
+    tcp_state_distribution: dict[str, int]
+    null_owner_count: int = Field(ge=0)
+    listening_port_count: int = Field(ge=0)
+    established_count: int = Field(ge=0)
+    distinct_foreign_addrs: int = Field(ge=0)
+
+
+class FieldFilter(BaseModel):
+    """One AND-combined filter clause for tier-2 query/group_by tools.
+
+    `field` is validated against the plugin's known schema by the
+    consuming tool (rejected with `:rejected_unknown_field` and
+    audited if unknown). `value` is `None` only for the
+    `is_null`/`is_not_null` ops; it is the raw comparison value
+    otherwise. `Any` is intentional — filters operate on any field
+    regardless of its declared type, and pydantic does not enforce a
+    cross-field type match here. The tool layer does that.
+    """
+
+    field: str = Field(min_length=1)
+    op: Literal[
+        "eq",
+        "ne",
+        "lt",
+        "le",
+        "gt",
+        "ge",
+        "contains",
+        "starts_with",
+        "is_null",
+        "is_not_null",
+    ]
+    value: Any = None
+
+
+class QueryRecordsResult(BaseModel):
+    """Tier-2 return for `query_records`.
+
+    `records` carries projected dicts (post-`fields` projection); the
+    tool's `limit` cap holds the serialized size under 10 KB by the
+    same property the tier-1 size-budget test pins. `matched_count` is
+    the count *before* limit/offset, so the agent can decide whether
+    to widen the limit or refine the filters.
+    """
+
+    extraction: ExtractionRef
+    matched_count: int = Field(ge=0)
+    returned_count: int = Field(ge=0)
+    records: list[dict]
+    truncated: bool
+
+
+class GroupByResult(BaseModel):
+    """Tier-2 return for `group_by`.
+
+    `groups` is a list of `(value, count)` tuples sorted descending by
+    count, capped at `top_n`. `distinct_values` is the full count of
+    unique field values across the extraction (post-filter); a high
+    `distinct_values` with a short `groups` list tells the agent the
+    field is high-cardinality.
+    """
+
+    extraction: ExtractionRef
+    field: str
+    total_records: int = Field(ge=0)
+    distinct_values: int = Field(ge=0)
+    groups: list[tuple[Any, int]]
+
+
+class SetDifferenceResult(BaseModel):
+    """Tier-2 return for `set_difference`.
+
+    The primary cross-plugin primitive. `set_difference(plugin_a=psscan,
+    plugin_b=pslist, key="pid", direction="a_minus_b")` computes the
+    DKOM-hidden-process candidate set (entries in psscan but not in
+    pslist's active-list walk).
+
+    Two count families surface together because they answer different
+    questions (per `docs/decisions-log.md` 2026-05-06):
+
+      - `a_only_count`, `b_only_count`, `intersection_count` are
+        SET-semantic on the join key. `a_only_count` is the number of
+        UNIQUE keys in plugin_a not present in plugin_b. The validator
+        leans on this for "how many distinct entities are missing from
+        plugin_b".
+      - `a_record_count`, `b_record_count` are total record counts in
+        each extraction. Useful for audit-style sanity checks ("the
+        record-count delta is K"), distinct from the entity-set diff.
+      - `a_duplicate_key_count`, `b_duplicate_key_count` are records
+        in each extraction whose key value appears more than once in
+        that same extraction (counted as "extras beyond first
+        occurrence"). On Volatility psscan, pool-tag aliasing produces
+        these — same EPROCESS structure discovered twice across pool
+        boundaries. Useful for detecting whether a record-count delta
+        is real anomaly or just pool-tag noise.
+
+    `returned_records` is per-record (not deduped by key): if a key
+    appears twice in plugin_a's a_only set, both records are returned
+    (subject to `limit`). The agent typically wants every alias for
+    forensic-grade evidence.
+    """
+
+    extraction_a: ExtractionRef
+    extraction_b: ExtractionRef
+    key: str
+    direction: Literal["a_minus_b", "b_minus_a", "symmetric"]
+    a_only_count: int = Field(ge=0)
+    b_only_count: int = Field(ge=0)
+    intersection_count: int = Field(ge=0)
+    a_record_count: int = Field(ge=0)
+    b_record_count: int = Field(ge=0)
+    a_duplicate_key_count: int = Field(ge=0)
+    b_duplicate_key_count: int = Field(ge=0)
+    returned_records: list[dict]
+    truncated: bool
+
+
+class SubtreeResult(BaseModel):
+    """Tier-2 return for `subtree`.
+
+    Pstree-only because only pstree carries parent-child structure.
+    `nodes` is a flat list with each node's `depth` field added so the
+    agent can reconstruct hierarchy without the recursive shape
+    blowing the token budget. `descendant_count` is total descendants
+    (sum across all depths); `truncated` is True when the subtree
+    contained more than 200 nodes.
+    """
+
+    extraction: ExtractionRef
+    root_pid: int = Field(ge=0)
+    root_found: bool
+    depth_traversed: int = Field(ge=0)
+    descendant_count: int = Field(ge=0)
+    nodes: list[dict]
+    truncated: bool
+
+
 __all__ = [
     "AnalystName",
     "ArtifactClass",
@@ -694,18 +1041,30 @@ __all__ = [
     "EvidenceRecord",
     "EvidenceRef",
     "EvidenceRefSourceTool",
+    "ExtractionChainEntry",
+    "ExtractionRef",
+    "FieldFilter",
     "FindingCategory",
     "FindingChainEntry",
     "FindingConfidence",
     "FindingSeverity",
     "FindingState",
+    "GroupByResult",
     "NetscanResult",
+    "NetscanSummary",
     "NetworkRecord",
+    "PluginName",
     "ProcessRecord",
     "ProcessScanRecord",
     "ProcessTreeRecord",
     "PslistResult",
+    "PslistSummary",
     "PsscanResult",
+    "PsscanSummary",
     "PstreeResult",
+    "PstreeSummary",
+    "QueryRecordsResult",
+    "SetDifferenceResult",
+    "SubtreeResult",
     "UntrustedString",
 ]

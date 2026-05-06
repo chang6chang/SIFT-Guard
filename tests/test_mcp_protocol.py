@@ -152,11 +152,15 @@ def _extract_record(call_result) -> dict | None:
 
 
 class TestToolSurface:
-    def test_six_tool_surface_is_locked(self, tmp_path: Path):
+    def test_ten_tool_surface_is_locked(self, tmp_path: Path):
         # Surface lock: every new MCP tool added to server/main.py
         # forces an explicit update here. Adding a tool without
         # extending this set means the surface grew silently — which
         # is exactly the failure mode the test is here to prevent.
+        #
+        # Week-5 expansion: tier-1 (vol_*) was already 4 tools; tier-2
+        # added query_records / group_by / set_difference / subtree.
+        # Plus register_evidence + record_finding = 10 total.
         listing = _run_async(_list_tools_only(tmp_path))
         tool_names = {t.name for t in listing.tools}
         assert tool_names == {
@@ -165,10 +169,13 @@ class TestToolSurface:
             "vol_psscan",
             "vol_pstree",
             "vol_netscan",
+            "query_records",
+            "group_by",
+            "set_difference",
+            "subtree",
             "record_finding",
         }, (
-            f"expected exactly register_evidence, vol_pslist, vol_psscan, "
-            f"vol_pstree, vol_netscan, record_finding; got "
+            "expected exactly the 10-tool tier-0/tier-1/tier-2 surface; got "
             f"{sorted(tool_names)}"
         )
 
@@ -351,6 +358,126 @@ class TestToolSurface:
             f"{tool.description!r}"
         )
 
+    # -----------------------------------------------------------------
+    # Tier-2 analytical-tool surface locks (week 5)
+    # -----------------------------------------------------------------
+
+    def test_query_records_parameter_set(self, tmp_path: Path):
+        # Tier-2 analytical tool. The agent supplies evidence_id +
+        # plugin_name + filter / projection / paging — never a path,
+        # never a file, never a case_dir.
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = _tool_by_name(listing, "query_records")
+        properties = tool.inputSchema.get("properties", {})
+        assert set(properties.keys()) == {
+            "evidence_id",
+            "plugin_name",
+            "filters",
+            "fields",
+            "limit",
+            "offset",
+        }, (
+            "query_records parameter set drifted; got "
+            f"{sorted(properties.keys())}"
+        )
+        # plugin_name is a closed enum across the 4 supported plugins.
+        plugin_enum = properties["plugin_name"].get("enum", [])
+        assert set(plugin_enum) == {
+            "windows.pslist.PsList",
+            "windows.psscan.PsScan",
+            "windows.pstree.PsTree",
+            "windows.netscan.NetScan",
+        }, f"plugin_name enum drifted: {plugin_enum}"
+        assert "evidence_id" in tool.inputSchema.get("required", [])
+
+    def test_group_by_parameter_set(self, tmp_path: Path):
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = _tool_by_name(listing, "group_by")
+        properties = tool.inputSchema.get("properties", {})
+        assert set(properties.keys()) == {
+            "evidence_id",
+            "plugin_name",
+            "field",
+            "filters",
+            "top_n",
+        }, (
+            "group_by parameter set drifted; got "
+            f"{sorted(properties.keys())}"
+        )
+        for required in ("evidence_id", "plugin_name", "field"):
+            assert required in tool.inputSchema.get("required", []), (
+                f"{required} must be required"
+            )
+
+    def test_set_difference_parameter_set(self, tmp_path: Path):
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = _tool_by_name(listing, "set_difference")
+        properties = tool.inputSchema.get("properties", {})
+        assert set(properties.keys()) == {
+            "evidence_id",
+            "plugin_a",
+            "plugin_b",
+            "key",
+            "direction",
+            "fields",
+            "limit",
+        }, (
+            "set_difference parameter set drifted; got "
+            f"{sorted(properties.keys())}"
+        )
+        # Both plugin sides are closed enums; same set as query_records.
+        for side in ("plugin_a", "plugin_b"):
+            plugin_enum = properties[side].get("enum", [])
+            assert set(plugin_enum) == {
+                "windows.pslist.PsList",
+                "windows.psscan.PsScan",
+                "windows.pstree.PsTree",
+                "windows.netscan.NetScan",
+            }, f"{side} enum drifted: {plugin_enum}"
+
+    def test_subtree_parameter_set(self, tmp_path: Path):
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = _tool_by_name(listing, "subtree")
+        properties = tool.inputSchema.get("properties", {})
+        assert set(properties.keys()) == {
+            "evidence_id",
+            "plugin_name",
+            "root_pid",
+            "max_depth",
+            "fields",
+        }, (
+            "subtree parameter set drifted; got "
+            f"{sorted(properties.keys())}"
+        )
+        for required in ("evidence_id", "plugin_name", "root_pid"):
+            assert required in tool.inputSchema.get("required", []), (
+                f"{required} must be required"
+            )
+
+    # -----------------------------------------------------------------
+    # Tier-1 summary-shape locks (week 5)
+    #
+    # vol_* tools now return Summary objects. The tools/list endpoint
+    # publishes the full input schema; the output schema is implicit
+    # in pydantic's return annotation but is not exposed by FastMCP
+    # over the wire. We pin instead on the description (which the LLM
+    # sees) carrying the word "Summary" so a regression that flips
+    # the return type back to PslistResult shows up here.
+    # -----------------------------------------------------------------
+
+    def test_tier1_descriptions_advertise_summary_return(self, tmp_path: Path):
+        listing = _run_async(_list_tools_only(tmp_path))
+        for name in ("vol_pslist", "vol_psscan", "vol_pstree", "vol_netscan"):
+            tool = _tool_by_name(listing, name)
+            assert "Summary" in tool.description, (
+                f"{name} description must advertise its Summary return; "
+                f"found: {tool.description!r}"
+            )
+            assert "extraction" in tool.description.lower(), (
+                f"{name} description must mention the on-disk extraction "
+                f"sink; found: {tool.description!r}"
+            )
+
     def test_record_finding_parameter_set(self, tmp_path: Path):
         # record_finding is the analyst-write tool — different shape
         # from the read-only vol_* tools but the same evidence_id-only
@@ -511,5 +638,9 @@ class TestRoundTrip:
             "vol_psscan",
             "vol_pstree",
             "vol_netscan",
+            "query_records",
+            "group_by",
+            "set_difference",
+            "subtree",
             "record_finding",
         }
