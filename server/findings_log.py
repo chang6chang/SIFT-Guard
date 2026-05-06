@@ -35,7 +35,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from server.schemas import DraftFinding, FindingChainEntry
+from server.schemas import DraftFinding, FindingChainEntry, FindingUpdate
 
 _FINDINGS_FILENAME = "findings.jsonl"
 _GENESIS_PREV_HASH = "0" * 64
@@ -70,13 +70,16 @@ def _read_chain_state(findings_path: Path) -> tuple[int, str]:
 
 
 def append_finding_entry(
-    case_dir: Path | str, finding: DraftFinding
+    case_dir: Path | str, finding: DraftFinding | FindingUpdate
 ) -> FindingChainEntry:
     """Append one hash-chained record to `<case_dir>/findings.jsonl`.
 
-    Returns the constructed FindingChainEntry so the caller can
-    digest it for the audit-chain `output_hash` without re-reading
-    the on-disk line.
+    Accepts either a `DraftFinding` (analyst write via record_finding)
+    or a `FindingUpdate` (orchestrator promotion via update_finding).
+    Both kinds land in the SAME chain, distinguished by `record_kind`.
+    Returns the constructed FindingChainEntry so the caller can digest
+    it for the audit-chain `output_hash` without re-reading the
+    on-disk line.
 
     Single-process server: no file lock. If a future multi-process
     design is needed, wrap this call in a writer-process queue rather
@@ -117,4 +120,91 @@ def append_finding_entry(
     return entry
 
 
-__all__ = ["append_finding_entry"]
+def read_finding_ids(case_dir: Path | str) -> set[str]:
+    """Return the set of every `finding_id` that has appeared in
+    `<case_dir>/findings.jsonl`, across both DRAFT and UPDATE entries.
+
+    Used by `record_correlation` (validating that the
+    target/related/finding_a/finding_b ids the validator names exist)
+    and by `update_finding` (validating that the `finding_id` being
+    updated has a prior DRAFT). Streamed line-by-line; malformed lines
+    are skipped — id collection is a provenance check, not a chain
+    integrity verification.
+    """
+    case_dir_path = Path(case_dir).resolve()
+    findings_path = case_dir_path / _FINDINGS_FILENAME
+    if not findings_path.exists():
+        return set()
+
+    ids: set[str] = set()
+    with findings_path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            try:
+                row = json.loads(stripped)
+            except (ValueError, TypeError):
+                continue
+            payload = row.get("finding")
+            if isinstance(payload, dict):
+                fid = payload.get("finding_id")
+                if isinstance(fid, str):
+                    ids.add(fid)
+    return ids
+
+
+def read_finding_state(
+    case_dir: Path | str, finding_id: str
+) -> tuple[str, str] | None:
+    """Return `(state, confidence)` of the most-recent record for
+    `finding_id`, last-write-wins across DRAFT and UPDATE entries.
+
+    DRAFT entries carry `state` + `confidence` directly; UPDATE entries
+    carry `new_state` + `new_confidence`. The chain is replayed in
+    on-disk order — every entry matching `finding_id` updates the
+    running state, so the final value is the latest. Returns `None` if
+    no entry matches.
+
+    Used by `update_finding` to derive `previous_state` and
+    `previous_confidence` from the chain rather than trusting the
+    orchestrator to supply them. Server-derived fields cannot be
+    spoofed by a buggy or malicious orchestrator.
+    """
+    case_dir_path = Path(case_dir).resolve()
+    findings_path = case_dir_path / _FINDINGS_FILENAME
+    if not findings_path.exists():
+        return None
+
+    latest: tuple[str, str] | None = None
+    with findings_path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            try:
+                row = json.loads(stripped)
+            except (ValueError, TypeError):
+                continue
+            payload = row.get("finding")
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("finding_id") != finding_id:
+                continue
+            kind = payload.get("record_kind", "draft")
+            if kind == "update":
+                state = payload.get("new_state")
+                conf = payload.get("new_confidence")
+            else:
+                state = payload.get("state")
+                conf = payload.get("confidence")
+            if isinstance(state, str) and isinstance(conf, str):
+                latest = (state, conf)
+    return latest
+
+
+__all__ = [
+    "append_finding_entry",
+    "read_finding_ids",
+    "read_finding_state",
+]

@@ -4,10 +4,13 @@ Spawns `server/main.py` as a subprocess via stdio, exercises the real MCP
 protocol the way Claude Code will, and verifies:
 
 (1) the tool surface exposes exactly the registered tools — currently
-    `register_evidence`, `vol_pslist`, `vol_psscan`, `vol_pstree`,
-    `vol_netscan`, and `record_finding`. Each tool's input schema is
-    locked to its declared parameters only (no `case_dir` leak); this
-    is the architectural lock for CLAUDE.md rule 3.
+    twelve: `register_evidence`, the four `vol_*` plugin wrappers, the
+    four tier-2 analytical tools (`query_records`, `group_by`,
+    `set_difference`, `subtree`), and the three writes
+    (`record_finding`, `record_correlation`, `update_finding`). Each
+    tool's input schema is locked to its declared parameters only (no
+    `case_dir` leak); this is the architectural lock for CLAUDE.md
+    rule 3.
 (2) human-readable warnings reach the LLM over the wire (IRREVERSIBLE
     on register_evidence, latency cost on every vol_* tool).
 (3) registration succeeds end-to-end and produces the expected on-disk
@@ -152,15 +155,16 @@ def _extract_record(call_result) -> dict | None:
 
 
 class TestToolSurface:
-    def test_ten_tool_surface_is_locked(self, tmp_path: Path):
+    def test_twelve_tool_surface_is_locked(self, tmp_path: Path):
         # Surface lock: every new MCP tool added to server/main.py
         # forces an explicit update here. Adding a tool without
         # extending this set means the surface grew silently — which
         # is exactly the failure mode the test is here to prevent.
         #
-        # Week-5 expansion: tier-1 (vol_*) was already 4 tools; tier-2
-        # added query_records / group_by / set_difference / subtree.
-        # Plus register_evidence + record_finding = 10 total.
+        # Week-6 day-1 expansion: the validator/orchestrator substrate
+        # adds two writes — record_correlation (validator) and
+        # update_finding (orchestrator) — bringing the surface from
+        # 10 to 12. record_finding remains the analyst's write.
         listing = _run_async(_list_tools_only(tmp_path))
         tool_names = {t.name for t in listing.tools}
         assert tool_names == {
@@ -174,8 +178,11 @@ class TestToolSurface:
             "set_difference",
             "subtree",
             "record_finding",
+            "record_correlation",
+            "update_finding",
         }, (
-            "expected exactly the 10-tool tier-0/tier-1/tier-2 surface; got "
+            "expected exactly the 12-tool surface (tier-0/tier-1/tier-2 "
+            "plus three writes); got "
             f"{sorted(tool_names)}"
         )
 
@@ -572,6 +579,148 @@ class TestToolSurface:
             "audits + rejects analyst-supplied DISPUTED."
         )
 
+    # -----------------------------------------------------------------
+    # Validator/orchestrator-substrate surface locks (week 6 day 1)
+    # -----------------------------------------------------------------
+
+    def test_record_correlation_parameter_set(self, tmp_path: Path):
+        # `record_correlation` is the validator-write tool. Same
+        # evidence_id-only-no-path principle: no `case_dir`, no
+        # `correlation_id` (server-set), no `created_at`, no
+        # `audit_line`. The parameter list is wide because the
+        # function dispatches on `correlation_type` and per-type
+        # required fields are validated at construction time.
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = _tool_by_name(listing, "record_correlation")
+        properties = tool.inputSchema.get("properties", {})
+        assert set(properties.keys()) == {
+            "case_id",
+            "iteration_number",
+            "correlation_type",
+            "evidence_refs",
+            "hypothesis",
+            "target_finding_ids",
+            "finding_a_id",
+            "finding_b_id",
+            "target_finding_id",
+            "strength",
+            "severity",
+            "resolvable_by_followup",
+            "target_analyst",
+            "related_finding_ids",
+            "focus_context",
+            "rationale",
+        }, (
+            "record_correlation parameter set drifted; got "
+            f"{sorted(properties.keys())}. If `correlation_id`, "
+            "`created_at`, `audit_line`, or any path field shows up "
+            "here, the server-controlled boundary is broken."
+        )
+        for required in (
+            "case_id",
+            "iteration_number",
+            "correlation_type",
+            "evidence_refs",
+            "hypothesis",
+        ):
+            assert required in tool.inputSchema.get("required", []), (
+                f"{required} must be required"
+            )
+
+    def test_update_finding_parameter_set(self, tmp_path: Path):
+        # `update_finding` is the orchestrator's tool. The orchestrator
+        # supplies finding_id + new_state + new_confidence +
+        # promotion_rule + driving_correlation_ids; previous_state and
+        # previous_confidence are SERVER-DERIVED (read from the chain),
+        # never agent-supplied. Likewise update_id, created_at,
+        # audit_line are server-set.
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = _tool_by_name(listing, "update_finding")
+        properties = tool.inputSchema.get("properties", {})
+        assert set(properties.keys()) == {
+            "finding_id",
+            "iteration_number",
+            "new_state",
+            "new_confidence",
+            "promotion_rule",
+            "driving_correlation_ids",
+            "orchestrator_version",
+        }, (
+            "update_finding parameter set drifted; got "
+            f"{sorted(properties.keys())}. If `previous_state`, "
+            "`previous_confidence`, `update_id`, `created_at`, or "
+            "`audit_line` shows up here, the server-derived boundary "
+            "is broken — the orchestrator could spoof the predecessor "
+            "state by passing a chosen value."
+        )
+        for required in (
+            "finding_id",
+            "iteration_number",
+            "new_state",
+            "new_confidence",
+            "promotion_rule",
+            "driving_correlation_ids",
+            "orchestrator_version",
+        ):
+            assert required in tool.inputSchema.get("required", []), (
+                f"{required} must be required"
+            )
+
+    def test_record_correlation_correlation_type_enum(self, tmp_path: Path):
+        # `correlation_type` is one of five Literal values; the JSON
+        # schema must surface the closed enum so a client can autocomplete
+        # / validate against it.
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = _tool_by_name(listing, "record_correlation")
+        # FastMCP may resolve Literal[Enum] either as `enum: [...]`
+        # directly OR via `$ref` into a `$defs` table. Look in both.
+        properties = tool.inputSchema.get("properties", {})
+        ct = properties.get("correlation_type", {})
+        defs = tool.inputSchema.get("$defs", {})
+        observed_values: set[str] = set()
+        if "enum" in ct:
+            observed_values = set(ct["enum"])
+        elif "$ref" in ct:
+            ref_name = ct["$ref"].rsplit("/", 1)[-1]
+            referenced = defs.get(ref_name, {})
+            if "enum" in referenced:
+                observed_values = set(referenced["enum"])
+        assert observed_values == {
+            "corroborates",
+            "contradicts",
+            "strengthens",
+            "weakens",
+            "request_followup",
+        }, (
+            "correlation_type enum drifted; got "
+            f"{observed_values}. Adding a correlation type requires "
+            "extending the CorrelationType enum AND this test."
+        )
+
+    def test_update_finding_promotion_rule_enum(self, tmp_path: Path):
+        # `promotion_rule` is a Literal["R1"..."R6"]; the JSON schema
+        # must surface the closed enum so the orchestrator's named
+        # rules show up at the protocol boundary.
+        listing = _run_async(_list_tools_only(tmp_path))
+        tool = _tool_by_name(listing, "update_finding")
+        properties = tool.inputSchema.get("properties", {})
+        pr = properties.get("promotion_rule", {})
+        defs = tool.inputSchema.get("$defs", {})
+        observed_values: set[str] = set()
+        if "enum" in pr:
+            observed_values = set(pr["enum"])
+        elif "$ref" in pr:
+            ref_name = pr["$ref"].rsplit("/", 1)[-1]
+            referenced = defs.get(ref_name, {})
+            if "enum" in referenced:
+                observed_values = set(referenced["enum"])
+        assert observed_values == {"R1", "R2", "R3", "R4", "R5", "R6"}, (
+            "promotion_rule enum drifted; got "
+            f"{observed_values}. Adding a rule requires extending "
+            "PromotionRule AND this test AND the matching update_finding "
+            "test."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Full round-trip — call success, call error, recovery
@@ -688,4 +837,6 @@ class TestRoundTrip:
             "set_difference",
             "subtree",
             "record_finding",
+            "record_correlation",
+            "update_finding",
         }

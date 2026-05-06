@@ -13,10 +13,16 @@ import html
 import json
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, Union
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 _HEX64_PATTERN = r"^[0-9a-f]{64}$"
@@ -599,6 +605,46 @@ FindingState = Literal["DRAFT", "CONFIRMED", "DISPUTED"]
 AnalystName = Literal["process_analyst", "network_analyst", "validator"]
 
 
+class FindingRecordKind(StrEnum):
+    """Discriminator on `findings.jsonl` line payloads.
+
+    Three writers, three roles:
+      - Analysts call `record_finding` and produce `DraftFinding`
+        entries (`record_kind = "draft"`). DRAFT only at write time;
+        analysts never write CONFIRMED.
+      - The orchestrator calls `update_finding` and produces
+        `FindingUpdate` entries (`record_kind = "update"`) — promotion
+        events that change a prior finding's `state` and / or
+        `confidence`. Carries a back-pointer to the original
+        `finding_id` and to the correlations that drove the
+        promotion.
+
+    Both kinds land in the SAME `findings.jsonl` chain, distinguished
+    by this discriminator. The chain remains append-only: an UPDATE
+    entry never modifies the original DRAFT line; readers replay the
+    chain and apply UPDATE entries last-write-wins to derive the
+    current state of any given finding.
+
+    Migration semantic: legacy lines (written before this
+    discriminator existed) lack `record_kind`; the chain reader
+    injects `"draft"` so they parse as `DraftFinding` under the
+    discriminated union. New writes always populate the field.
+    """
+
+    DRAFT = "draft"
+    UPDATE = "update"
+
+
+# Promotion-rule names recognized by `update_finding`. The orchestrator
+# (Prompt B's deliverable, week 6) decides which rule to call by name;
+# the substrate's job is to record the name in the chain so a future
+# audit-replay can reconstruct which rule fired and why. The validator
+# never calls `update_finding`; the orchestrator never calls
+# `record_correlation`. Adding a rule requires extending this Literal
+# AND the matching test in `tests/test_update_finding.py`.
+PromotionRule = Literal["R1", "R2", "R3", "R4", "R5", "R6"]
+
+
 class DraftFinding(BaseModel):
     """A single analyst finding, in DRAFT state at write time.
 
@@ -624,6 +670,14 @@ class DraftFinding(BaseModel):
     enough to be one finding, long enough to be substantiated.
     """
 
+    # Discriminator under FindingChainPayload. Default = "draft" so
+    # that loading a legacy DraftFinding row (written before the
+    # discriminator existed) succeeds via field default. The chain-
+    # entry-level model_validator(mode="before") additionally injects
+    # `record_kind="draft"` into the inner finding dict for the
+    # discriminated-union dispatch (defaults aren't seen by the
+    # discriminator extractor, which reads the raw input dict).
+    record_kind: Literal[FindingRecordKind.DRAFT] = FindingRecordKind.DRAFT
     finding_id: str
     evidence_id: str
     analyst: AnalystName
@@ -660,6 +714,102 @@ class DraftFinding(BaseModel):
         return _enforce_utc("created_at", v)
 
 
+class FindingUpdate(BaseModel):
+    """A promotion event from the orchestrator.
+
+    Lands in `findings.jsonl` as a sibling of `DraftFinding` entries,
+    distinguished by `record_kind = "update"`. Carries a back-pointer
+    to the original `finding_id` and to the correlations that drove
+    the promotion, plus the state/confidence transition. The
+    orchestrator computes `previous_state` and `previous_confidence`
+    by scanning the chain for the most recent record of the same
+    `finding_id` (last-write-wins across DRAFT and prior UPDATEs);
+    the substrate validates the transition is allowed (DRAFT can go
+    to DRAFT or CONFIRMED; CONFIRMED stays CONFIRMED) and rejects
+    backward moves.
+
+    `promotion_rule` is the named rule the orchestrator chose. The
+    rule decision logic (which rule fires when) is the orchestrator's
+    job; the substrate only records the name. `driving_correlation_ids`
+    points at the validator's correlation entries that the rule
+    consumed; the substrate validates each id resolves to a real
+    correlation in `correlations.jsonl`.
+
+    `audit_line` is the audit-chain line where this `update_finding`
+    call's success entry was logged — same provenance pattern as
+    tier-2 results.
+
+    `orchestrator_version` is a free-form version string the
+    orchestrator stamps on each promotion so a future audit-replay
+    can resolve "which version of the rule code produced this
+    promotion".
+    """
+
+    record_kind: Literal[FindingRecordKind.UPDATE] = FindingRecordKind.UPDATE
+    update_id: str
+    finding_id: str
+    iteration_number: int = Field(ge=0)
+    previous_state: Literal["DRAFT", "CONFIRMED"]
+    new_state: Literal["DRAFT", "CONFIRMED"]
+    previous_confidence: FindingConfidence
+    new_confidence: FindingConfidence
+    promotion_rule: PromotionRule
+    driving_correlation_ids: list[str] = Field(min_length=1)
+    created_at: datetime
+    audit_line: int = Field(ge=1)
+    orchestrator_version: str = Field(min_length=1, max_length=100)
+
+    @field_validator("update_id", "finding_id")
+    @classmethod
+    def _validate_uuid4_update(cls, v: str, info) -> str:
+        try:
+            parsed = UUID(v)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(
+                f"{info.field_name} must be a UUID string, got {v!r}"
+            ) from exc
+        if parsed.version != 4:
+            raise ValueError(
+                f"{info.field_name} must be UUID version 4, got version "
+                f"{parsed.version}"
+            )
+        return str(parsed)
+
+    @field_validator("driving_correlation_ids")
+    @classmethod
+    def _validate_correlation_uuids(cls, v: list[str]) -> list[str]:
+        for cid in v:
+            try:
+                parsed = UUID(cid)
+            except (ValueError, AttributeError, TypeError) as exc:
+                raise ValueError(
+                    f"driving_correlation_ids entries must be UUID strings, "
+                    f"got {cid!r}"
+                ) from exc
+            if parsed.version != 4:
+                raise ValueError(
+                    f"driving_correlation_ids entries must be UUID v4, "
+                    f"got version {parsed.version}"
+                )
+        return v
+
+    @field_validator("created_at")
+    @classmethod
+    def _validate_created_at_update(cls, v: datetime) -> datetime:
+        return _enforce_utc("created_at", v)
+
+
+# Discriminated union for `findings.jsonl` line payloads. The
+# `record_kind` field is the discriminator: "draft" → DraftFinding,
+# "update" → FindingUpdate. The chain-entry-level
+# model_validator(mode="before") handles the legacy-no-record_kind
+# case before this discriminator runs.
+FindingChainPayload = Annotated[
+    Union[DraftFinding, FindingUpdate],
+    Field(discriminator="record_kind"),
+]
+
+
 class FindingChainEntry(BaseModel):
     """One JSONL line of the hash-chained findings log.
 
@@ -677,9 +827,31 @@ class FindingChainEntry(BaseModel):
 
     line_number: int = Field(ge=1)
     timestamp: datetime
-    finding: DraftFinding
+    finding: FindingChainPayload
     prev_finding_hash: str = Field(pattern=_HEX64_PATTERN)
     this_finding_hash: str = Field(pattern=_HEX64_PATTERN)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_record_kind_default(cls, data: Any) -> Any:
+        """Legacy entries (written before `record_kind` existed) lack
+        the discriminator. Inject `"draft"` so the discriminated union
+        dispatches them to `DraftFinding`. New entries always carry
+        `record_kind` so this is a no-op for them.
+
+        Hash-replay note: the on-disk `this_finding_hash` of a legacy
+        line was computed without `record_kind` in the payload. Re-
+        hashing AFTER this injection produces a different value;
+        chain-replay tooling that wants byte-exact verification must
+        read the raw JSON line and hash it as-is, not via this model.
+        The chain itself remains intact (line N+1's prev hash points
+        at line N's stored this hash regardless).
+        """
+        if isinstance(data, dict):
+            payload = data.get("finding")
+            if isinstance(payload, dict) and "record_kind" not in payload:
+                data = {**data, "finding": {**payload, "record_kind": "draft"}}
+        return data
 
     @field_validator("timestamp")
     @classmethod
@@ -1077,10 +1249,327 @@ class SubtreeResult(BaseModel):
     truncated: bool
 
 
+# ---------------------------------------------------------------------------
+# Validator substrate (week 6) — correlations
+#
+# `record_correlation` is the MCP tool the validator subagent (Prompt B's
+# deliverable) calls to commit a cross-source / cross-plugin observation
+# about one or more findings. Five correlation types, each a separate
+# pydantic model, joined under a discriminated union on `correlation_type`.
+# The substrate validates per-type required fields, the audit-line
+# provenance of `evidence_refs`, and the existence of every referenced
+# `finding_id` in `findings.jsonl` — same architectural principle as
+# `record_finding` (the agent cannot drift away from the contract).
+#
+# Three writers, three roles, three chains:
+#   - Analysts → record_finding → findings.jsonl (DRAFT only)
+#   - Validator → record_correlation → correlations.jsonl (NEW)
+#   - Orchestrator → update_finding → findings.jsonl (UPDATE entries,
+#     same chain as DRAFT, distinguished by `record_kind`)
+#
+# correlations.jsonl is its own hash chain. Distinct field names
+# (`prev_correlation_hash` / `this_correlation_hash`) so a line read out
+# of context cannot be silently misinterpreted as an audit / findings /
+# extractions line.
+# ---------------------------------------------------------------------------
+
+
+class CorrelationType(StrEnum):
+    """Discriminator on `correlations.jsonl` line payloads.
+
+    Five validator outputs:
+      - `corroborates` — N findings agree on the same target (e.g.,
+        process_analyst's hidden-PID claim is corroborated by the
+        psscan/pslist set-diff and the pool-tag aliasing observation).
+        Carries `target_finding_ids` (≥1) and a `strength`.
+      - `contradicts` — two findings make incompatible claims about
+        the same artifact (e.g., one says PID X is hidden, another
+        says PID X is canonical). Carries `finding_a_id` /
+        `finding_b_id` plus a `severity` and a `resolvable_by_followup`
+        hint.
+      - `strengthens` — one new piece of evidence strengthens an
+        existing finding without rising to the structural bar of
+        `corroborates`.
+      - `weakens` — one new piece of evidence weakens an existing
+        finding without rising to `contradicts`.
+      - `request_followup` — the validator requests that a named
+        analyst re-run with a focus context (e.g., "process_analyst
+        re-examine PID 7900 with handles + cmdline"). Carries the
+        `target_analyst`, the related `finding_ids`, a structured
+        `focus_context`, and a free-form `rationale`. The orchestrator
+        consumes these to dispatch the next iteration.
+    """
+
+    CORROBORATES = "corroborates"
+    CONTRADICTS = "contradicts"
+    STRENGTHENS = "strengthens"
+    WEAKENS = "weakens"
+    REQUEST_FOLLOWUP = "request_followup"
+
+
+CorrelationStrength = Literal["weak", "moderate", "strong"]
+ContradictionSeverity = Literal["minor", "material", "fundamental"]
+FollowupTargetAnalyst = Literal["process_analyst", "network_analyst"]
+
+
+class _BaseCorrelation(BaseModel):
+    """Common fields for every correlation. Not directly written —
+    every correlation lands in `correlations.jsonl` as one of the five
+    concrete subtypes below.
+
+    Server-controlled fields:
+      - `correlation_id` is generated by the server (UUIDv4); the agent
+        does not supply it.
+      - `created_at` is set to the tool-call timestamp.
+      - `audit_line` is the audit-chain line for this
+        `record_correlation` call's success entry — same provenance
+        pattern as tier-2 results.
+    """
+
+    correlation_id: str
+    case_id: str = Field(min_length=1, max_length=200)
+    iteration_number: int = Field(ge=0)
+    created_at: datetime
+    audit_line: int = Field(ge=1)
+    evidence_refs: list[EvidenceRef] = Field(min_length=1)
+    hypothesis: str = Field(min_length=50, max_length=1000)
+
+    @field_validator("correlation_id")
+    @classmethod
+    def _validate_correlation_uuid(cls, v: str) -> str:
+        try:
+            parsed = UUID(v)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(
+                f"correlation_id must be a UUID string, got {v!r}"
+            ) from exc
+        if parsed.version != 4:
+            raise ValueError(
+                f"correlation_id must be UUID version 4, got version "
+                f"{parsed.version}"
+            )
+        return str(parsed)
+
+    @field_validator("created_at")
+    @classmethod
+    def _validate_correlation_created_at(cls, v: datetime) -> datetime:
+        return _enforce_utc("created_at", v)
+
+
+def _validate_uuid4_list(v: list[str], field_name: str) -> list[str]:
+    for item in v:
+        try:
+            parsed = UUID(item)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(
+                f"{field_name} entries must be UUID strings, got {item!r}"
+            ) from exc
+        if parsed.version != 4:
+            raise ValueError(
+                f"{field_name} entries must be UUID v4, got version "
+                f"{parsed.version}"
+            )
+    return v
+
+
+class CorroboratesCorrelation(_BaseCorrelation):
+    """N findings agree on the same target. `target_finding_ids` lists
+    every finding the correlation supports. `strength` is the
+    validator's qualitative read of how strong the agreement is —
+    cross-source HIGH and cross-plugin HIGH are both "strong" reads
+    earned via different evidence patterns.
+    """
+
+    correlation_type: Literal[CorrelationType.CORROBORATES] = (
+        CorrelationType.CORROBORATES
+    )
+    target_finding_ids: list[str] = Field(min_length=1)
+    strength: CorrelationStrength
+
+    @field_validator("target_finding_ids")
+    @classmethod
+    def _validate_target_uuids(cls, v: list[str]) -> list[str]:
+        return _validate_uuid4_list(v, "target_finding_ids")
+
+
+class ContradictsCorrelation(_BaseCorrelation):
+    """Two findings make incompatible claims about the same artifact.
+    `severity` distinguishes "minor" disagreement (one finding's
+    confidence should drop) from "fundamental" disagreement (the two
+    findings cannot both be true; the orchestrator must pick one).
+    `resolvable_by_followup` flags whether a re-run with a different
+    tool surface could resolve the contradiction without human
+    intervention.
+    """
+
+    correlation_type: Literal[CorrelationType.CONTRADICTS] = (
+        CorrelationType.CONTRADICTS
+    )
+    finding_a_id: str
+    finding_b_id: str
+    severity: ContradictionSeverity
+    resolvable_by_followup: bool
+
+    @field_validator("finding_a_id", "finding_b_id")
+    @classmethod
+    def _validate_finding_uuid(cls, v: str, info) -> str:
+        try:
+            parsed = UUID(v)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(
+                f"{info.field_name} must be a UUID string, got {v!r}"
+            ) from exc
+        if parsed.version != 4:
+            raise ValueError(
+                f"{info.field_name} must be UUID v4, got version "
+                f"{parsed.version}"
+            )
+        return str(parsed)
+
+
+class StrengthensCorrelation(_BaseCorrelation):
+    """One new piece of evidence strengthens an existing finding
+    without rising to the structural bar of `corroborates` (which
+    requires multiple agreeing findings)."""
+
+    correlation_type: Literal[CorrelationType.STRENGTHENS] = (
+        CorrelationType.STRENGTHENS
+    )
+    target_finding_id: str
+
+    @field_validator("target_finding_id")
+    @classmethod
+    def _validate_target_uuid(cls, v: str) -> str:
+        try:
+            parsed = UUID(v)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(
+                f"target_finding_id must be a UUID string, got {v!r}"
+            ) from exc
+        if parsed.version != 4:
+            raise ValueError(
+                f"target_finding_id must be UUID v4, got version "
+                f"{parsed.version}"
+            )
+        return str(parsed)
+
+
+class WeakensCorrelation(_BaseCorrelation):
+    """One new piece of evidence weakens an existing finding without
+    rising to the structural bar of `contradicts` (which requires a
+    second finding making an incompatible claim)."""
+
+    correlation_type: Literal[CorrelationType.WEAKENS] = (
+        CorrelationType.WEAKENS
+    )
+    target_finding_id: str
+
+    @field_validator("target_finding_id")
+    @classmethod
+    def _validate_target_uuid_w(cls, v: str) -> str:
+        try:
+            parsed = UUID(v)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(
+                f"target_finding_id must be a UUID string, got {v!r}"
+            ) from exc
+        if parsed.version != 4:
+            raise ValueError(
+                f"target_finding_id must be UUID v4, got version "
+                f"{parsed.version}"
+            )
+        return str(parsed)
+
+
+class RequestFollowupCorrelation(_BaseCorrelation):
+    """The validator requests that a named analyst re-run with a
+    focus context. The orchestrator consumes these to dispatch the
+    next iteration of the self-correction loop. `focus_context` is
+    a structured dict (e.g., `{"pids": [7900], "image_names": [...]}`)
+    rather than free-form text so the orchestrator can pass it to
+    the analyst as typed input rather than having to parse a
+    paragraph."""
+
+    correlation_type: Literal[CorrelationType.REQUEST_FOLLOWUP] = (
+        CorrelationType.REQUEST_FOLLOWUP
+    )
+    target_analyst: FollowupTargetAnalyst
+    related_finding_ids: list[str] = Field(min_length=1)
+    focus_context: dict[str, Any] = Field(default_factory=dict)
+    rationale: str = Field(min_length=20, max_length=1000)
+
+    @field_validator("related_finding_ids")
+    @classmethod
+    def _validate_related_uuids(cls, v: list[str]) -> list[str]:
+        return _validate_uuid4_list(v, "related_finding_ids")
+
+
+# Discriminated union for `correlations.jsonl` line payloads. The
+# `correlation_type` field is the discriminator; pydantic dispatches
+# to the matching variant by the literal value.
+CorrelationPayload = Annotated[
+    Union[
+        CorroboratesCorrelation,
+        ContradictsCorrelation,
+        StrengthensCorrelation,
+        WeakensCorrelation,
+        RequestFollowupCorrelation,
+    ],
+    Field(discriminator="correlation_type"),
+]
+
+
+class CorrelationChainEntry(BaseModel):
+    """One JSONL line of the hash-chained correlations log.
+
+    Mirrors `AuditLogEntry` and `FindingChainEntry` chain semantics:
+    `prev_correlation_hash` is the previous record's
+    `this_correlation_hash`, or 64 zeros for genesis;
+    `this_correlation_hash` is sha256 over a canonical JSON
+    serialization of every other field.
+
+    Distinct hash field names (not `prev_line_hash` / `this_line_hash`)
+    so a line read out of context cannot be silently misinterpreted as
+    an audit chain line. Same convention as the findings and
+    extractions chains.
+    """
+
+    line_number: int = Field(ge=1)
+    timestamp: datetime
+    correlation: CorrelationPayload
+    prev_correlation_hash: str = Field(pattern=_HEX64_PATTERN)
+    this_correlation_hash: str = Field(pattern=_HEX64_PATTERN)
+
+    @field_validator("timestamp")
+    @classmethod
+    def _validate_correlation_chain_timestamp(cls, v: datetime) -> datetime:
+        return _enforce_utc("timestamp", v)
+
+    @classmethod
+    def compute_this_correlation_hash(cls, **fields: Any) -> str:
+        """Deterministic sha256 over all fields except
+        `this_correlation_hash`. Same canonical-form rule as
+        `AuditLogEntry.compute_this_line_hash`: sorted JSON keys, ISO
+        timestamps, enum values rendered as strings.
+        """
+        payload = {
+            k: v for k, v in fields.items() if k != "this_correlation_hash"
+        }
+        canonical = json.dumps(payload, sort_keys=True, default=_json_default)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 __all__ = [
     "AnalystName",
     "ArtifactClass",
     "AuditLogEntry",
+    "ContradictionSeverity",
+    "ContradictsCorrelation",
+    "CorroboratesCorrelation",
+    "CorrelationChainEntry",
+    "CorrelationPayload",
+    "CorrelationStrength",
+    "CorrelationType",
     "DraftFinding",
     "EvidenceRecord",
     "EvidenceRef",
@@ -1090,9 +1579,13 @@ __all__ = [
     "FieldFilter",
     "FindingCategory",
     "FindingChainEntry",
+    "FindingChainPayload",
     "FindingConfidence",
+    "FindingRecordKind",
     "FindingSeverity",
     "FindingState",
+    "FindingUpdate",
+    "FollowupTargetAnalyst",
     "GroupByResult",
     "NetscanResult",
     "NetscanSummary",
@@ -1101,6 +1594,7 @@ __all__ = [
     "ProcessRecord",
     "ProcessScanRecord",
     "ProcessTreeRecord",
+    "PromotionRule",
     "PslistResult",
     "PslistSummary",
     "PsscanResult",
@@ -1108,7 +1602,10 @@ __all__ = [
     "PstreeResult",
     "PstreeSummary",
     "QueryRecordsResult",
+    "RequestFollowupCorrelation",
     "SetDifferenceResult",
+    "StrengthensCorrelation",
     "SubtreeResult",
     "UntrustedString",
+    "WeakensCorrelation",
 ]

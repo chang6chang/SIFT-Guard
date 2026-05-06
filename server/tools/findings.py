@@ -32,8 +32,12 @@ from uuid import uuid4
 import yaml
 from pydantic import BaseModel, ValidationError
 
-from server.audit import append_audit_entry
-from server.findings_log import append_finding_entry
+from server.audit import append_audit_entry, peek_next_line_number
+from server.correlations_log import read_correlation_ids
+from server.findings_log import (
+    append_finding_entry,
+    read_finding_state,
+)
 from server.schemas import (
     AnalystName,
     DraftFinding,
@@ -44,6 +48,8 @@ from server.schemas import (
     FindingChainEntry,
     FindingConfidence,
     FindingSeverity,
+    FindingUpdate,
+    PromotionRule,
 )
 
 
@@ -333,4 +339,218 @@ def record_finding(
     return finding
 
 
-__all__ = ["ALLOWED_ANALYSTS", "ALLOWED_SOURCE_TOOLS", "record_finding"]
+_UPDATE_TOOL_NAME = "update_finding"
+_VALID_PROMOTION_RULES: frozenset[str] = frozenset(
+    {"R1", "R2", "R3", "R4", "R5", "R6"}
+)
+
+
+class _UpdateRejectionReason(StrEnum):
+    """Why an update_finding call was refused."""
+
+    UNKNOWN_FINDING = "unknown_finding"
+    UNKNOWN_CORRELATION = "unknown_correlation"
+    UNKNOWN_RULE = "unknown_rule"
+    INVALID_STATE_TRANSITION = "invalid_state_transition"
+    SCHEMA_VALIDATION_FAILED = "schema_validation_failed"
+
+
+class _UpdateRejectionRecord(BaseModel):
+    """Audit payload for a rejected update_finding call."""
+
+    reason: _UpdateRejectionReason
+    finding_id: str | None
+    promotion_rule: str | None
+
+
+def _log_update_rejection(
+    case_dir: Path,
+    reason: _UpdateRejectionReason,
+    finding_id: str | None,
+    promotion_rule: str | None,
+) -> None:
+    rejection = _UpdateRejectionRecord(
+        reason=reason,
+        finding_id=finding_id,
+        promotion_rule=promotion_rule,
+    )
+    append_audit_entry(
+        case_dir=case_dir,
+        tool_name=f"{_UPDATE_TOOL_NAME}:rejected_{reason.value}",
+        evidence_id=None,
+        input_args={
+            "finding_id": finding_id,
+            "promotion_rule": promotion_rule,
+        },
+        output=rejection,
+    )
+
+
+def _is_valid_state_transition(prev_state: str, new_state: str) -> bool:
+    """DRAFT can go to DRAFT or CONFIRMED; CONFIRMED stays CONFIRMED.
+    Any other shape is rejected — once a finding is CONFIRMED the
+    orchestrator does not un-confirm it. DISPUTED is reserved for
+    the validator's downstream handling and is not a target state
+    for `update_finding`."""
+    if prev_state == "DRAFT":
+        return new_state in ("DRAFT", "CONFIRMED")
+    if prev_state == "CONFIRMED":
+        return new_state == "CONFIRMED"
+    return False
+
+
+def update_finding(
+    *,
+    finding_id: str,
+    iteration_number: int,
+    new_state: str,
+    new_confidence: str,
+    promotion_rule: str,
+    driving_correlation_ids: list[str],
+    orchestrator_version: str,
+    case_dir: str = "case-data",
+) -> FindingUpdate:
+    """Record an orchestrator promotion event against an existing
+    finding.
+
+    Reads the most recent record for `finding_id` (DRAFT or prior
+    UPDATE, last-write-wins) to derive `previous_state` and
+    `previous_confidence` — server-derived rather than agent-supplied
+    so a buggy / malicious orchestrator cannot spoof the predecessor.
+    Validates the transition is allowed (DRAFT → DRAFT or CONFIRMED;
+    CONFIRMED → CONFIRMED). Validates each `driving_correlation_id`
+    resolves to a real entry in `correlations.jsonl`. Validates
+    `promotion_rule` against the R1..R6 Literal. Constructs a
+    `FindingUpdate` with server-controlled `update_id` (UUIDv4),
+    `created_at` (UTC now), and `audit_line` (this call's audit-chain
+    line). Appends to the SAME `findings.jsonl` chain as DRAFT
+    entries, distinguished by `record_kind = "update"`. Audits
+    `update_finding:success` on success and a typed
+    `update_finding:rejected_*` line on every failure path.
+
+    Five distinct rejection paths:
+
+        update_finding:rejected_unknown_finding
+        update_finding:rejected_unknown_correlation
+        update_finding:rejected_unknown_rule
+        update_finding:rejected_invalid_state_transition
+        update_finding:rejected_schema_validation_failed
+    """
+    case_dir_path = Path(case_dir).resolve()
+
+    # 1. promotion_rule allow-list. Cheap pre-check; the Literal in
+    #    the FindingUpdate schema would also catch this but we want
+    #    the audited rejection line to fire on a typo'd rule rather
+    #    than a generic schema error.
+    if promotion_rule not in _VALID_PROMOTION_RULES:
+        _log_update_rejection(
+            case_dir_path,
+            _UpdateRejectionReason.UNKNOWN_RULE,
+            finding_id,
+            promotion_rule,
+        )
+        raise ValueError("promotion_rule not in allow-list")
+
+    # 2. Look up the existing finding by id. Read the chain to find
+    #    the latest state/confidence for this finding_id. Missing
+    #    finding_id is the unknown_finding rejection.
+    prev = read_finding_state(case_dir_path, finding_id)
+    if prev is None:
+        _log_update_rejection(
+            case_dir_path,
+            _UpdateRejectionReason.UNKNOWN_FINDING,
+            finding_id,
+            promotion_rule,
+        )
+        raise ValueError("finding_id not found in findings.jsonl")
+    previous_state, previous_confidence = prev
+
+    # 3. State-transition rule.
+    if not _is_valid_state_transition(previous_state, new_state):
+        _log_update_rejection(
+            case_dir_path,
+            _UpdateRejectionReason.INVALID_STATE_TRANSITION,
+            finding_id,
+            promotion_rule,
+        )
+        raise ValueError("state transition not allowed")
+
+    # 4. driving_correlation_ids existence.
+    known_correlations = read_correlation_ids(case_dir_path)
+    missing = [
+        cid for cid in driving_correlation_ids if cid not in known_correlations
+    ]
+    if missing:
+        _log_update_rejection(
+            case_dir_path,
+            _UpdateRejectionReason.UNKNOWN_CORRELATION,
+            finding_id,
+            promotion_rule,
+        )
+        raise ValueError(
+            "driving_correlation_id not in correlations.jsonl"
+        )
+
+    # 5. Construct the FindingUpdate. pydantic enforces the Literal
+    #    constraints we couldn't pre-check (new_state ∈ {DRAFT,
+    #    CONFIRMED}, new_confidence ∈ enum, etc.); a ValidationError
+    #    becomes the schema_validation_failed rejection path.
+    update_id = str(uuid4())
+    created_at = datetime.now(tz=timezone.utc)
+    audit_line = peek_next_line_number(case_dir_path)
+    try:
+        update = FindingUpdate(
+            update_id=update_id,
+            finding_id=finding_id,
+            iteration_number=iteration_number,
+            previous_state=previous_state,  # type: ignore[arg-type]
+            new_state=new_state,  # type: ignore[arg-type]
+            previous_confidence=previous_confidence,  # type: ignore[arg-type]
+            new_confidence=new_confidence,  # type: ignore[arg-type]
+            promotion_rule=promotion_rule,  # type: ignore[arg-type]
+            driving_correlation_ids=driving_correlation_ids,
+            created_at=created_at,
+            audit_line=audit_line,
+            orchestrator_version=orchestrator_version,
+        )
+    except ValidationError:
+        _log_update_rejection(
+            case_dir_path,
+            _UpdateRejectionReason.SCHEMA_VALIDATION_FAILED,
+            finding_id,
+            promotion_rule,
+        )
+        raise ValueError("update failed schema validation")
+
+    # 6. Append to the findings chain (same chain as DRAFT entries).
+    chain_entry: FindingChainEntry = append_finding_entry(
+        case_dir_path, update
+    )
+
+    # 7. Audit success. The output_hash is the digest of the
+    #    FindingChainEntry just written.
+    append_audit_entry(
+        case_dir=case_dir_path,
+        tool_name=_UPDATE_TOOL_NAME,
+        evidence_id=None,
+        input_args={
+            "finding_id": finding_id,
+            "iteration_number": iteration_number,
+            "new_state": new_state,
+            "new_confidence": new_confidence,
+            "promotion_rule": promotion_rule,
+            "driving_correlation_ids": sorted(set(driving_correlation_ids)),
+            "orchestrator_version": orchestrator_version,
+        },
+        output=chain_entry,
+    )
+
+    return update
+
+
+__all__ = [
+    "ALLOWED_ANALYSTS",
+    "ALLOWED_SOURCE_TOOLS",
+    "record_finding",
+    "update_finding",
+]

@@ -8,21 +8,29 @@ arbitrary case paths. `CASE_DIR` is a module-level constant resolved
 by the server, not a parameter the agent can set — the agent can only
 name evidence by `evidence_id` registered through `register_evidence`.
 
-Tool surface as of week 5 (10 tools):
+Tool surface as of week 6 day 1 (12 tools):
   Tier-0  register_evidence (read-only catalog)
   Tier-1  vol_pslist, vol_psscan, vol_pstree, vol_netscan
           — invoke Volatility, persist full output to extractions/,
             return a small Summary
   Tier-2  query_records, group_by, set_difference, subtree
           — read stored extractions, compose narrowed answers
-  Tier-1  record_finding (analyst commits a DRAFT finding)
+  Writes  record_finding       (analyst → DRAFT entry on findings.jsonl)
+          record_correlation   (validator → entry on correlations.jsonl)
+          update_finding       (orchestrator → UPDATE entry on findings.jsonl)
 """
 
 from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
+from typing import Any, Literal
+
 from server.schemas import (
+    ContradictionSeverity,
+    ContradictsCorrelation,
+    CorrelationStrength,
+    CorroboratesCorrelation,
     DraftFinding,
     EvidenceRecord,
     EvidenceRef,
@@ -30,15 +38,21 @@ from server.schemas import (
     FindingCategory,
     FindingConfidence,
     FindingSeverity,
+    FindingUpdate,
+    FollowupTargetAnalyst,
     GroupByResult,
     NetscanSummary,
     PluginName,
+    PromotionRule,
     PslistSummary,
     PsscanSummary,
     PstreeSummary,
     QueryRecordsResult,
+    RequestFollowupCorrelation,
     SetDifferenceResult,
+    StrengthensCorrelation,
     SubtreeResult,
+    WeakensCorrelation,
 )
 from server.tools.analytical import (
     group_by as _group_by_impl,
@@ -46,8 +60,14 @@ from server.tools.analytical import (
     set_difference as _set_difference_impl,
     subtree as _subtree_impl,
 )
+from server.tools.correlations import (
+    record_correlation as _record_correlation_impl,
+)
 from server.tools.evidence import register_evidence as _register_evidence_impl
-from server.tools.findings import record_finding as _record_finding_impl
+from server.tools.findings import (
+    record_finding as _record_finding_impl,
+    update_finding as _update_finding_impl,
+)
 from server.tools.memory import (
     vol_netscan as _vol_netscan_impl,
     vol_pslist as _vol_pslist_impl,
@@ -378,6 +398,124 @@ def record_finding(
         description=description,
         evidence_refs=evidence_refs,
         hypothesis=hypothesis,
+        case_dir=CASE_DIR,
+    )
+
+
+@mcp.tool()
+def record_correlation(
+    case_id: str,
+    iteration_number: int,
+    correlation_type: Literal[
+        "corroborates",
+        "contradicts",
+        "strengthens",
+        "weakens",
+        "request_followup",
+    ],
+    evidence_refs: list[EvidenceRef],
+    hypothesis: str,
+    target_finding_ids: list[str] | None = None,
+    finding_a_id: str | None = None,
+    finding_b_id: str | None = None,
+    target_finding_id: str | None = None,
+    strength: CorrelationStrength | None = None,
+    severity: ContradictionSeverity | None = None,
+    resolvable_by_followup: bool | None = None,
+    target_analyst: FollowupTargetAnalyst | None = None,
+    related_finding_ids: list[str] | None = None,
+    focus_context: dict[str, Any] | None = None,
+    rationale: str | None = None,
+) -> (
+    CorroboratesCorrelation
+    | ContradictsCorrelation
+    | StrengthensCorrelation
+    | WeakensCorrelation
+    | RequestFollowupCorrelation
+):
+    """Commit a correlation entry to the case.
+
+    The validator subagent calls this to record what it observed across
+    findings: corroboration (≥2 findings agree), contradiction (two
+    findings make incompatible claims), strengthens / weakens (one new
+    piece of evidence shifts an existing finding's confidence), or a
+    request_followup (validator asks the orchestrator to dispatch an
+    analyst with a focus context). Five `correlation_type` values
+    dispatch to five typed pydantic models; per-type required-field
+    check happens at construction time.
+
+    Required: a registered case_id; a correlation_type from
+    {corroborates, contradicts, strengthens, weakens, request_followup};
+    at least one EvidenceRef whose audit_line + source_tool match a
+    real audit-chain entry; every referenced finding_id must resolve
+    to an entry in case-data/findings.jsonl. Server fills
+    correlation_id (UUIDv4), created_at (UTC now), and audit_line.
+
+    Errors are sanitized — invalid case_id, unknown correlation_type,
+    mismatched audit refs, payload-shape errors (e.g., corroborates
+    without strength), and unresolvable finding-ids all raise
+    ValueError with generic messages while the audit chain captures
+    the rejection context for operator review.
+    """
+    return _record_correlation_impl(
+        case_id=case_id,
+        iteration_number=iteration_number,
+        correlation_type=correlation_type,
+        evidence_refs=evidence_refs,
+        hypothesis=hypothesis,
+        target_finding_ids=target_finding_ids,
+        finding_a_id=finding_a_id,
+        finding_b_id=finding_b_id,
+        target_finding_id=target_finding_id,
+        strength=strength,
+        severity=severity,
+        resolvable_by_followup=resolvable_by_followup,
+        target_analyst=target_analyst,
+        related_finding_ids=related_finding_ids,
+        focus_context=focus_context,
+        rationale=rationale,
+        case_dir=CASE_DIR,
+    )
+
+
+@mcp.tool()
+def update_finding(
+    finding_id: str,
+    iteration_number: int,
+    new_state: Literal["DRAFT", "CONFIRMED"],
+    new_confidence: FindingConfidence,
+    promotion_rule: PromotionRule,
+    driving_correlation_ids: list[str],
+    orchestrator_version: str,
+) -> FindingUpdate:
+    """Record an orchestrator promotion event against an existing
+    finding.
+
+    The orchestrator (NOT analysts, NOT the validator) calls this to
+    promote a finding's state and confidence based on the
+    correlations the validator produced. Reads the most recent
+    record for finding_id (DRAFT or prior UPDATE, last-write-wins) to
+    derive previous_state / previous_confidence — server-derived,
+    not agent-supplied. Validates the transition (DRAFT → DRAFT or
+    CONFIRMED; CONFIRMED → CONFIRMED; backward moves rejected).
+    Validates each driving_correlation_id resolves to a real entry
+    in correlations.jsonl. Validates promotion_rule against R1..R6.
+    Appends a FindingUpdate entry to findings.jsonl in the SAME
+    chain as DRAFT entries, distinguished by record_kind="update".
+
+    Errors are sanitized — unknown finding_id, unknown correlation,
+    unknown rule, invalid state transition, and pydantic constraint
+    failures all raise ValueError with generic messages while the
+    audit chain captures the rejection context for operator review.
+    """
+    return _update_finding_impl(
+        finding_id=finding_id,
+        iteration_number=iteration_number,
+        new_state=new_state,
+        new_confidence=new_confidence,
+        promotion_rule=promotion_rule,
+        driving_correlation_ids=driving_correlation_ids,
+        orchestrator_version=orchestrator_version,
         case_dir=CASE_DIR,
     )
 
