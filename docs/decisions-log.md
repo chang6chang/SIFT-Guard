@@ -585,3 +585,51 @@ anomaly". Neither correlation is computed in this PR — that is the
 validator's job. The observation here is that the substrate (shared
 findings.jsonl, shared evidence, schema-pinned join key on `pid`)
 is correlatable.
+
+## 2026-05-06 — Validator subagent + orchestrator loop, V-C hybrid
+
+The validator subagent (`.claude/agents/validator.md`) and the
+Python orchestrator (`orchestrator/`) ship together. This is the
+project's flagship piece — autonomous self-correction across the
+analyst output is what the rubric tiebreaker (criterion 1) rewards.
+
+**V-C hybrid**: validator is an LLM subagent with restricted tool
+surface; promotion logic is a pure Python R1-R6 rule engine. The
+validator emits typed correlations (corroborates / contradicts /
+strengthens / weakens / request_followup); the orchestrator's
+`promote()` function applies the rules deterministically. Auditable
+promotion + judgment-under-evidence both land in the same loop. See
+`docs/validator-design.md` for V-A vs V-B vs V-C tradeoff.
+
+**5-step loop**: ANALYZE → CORRELATE → PROMOTE → PLAN → WRITE.
+Three termination flags (R_a zero unresolved, R_b disputed
+unchanged, R_c token budget) plus a max_iterations safety net.
+See `docs/loop-design.md`.
+
+**Sequential dispatch (not parallel)**. The substrate's hash-chain
+writers explicitly note "single-process; no file lock". Two
+subagents in parallel would race the audit chain. Until per-process
+locking lands, analyst dispatch is sequential. The wall-time cost
+is real (each analyst ~16 min on Rocba), but the architectural
+guarantee — every audit / findings / correlations / iterations line
+hashes-into the previous one, byte-exactly — is load-bearing for
+the demo.
+
+**Re-dispatch on iteration 1**. The orchestrator always dispatches
+all matching analysts on iter 1, even if findings already exist
+from a prior run. Append-only chains tolerate it; cache-hit
+behavior on tier-1 keeps the cost reasonable; detecting "this
+analyst has already run" is brittle (different prompt versions,
+different tool surfaces). The cost is `findings.jsonl` growth on
+every run.
+
+**Rule-of-four hash-chained writers**. With `iterations.jsonl`
+landing this PR, the substrate has four append-only hash-chained
+logs (audit, findings, correlations, iterations), each with its own
+writer module and distinct hash field names. Per the standing
+convention, the `HashChainedJsonl` base-class extraction is still
+deferred — it lands as a separate post-week-6 commit so the
+substrate ships clean. Tracked here so the debt is explicit. The
+shared-core extraction is ~50 lines across the four; the cost of
+extraction now (re-running the substrate's full test matrix to
+prove no regression) outweighs the marginal duplication cost.

@@ -52,3 +52,4 @@ audit/
 .claude/state/
 .claude/transcripts/
 .claude/settings.local.json
+.claude/scheduled_tasks.lock

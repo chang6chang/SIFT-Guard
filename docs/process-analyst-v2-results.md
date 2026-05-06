@@ -241,6 +241,18 @@ restricted-surface analyst produce DFIR findings that are correctly
 categorized, schema-conformant, and back-pointed into the audit
 chain — the architectural goal of the week-5 refactor.
 
+## Week 6: focus_context input added
+
+In week 6 day 2 the agent definition gains a `# Focus context
+(optional)` section. The orchestrator may pass a structured
+`focus_context` dict (PIDs, image_names, addresses) when re-
+dispatching the analyst on iteration ≥ 2 of the self-correction
+loop. The semantics are V5c-1: focus biases attention but does not
+constrain scope. The analyst still does its normal analysis AND
+pays extra attention to focused entities. This change is additive
+— iteration-1 dispatches without focus_context behave exactly as
+the v2 dispatch documented above.
+
 ## Files produced this run
 
 - `.claude/agents/process_analyst.md` (v2) — agent definition
