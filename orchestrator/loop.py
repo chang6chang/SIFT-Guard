@@ -432,24 +432,19 @@ def _step_promote(
         # R1-R5: apply via update_finding. R1 emits state=DRAFT but
         # the substrate accepts that transition as long as
         # confidence changes. R2-R5 emit CONFIRMED.
-        # update_finding requires driving_correlation_ids min_length=1.
-        # R5 (quiet stabilization) has none — pass a synthetic empty
-        # path: skip the update for R5 too. R5 represents "no change
-        # warranted from correlations". Treat it as an in-memory
-        # promotion without an on-disk update_finding.
-        if not decision.driving_correlation_ids:
-            state.promotions.append(
-                RecordedPromotion(
-                    finding_id=fid,
-                    new_state=decision.new_state,
-                    new_confidence=decision.new_confidence,
-                    promotion_rule=decision.promotion_rule,
-                    driving_correlation_ids=[],
-                    applied=False,
-                    update_id=None,
-                )
-            )
-            continue
+        #
+        # R5 ("quiet stabilization") writes update_finding with an
+        # empty `driving_correlation_ids` list — the rule's defining
+        # precondition is "no correlations on F across two iterations
+        # of silence", and as of the 2026-05-07 schema relaxation the
+        # FindingUpdate model permits an empty list iff
+        # promotion_rule == "R5". The chain therefore records R5
+        # promotions just like R1-R4 promotions (same on-disk shape,
+        # same audit-trail provenance), and the unresolved-set check
+        # in `_step_plan` correctly drops R5'd findings. Prior to the
+        # relaxation R5 was an in-memory-only promotion that left
+        # findings stuck DRAFT; see docs/decisions-log.md for the
+        # architectural-tension write-up.
 
         try:
             response = update_fn(

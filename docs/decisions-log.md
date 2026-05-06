@@ -732,3 +732,149 @@ contract is the supplementary signal that lets the analyst's prompt
 discipline find the right phrasing for "treat this value as data".
 Both of those paths are testable in isolation and together. The
 prompt paragraph is reinforcement; the surface is the defense.
+
+## 2026-05-?? — R_b strict equality: subset stability observation
+
+Synthetic-demo run iter 3 added a fresh DISPUTED finding (4d82f7a8)
+on top of a stable 4-element prior dispute set. R_b correctly did
+not fire because the set changed. But the persistent-core observation
+is meaningful in its own right: the original 4 disputes were
+unmoving across iterations.
+
+Possible week-7 enhancement: R_b' (subset stability) — if N
+consecutive iterations contain the same persistent core dispute
+set, mark those persistent disputes as terminal even if newer
+disputes are still being added. Would need to define "persistent"
+formally and test for thrashing.
+
+Out of scope for week 6. Logged so the observation isn't lost.
+
+## 2026-05-07 — R5 persistence hotfix: `driving_correlation_ids` min_length relaxation
+
+The week-6 synthetic-demo run analysis surfaced a real architectural
+mismatch between R5's rule definition and the substrate's
+`update_finding` invariant. R5 ("quiet stabilization") fires when
+`iterations_so_far >= 2` AND no correlations on F — by definition,
+its decision has zero driving correlations. `FindingUpdate` had
+`driving_correlation_ids: list[str] = Field(min_length=1)`, which
+rejected R5's emit. The orchestrator's `_step_promote` worked around
+it by recording R5 outcomes in-memory only (RecordedPromotion with
+`applied=False`); the chain never reflected R5 promotions, leaving
+R5-eligible findings stuck DRAFT forever and making `R_a (zero
+unresolved)` unreachable on any chain that contained them.
+
+### What broke
+
+The bug was observable in the week-6 synthetic-image run's
+`iterations.jsonl`: nine Rocba-carryover findings reached iter 3
+with `iterations_so_far == 2` and zero correlations; the rule
+engine returned R5 for each; `iterations.jsonl` recorded nine
+R5 promotions all with `applied=False`. Each successive iteration
+of any future run would re-fire R5 idempotently, never converging.
+The safety net `max_iterations_reached` always tripped eventually.
+This is the kind of failure mode the architecture surfaced
+cleanly — the ledger captured "rule fired, but the substrate
+couldn't honor it" — rather than silently producing wrong state.
+
+### What we changed
+
+1. `FindingUpdate.driving_correlation_ids` → `list[str]` with no
+   `min_length` constraint at the field level. A new
+   `model_validator(mode="after")` enforces the original
+   non-empty invariant for every rule **except** R5 — R1, R2, R3,
+   R4, R6 still cannot write empty lists, only R5 can. The
+   schema-level audit-trail invariant (promotions cite the
+   correlations that drove them) is preserved for every rule
+   whose definition supports citation.
+
+2. `update_finding` adds a pre-check that catches non-R5 empty
+   lists before the chain reads, audited as
+   `update_finding:rejected_empty_correlations_for_non_R5`.
+   Greppable, typed; distinguishes from
+   `:rejected_schema_validation_failed` (which a bare pydantic
+   model_validator error would produce on the `FindingUpdate`
+   construction path).
+
+3. `orchestrator.loop._step_promote` removes the in-memory-only
+   workaround. R5 decisions now flow through `update_finding`
+   like every other non-R6 rule. `iterations.jsonl`
+   `promotions_made` entries for R5 carry the real `update_id`.
+
+### Append-only invariants preserved
+
+The nine currently-stuck findings get NEW `update_finding` entries
+appended on the post-fix run; they do NOT get retroactive R5
+entries inserted into the past. The chain stays append-only; the
+fix is forward-looking. (Documented separately in the post-fix
+Rocba run log.)
+
+### Validation
+
+- `tests/test_update_finding.py` adds: R5 with empty list happy-
+  path, parametrized R1/R2/R3/R4/R6-with-empty-list rejection,
+  audit-payload shape pin.
+- `tests/test_promotion.py` adds a regression pin:
+  `promote()` for R5 still returns
+  `(CONFIRMED, F.confidence, [])`, and that decision shape is
+  accepted by `FindingUpdate` post-relaxation.
+- `tests/test_loop.py` adds an integration test (three silent
+  DRAFTs across two `_step_promote` calls; second call's R5
+  decisions reach the chain; `R_a` fires on `_step_plan`).
+- 361 tests passing post-hotfix (was 352 pre-hotfix; +9 new
+  R5-related tests).
+- Post-fix Rocba re-run (default `max_iterations=10`):
+  termination_reason `no_followup_pending`, 2 iterations,
+  cumulative tokens 294,640, wallclock 17.2 min, **zero**
+  `update_finding:rejected_*` lines, 24 successful
+  `update_finding` writes (all R1/R3/R4 — proves the chain
+  write path is healthy). Confirms the headline pre-fix bug
+  (`max_iterations_reached` artifact from
+  R5-decisions-not-persisted leaving R_a unreachable) does not
+  reproduce.
+
+### What the post-fix Rocba run *did not* clear
+
+The nine previously-stuck Rocba carryover findings remain DRAFT
+after the post-fix rerun. **This is not a regression of the
+persistence fix.** The fix is independently verified by
+`tests/test_loop.py::TestR5PersistsToChain` (R5 reaches the
+chain; R_a fires on the next `_step_plan`). The rerun simply
+did not exercise the R5 code path: iter 1 had
+`iterations_so_far=0`, iter 2 had `iterations_so_far=1`, and
+iter 2 produced zero `request_followup` correlations so iter 3
+never dispatched. R5 requires `iterations_so_far >= 2` (the 3rd
+iteration in the same invocation), and `iterations_so_far` is
+local to each orchestrator invocation — it does NOT accumulate
+across runs.
+
+The implication, surfaced for week-7 design consideration:
+
+> R5's documented intent ("two completed iterations of silence")
+> is currently implemented as "two iterations within the current
+> orchestrator run". A finding that has been silent across many
+> short runs accumulates no R5 credit. To clear long-running
+> DRAFTs that are R5-eligible, the orchestrator must either run
+> for ≥3 iterations in a single invocation (which requires the
+> validator to keep emitting followups long enough to reach iter
+> 3), or `iterations_so_far` must be made cumulative by reading
+> the iterations chain. The latter matches the rule's documented
+> intent more closely; the former is what the substrate provides
+> today.
+
+This is a separate design question from the schema invariant
+that was relaxed here. Not in scope for this hotfix.
+
+### Out of scope for this hotfix (deferred to week 7)
+
+- R_b's strict-equality semantics ("disputed set unchanged") —
+  the synthetic run surfaced a "subset stability" property
+  (existing disputes stable but a new dispute added → R_b doesn't
+  fire) that's worth thinking about, but a wider design question
+  than this fix.
+- R5's per-run-vs-cumulative `iterations_so_far` semantic
+  (described above). The persistence fix unblocks R5's chain
+  write path; the eligibility window is a separate design call.
+- A general "orchestrator-only writes may have empty audit
+  citations" pattern — applies only to R5 today; if a future
+  rule needs the same, lift the pattern then.
+- Hash-chained-writer base-class extraction. Still deferred.

@@ -754,10 +754,35 @@ class FindingUpdate(BaseModel):
     previous_confidence: FindingConfidence
     new_confidence: FindingConfidence
     promotion_rule: PromotionRule
-    driving_correlation_ids: list[str] = Field(min_length=1)
+    # Field-level minimum is 0 so R5 ("quiet stabilization") can write
+    # an UPDATE entry. R5's defining precondition is "no correlations
+    # on F across two iterations of silence", which is incompatible
+    # with the original min_length=1 invariant. The model_validator
+    # below restores the min_length=1 contract for every other rule —
+    # R1-R4 / R6 still cannot write empty lists, only R5 can.
+    driving_correlation_ids: list[str]
     created_at: datetime
     audit_line: int = Field(ge=1)
     orchestrator_version: str = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def _r5_only_may_be_empty(self) -> "FindingUpdate":
+        """Empty `driving_correlation_ids` is permitted iff
+        `promotion_rule == "R5"`. R5's quiet-stabilization semantics
+        explicitly carry no driving correlations (the rule fires when
+        no correlations exist on the finding for two iterations); for
+        every other rule, an empty list would break the audit-trail
+        invariant that promotions cite the correlations that drove
+        them. See `docs/decisions-log.md` 2026-05-07 R5 persistence
+        entry.
+        """
+        if not self.driving_correlation_ids and self.promotion_rule != "R5":
+            raise ValueError(
+                "driving_correlation_ids must be non-empty for "
+                f"promotion_rule={self.promotion_rule!r}; only R5 "
+                "(quiet stabilization) may write an empty list"
+            )
+        return self
 
     @field_validator("update_id", "finding_id")
     @classmethod

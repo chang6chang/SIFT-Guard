@@ -353,6 +353,14 @@ class _UpdateRejectionReason(StrEnum):
     UNKNOWN_RULE = "unknown_rule"
     INVALID_STATE_TRANSITION = "invalid_state_transition"
     SCHEMA_VALIDATION_FAILED = "schema_validation_failed"
+    # R5 ("quiet stabilization") is the only rule whose definition
+    # has no driving correlations. Any other rule with an empty
+    # driving_correlation_ids list is rejected here so the audit
+    # chain captures the failure before reaching pydantic — the
+    # tool-layer rejection has a typed, greppable suffix; a bare
+    # pydantic ValidationError from the model_validator would land
+    # under SCHEMA_VALIDATION_FAILED and be harder to triage.
+    EMPTY_CORRELATIONS_FOR_NON_R5 = "empty_correlations_for_non_R5"
 
 
 class _UpdateRejectionRecord(BaseModel):
@@ -428,13 +436,14 @@ def update_finding(
     `update_finding:success` on success and a typed
     `update_finding:rejected_*` line on every failure path.
 
-    Five distinct rejection paths:
+    Six distinct rejection paths:
 
         update_finding:rejected_unknown_finding
         update_finding:rejected_unknown_correlation
         update_finding:rejected_unknown_rule
         update_finding:rejected_invalid_state_transition
         update_finding:rejected_schema_validation_failed
+        update_finding:rejected_empty_correlations_for_non_R5
     """
     case_dir_path = Path(case_dir).resolve()
 
@@ -450,6 +459,24 @@ def update_finding(
             promotion_rule,
         )
         raise ValueError("promotion_rule not in allow-list")
+
+    # 1b. Empty driving_correlation_ids is allowed iff the rule is R5
+    #     ("quiet stabilization" — fires when no correlations exist on
+    #     the finding for two iterations of silence). Every other rule
+    #     must cite at least one correlation that drove its decision;
+    #     an empty list there would break the audit-trail invariant.
+    #     Catching it here (before chain reads) keeps the rejection
+    #     suffix typed and the error path cheap.
+    if not driving_correlation_ids and promotion_rule != "R5":
+        _log_update_rejection(
+            case_dir_path,
+            _UpdateRejectionReason.EMPTY_CORRELATIONS_FOR_NON_R5,
+            finding_id,
+            promotion_rule,
+        )
+        raise ValueError(
+            "driving_correlation_ids must be non-empty for non-R5 promotions"
+        )
 
     # 2. Look up the existing finding by id. Read the chain to find
     #    the latest state/confidence for this finding_id. Missing

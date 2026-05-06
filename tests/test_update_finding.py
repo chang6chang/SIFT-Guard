@@ -372,6 +372,98 @@ class TestChainContinuity:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# R5 persistence (2026-05-07 hotfix) — empty driving_correlation_ids is
+# permitted iff promotion_rule == "R5". Original min_length=1 invariant
+# is preserved for every other rule via the model_validator on
+# FindingUpdate plus a tool-layer pre-check on update_finding.
+# ---------------------------------------------------------------------------
+
+
+class TestR5EmptyDrivingCorrelationsAccepted:
+    def test_r5_with_empty_list_writes_chain_and_audits_success(
+        self, tmp_path: Path
+    ):
+        case_dir = _seed_case_dir(tmp_path)
+        # R5's defining precondition is "no correlations across two
+        # iterations of silence" — the empty list reflects that.
+        result = update_finding(
+            **_good_args(
+                promotion_rule="R5",
+                driving_correlation_ids=[],
+                new_state="CONFIRMED",
+                new_confidence="MEDIUM",
+            ),
+            case_dir=str(case_dir),
+        )
+        assert result.promotion_rule == "R5"
+        assert result.driving_correlation_ids == []
+        assert result.new_state == "CONFIRMED"
+
+        # Chain grew with a real UPDATE entry (not in-memory only).
+        rows = _read_jsonl(case_dir / "findings.jsonl")
+        assert len(rows) == 2
+        assert rows[1]["finding"]["record_kind"] == "update"
+        assert rows[1]["finding"]["promotion_rule"] == "R5"
+        assert rows[1]["finding"]["driving_correlation_ids"] == []
+
+        # Audit chain extended with success line (not a rejection).
+        audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
+        assert audit[-1]["tool_name"] == "update_finding"
+
+
+class TestNonR5EmptyDrivingCorrelationsRejected:
+    @pytest.mark.parametrize("rule", ["R1", "R2", "R3", "R4", "R6"])
+    def test_empty_list_rejected_for_each_non_R5_rule(
+        self, tmp_path: Path, rule: str
+    ):
+        case_dir = _seed_case_dir(tmp_path)
+        with pytest.raises(ValueError):
+            update_finding(
+                **_good_args(promotion_rule=rule, driving_correlation_ids=[]),
+                case_dir=str(case_dir),
+            )
+        # The original min_length=1 contract still holds for non-R5
+        # rules — empty lists are rejected before pydantic gets a
+        # chance to fire its own validation error. Greppable suffix
+        # so an operator can tell this rejection apart from
+        # SCHEMA_VALIDATION_FAILED.
+        audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
+        assert audit[-1]["tool_name"] == (
+            "update_finding:rejected_empty_correlations_for_non_R5"
+        )
+
+        # findings.jsonl unchanged (still just the seeded DRAFT).
+        rows = _read_jsonl(case_dir / "findings.jsonl")
+        assert len(rows) == 1
+        assert rows[0]["finding"]["record_kind"] == "draft"
+
+
+class TestR5RejectionAuditChainShape:
+    def test_rejection_line_has_typed_payload(self, tmp_path: Path):
+        case_dir = _seed_case_dir(tmp_path)
+        with pytest.raises(ValueError):
+            update_finding(
+                **_good_args(promotion_rule="R3", driving_correlation_ids=[]),
+                case_dir=str(case_dir),
+            )
+        audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
+        last = audit[-1]
+        # Audit payload is the typed _UpdateRejectionRecord shape:
+        # input_args carries finding_id and the offending rule. The
+        # rejection suffix is the named, greppable form so triage can
+        # distinguish "non-R5 empty list" from
+        # "schema_validation_failed" (which a bare model_validator
+        # error on FindingUpdate construction would produce).
+        assert last["tool_name"] == (
+            "update_finding:rejected_empty_correlations_for_non_R5"
+        )
+        assert last["evidence_id"] is None  # promotion events not bound to evidence
+        # Hash chain extends from the prior line.
+        assert len(last["this_line_hash"]) == 64
+        assert last["prev_line_hash"] != last["this_line_hash"]
+
+
 class TestOnDiskIsolation:
     def test_real_chains_unchanged(self):
         if ON_DISK_AUDIT_LOG.exists():

@@ -565,6 +565,121 @@ class TestPromoteSkipsR6:
         assert st == ("DRAFT", "MEDIUM")
 
 
+class TestR5PersistsToChain:
+    """Integration-shaped pin on the 2026-05-07 R5 persistence hotfix.
+
+    Three DRAFT findings with no correlations on any of them. The
+    rule engine returns R5 ("quiet stabilization → CONFIRMED at
+    F.confidence") once `iterations_so_far >= 2`. Before the
+    hotfix, R5 decisions were recorded in iterations.jsonl with
+    `applied=False` and never reached findings.jsonl, leaving
+    R5-eligible findings stuck DRAFT forever and making R_a
+    unreachable on any chain that contained them. The hotfix wires
+    R5 through `update_finding` (with empty
+    `driving_correlation_ids`, permitted iff `promotion_rule ==
+    "R5"`) so the chain reflects R5 promotions and `R_a` clears.
+
+    Test simulates two PROMOTE-step invocations directly (bypassing
+    run_loop's dispatch flow):
+      - 1st invocation: `iterations_so_far=1` — R5 doesn't fire
+        (rule requires >=2). All three remain DRAFT.
+      - 2nd invocation: `iterations_so_far=2` — R5 fires on each.
+        All three become CONFIRMED in findings.jsonl.
+
+    Then `_step_plan` is invoked to confirm `R_a_zero_unresolved`
+    fires on the post-R5 state.
+    """
+
+    def test_three_silent_drafts_reach_confirmed_via_r5(
+        self, tmp_path: Path
+    ):
+        from orchestrator.loop import (
+            _IterationState,
+            _step_plan,
+            _step_promote,
+            _unresolved_set,
+        )
+
+        case_dir = _seed_case(tmp_path)
+
+        # Plant three DRAFTs — different analysts, different titles,
+        # all evidence_id=EVID. No correlations are written.
+        d1 = _make_draft("process_analyst", "silent-1")
+        d2 = _make_draft("process_analyst", "silent-2")
+        d3 = _make_draft("network_analyst", "silent-3")
+        for d in (d1, d2, d3):
+            append_finding_entry(case_dir, d)
+
+        # Sanity: all three are DRAFT/MEDIUM in the chain.
+        for fid in (d1.finding_id, d2.finding_id, d3.finding_id):
+            assert read_finding_state(case_dir, fid) == ("DRAFT", "MEDIUM")
+        assert len(_unresolved_set(case_dir)) == 3
+
+        # === PROMOTE call 1: iterations_so_far=1 — R5 not yet
+        # eligible. All three should be R6 (no chain growth, still
+        # DRAFT).
+        state1 = _IterationState(
+            iteration_number=2, started_at=_NOW
+        )
+        _step_promote(
+            state1,
+            case_dir=case_dir,
+            case_cwd=tmp_path,
+            iterations_so_far=1,
+            update_fn=_real_update_via_kwargs,
+        )
+        for fid in (d1.finding_id, d2.finding_id, d3.finding_id):
+            assert read_finding_state(case_dir, fid) == ("DRAFT", "MEDIUM")
+        assert all(p.promotion_rule == "R6" for p in state1.promotions)
+        assert len(_unresolved_set(case_dir)) == 3
+
+        # === PROMOTE call 2: iterations_so_far=2 — R5 fires.
+        # Three update_finding writes append; chain reflects
+        # CONFIRMED. driving_correlation_ids is empty (R5's defining
+        # precondition), permitted by the model_validator.
+        state2 = _IterationState(
+            iteration_number=3, started_at=_NOW
+        )
+        _step_promote(
+            state2,
+            case_dir=case_dir,
+            case_cwd=tmp_path,
+            iterations_so_far=2,
+            update_fn=_real_update_via_kwargs,
+        )
+
+        # All three R5'd. `applied=True` because the chain write
+        # actually happened (the pre-hotfix bug had applied=False).
+        r5_promotions = [p for p in state2.promotions if p.promotion_rule == "R5"]
+        assert len(r5_promotions) == 3
+        assert all(p.applied for p in r5_promotions), (
+            "R5 promotions must reach the chain (post-hotfix). "
+            "applied=False indicates the in-memory-only workaround "
+            "regressed; see docs/decisions-log.md 2026-05-07 R5 entry."
+        )
+        assert all(p.update_id is not None for p in r5_promotions)
+        assert all(p.driving_correlation_ids == [] for p in r5_promotions)
+
+        # Chain truth: all three findings are CONFIRMED.
+        for fid in (d1.finding_id, d2.finding_id, d3.finding_id):
+            assert read_finding_state(case_dir, fid) == ("CONFIRMED", "MEDIUM")
+        assert len(_unresolved_set(case_dir)) == 0
+
+        # R_a fires on _step_plan (the load-bearing assertion: the
+        # bug's symptom was max_iterations_reached firing instead of
+        # R_a even when R5 logically resolved every finding).
+        termination = _step_plan(
+            state2,
+            case_dir=case_dir,
+            cumulative_tokens=0,
+            prior_disputed=None,
+            iteration_number=3,
+            max_iterations=10,
+        )
+        assert termination.R_a_zero_unresolved is True
+        assert termination.decision == "terminate"
+
+
 class TestPromoteSkipsConfirmed:
     def test_already_confirmed_finding_skipped(self, tmp_path: Path):
         case_dir = _seed_case(tmp_path)

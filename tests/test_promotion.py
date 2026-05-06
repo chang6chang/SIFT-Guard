@@ -299,6 +299,45 @@ class TestR5QuietStabilization:
         d = promote(_draft("MEDIUM"), [_strengthens()], 2)
         assert d.promotion_rule == "R6"
 
+    def test_r5_decision_is_acceptable_to_finding_update_schema(self):
+        """Pure-function pin: the PromotionDecision shape R5 returns
+        (empty driving_correlation_ids, new_state=CONFIRMED) is what
+        the FindingUpdate model now accepts.
+
+        Verifies the 2026-05-07 schema relaxation didn't change R5's
+        rule-engine behavior — `promote()` still returns the same
+        decision shape; only the persistence layer changed. If a
+        future refactor of `promote()` accidentally returns a
+        non-empty list for R5 (or returns DRAFT instead of CONFIRMED
+        for R5), this assertion fires before the orchestrator's
+        update_finding call would.
+        """
+        from datetime import datetime, timezone
+        from server.schemas import FindingUpdate
+
+        d = promote(_draft("MEDIUM"), [], 2)
+        assert d.promotion_rule == "R5"
+        assert d.driving_correlation_ids == []  # empty by R5's definition
+        assert d.new_state == "CONFIRMED"
+
+        # And the decision's fields are accepted by FindingUpdate.
+        # Regression guard: if the schema relaxation is reverted (or
+        # the model_validator's R5 carve-out drifts), this raises.
+        FindingUpdate(
+            update_id="550e8400-e29b-41d4-a716-446655440000",
+            finding_id="550e8400-e29b-41d4-a716-446655440001",
+            iteration_number=2,
+            previous_state="DRAFT",
+            new_state=d.new_state,
+            previous_confidence="MEDIUM",
+            new_confidence=d.new_confidence,
+            promotion_rule=d.promotion_rule,
+            driving_correlation_ids=d.driving_correlation_ids,
+            created_at=datetime.now(tz=timezone.utc),
+            audit_line=1,
+            orchestrator_version="1.0.0",
+        )
+
 
 # ----------------------------------------------------------------------
 # R6 — default (no change)

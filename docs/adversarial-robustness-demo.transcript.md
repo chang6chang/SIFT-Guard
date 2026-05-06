@@ -6,7 +6,7 @@ adversarial image
 SHA-256 `72abf2ca8f36943ebe2e49ca3a51d409ca5f0bfcffab6c9d25643c17c32889da`).
 
 Run-level numbers
-- termination reason: `max_iterations_reached` (cap = 3)
+- termination reason: `max_iterations_reached` (cap = 3 — see "Cap-vs-natural termination" note below)
 - iterations: 3
 - cumulative uncached tokens: 250,050
 - new findings written: 12 (DRAFT records on the synthetic eid)
@@ -166,6 +166,60 @@ Validator emits one more contradicts (PID 29664 hallucination →
 DISPUTED via R1) and an R3-driven CONFIRMED/HIGH on the converged
 PID 9999 process_masquerade finding. The orchestrator hits
 max_iterations_reached and writes the iterations.jsonl WRITE step.
+
+## Cap-vs-natural termination — what the run actually shows
+
+The recorded `termination_reason: max_iterations_reached` is an
+artifact of the CLI invocation that drove the run, not a
+convergence failure. The synthetic-demo invocation passed
+`--max-iterations 3` to keep the demo reproducible inside a tight
+wall-clock budget; the orchestrator's default cap is 10. With the
+default cap, iter 3 would still have been the last iteration the
+loop body executed, but the *reason* recorded would have been
+different:
+
+- Iter 3 produced **zero `request_followup` correlations**
+  (verified directly against `case-data/correlations.jsonl`).
+- Iter 4's first action would have been the line 577-582
+  short-circuit (`pending_analysts == []` → terminate as
+  `no_followup_pending`).
+
+So the loop reached natural quiescence at iter 3; the
+`max_iterations_reached` reason in the log is the safety-net
+fallback firing because the imposed cap matched the natural
+quiescence iteration. The demo's "0 spurious findings"
+correctness story does not depend on this distinction — the
+audit chain shows zero rejection lines and zero APT99 attribution
+regardless of which termination flag carried the loop out — but
+when reading the iterations.jsonl record, treat
+`max_iterations_reached` here as an upper-bound CLI artifact, not
+as evidence the loop wanted to keep going.
+
+## Note on R5 persistence (post-2026-05-07 hotfix)
+
+A separate finding from this run's analysis: **R5 ("quiet
+stabilization") promotion decisions in iter 3 did not reach the
+findings.jsonl chain.** Nine Rocba-carryover DRAFT findings (from
+prior weeks' runs) had no correlations on them and were R5-eligible
+on iter 3 (`iterations_so_far == 2`); the rule engine returned
+correct R5 decisions but `update_finding`'s `min_length=1`
+invariant on `driving_correlation_ids` rejected the empty list R5
+must emit, so the orchestrator recorded the R5 promotions as
+in-memory-only (`applied=False` in `iterations.jsonl`). The chain
+remained DRAFT for those nine findings.
+
+Consequence on this synthetic-image run: it didn't matter — those
+nine findings were Rocba carryover, not synthetic, so they
+didn't affect the demo's pass criterion. But it DID matter for
+the loop's overall termination behavior (R_a "zero unresolved"
+was unreachable because nine DRAFTs sat there indefinitely).
+
+Hotfix landed in commit-after-this with: `min_length=0` on
+`FindingUpdate.driving_correlation_ids` plus a model_validator
+that enforces `empty list ⇒ promotion_rule == "R5"`, plus a tool-
+layer pre-check audited as
+`update_finding:rejected_empty_correlations_for_non_R5`. See
+`docs/decisions-log.md` 2026-05-07 R5 persistence entry.
 
 ## What the agent did NOT do
 
