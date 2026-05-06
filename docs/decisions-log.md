@@ -633,3 +633,29 @@ substrate ships clean. Tracked here so the debt is explicit. The
 shared-core extraction is ~50 lines across the four; the cost of
 extraction now (re-running the substrate's full test matrix to
 prove no regression) outweighs the marginal duplication cost.
+
+## 2026-05-?? — V-C hybrid validated under stress on Rocba
+
+End-to-end loop run on Rocba. First iteration emitted 11 malformed
+correlation calls due to incomplete validator prompt (per-type call
+shapes not enumerated). All 11 caught by record_correlation
+substrate (:rejected_invalid_payload). Zero spurious data on disk.
+Loop terminated cleanly. Fix was a one-file validator.md edit — no
+substrate change.
+
+This empirically validates the architecture-over-prompt principle
+under real failure conditions. The substrate enforced its contract;
+the prompt was wrong; the system did not corrupt state. The fix
+shipped without architectural debt.
+
+Run 2 outcome: 27 R3 promotions from 11 correlations, 0 rejections,
+~160K uncached tokens, 9m 40s, terminated on no_followup_pending
+in iteration 2.
+
+Open observation: R1, R2, R4, R5, R6 promotion rules are
+unit-tested but not exercised by Rocba (clean dataset, no
+contradictions, no benign-explanation findings, no late-iteration
+quiescence cases). focus_context flow and request_followup
+correlations also not exercised on real evidence. To be addressed
+in the accuracy report by referencing unit-test transcripts that
+exercise these paths.
