@@ -86,12 +86,21 @@ def append_extraction_entry(
     extraction_sha256: str,
     record_count: int,
     runtime_seconds: float,
+    audit_line: int | None = None,
 ) -> ExtractionChainEntry:
     """Append one hash-chained record to `<case_dir>/extractions.jsonl`.
 
     Returns the constructed `ExtractionChainEntry` so the caller can
     embed `extractions_chain_line` and `this_extraction_hash` into
     the `ExtractionRef` it returns to the agent.
+
+    `audit_line` (added 2026-05-06) is the audit-chain line where the
+    originating tier-1 plugin invocation will be / was logged. New
+    writes always pass it; legacy entries written before this field
+    existed default to `None` on read. The chain hash includes it (or
+    `None`) starting at the first line where the field is present —
+    the existing 3 lines stay byte-identical because we only call this
+    function for *new* writes.
 
     Single-process server: no file lock. If a future multi-process
     design is needed, route extraction writes through a writer-process
@@ -113,6 +122,7 @@ def append_extraction_entry(
         extraction_sha256=extraction_sha256,
         record_count=record_count,
         runtime_seconds=runtime_seconds,
+        audit_line=audit_line,
         prev_extraction_hash=prev_extraction_hash,
     )
     this_extraction_hash = ExtractionChainEntry.compute_this_extraction_hash(
@@ -128,6 +138,7 @@ def append_extraction_entry(
         extraction_sha256=extraction_sha256,
         record_count=record_count,
         runtime_seconds=runtime_seconds,
+        audit_line=audit_line,
         prev_extraction_hash=prev_extraction_hash,
         this_extraction_hash=this_extraction_hash,
     )

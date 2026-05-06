@@ -533,15 +533,29 @@ class NetscanResult(BaseModel):
 # Allow-listed sources for an EvidenceRef. Mirrors the live MCP tool
 # surface as of week 5 — extending the surface (e.g. registry parsers
 # in week 6) requires extending this Literal *and* the surface-lock
-# test, by design. The `:rejected_*` and `:record_validation_warning`
-# variants are not listed here because findings only point at
-# successful tool invocations.
+# test, by design. The `:rejected_*`, `:cached`, `:hash_mismatch`, and
+# `:record_validation_warning` variants are not listed here because
+# findings only point at successful tool invocations whose audit
+# entries carry the bare tool_name (or `:cached` if the agent wants
+# to cite the cache hit explicitly — but the analyst typically cites
+# the original ExtractionRef.audit_line, which is the bare tool_name's
+# line, not the cache-hit's).
+#
+# Tier-2 names added 2026-05-06: a tier-2 result's `audit_line` field
+# is the agent-visible primitive for citing a derived analysis as
+# evidence (e.g., a finding "PID 7900 is in psscan but not pslist"
+# is supported by the underlying tier-1 evidence and the
+# set_difference call that surfaced the relationship).
 EvidenceRefSourceTool = Literal[
     "register_evidence",
     "vol_pslist",
     "vol_psscan",
     "vol_pstree",
     "vol_netscan",
+    "query_records",
+    "group_by",
+    "set_difference",
+    "subtree",
 ]
 
 
@@ -744,6 +758,16 @@ class ExtractionRef(BaseModel):
     (`True`, `runtime_seconds` null per the cache contract). The
     `extraction_id` is server-generated at first creation and stable
     across re-reads — re-invoking a cached pair returns the same id.
+
+    `audit_line` is the audit-chain line number where the Volatility
+    plugin invocation that *originally* produced this extraction was
+    logged. For cached returns, this is the original (pre-cache)
+    invocation's line number, NOT the cache-hit's `<plugin>:cached`
+    log entry. The cache-hit is logged separately but is not the
+    provenance reference for findings. May be `None` for legacy
+    extractions written before the `audit_line` field was added to
+    `extractions.jsonl` (migration semantic — see
+    `docs/decisions-log.md` 2026-05-06 audit_line plumbing entry).
     """
 
     evidence_id: str
@@ -752,6 +776,7 @@ class ExtractionRef(BaseModel):
     record_count: int = Field(ge=0)
     extraction_sha256: str = Field(pattern=_HEX64_PATTERN)
     extractions_chain_line: int = Field(ge=1)
+    audit_line: int | None = Field(default=None, ge=1)
     runtime_seconds: float | None = Field(default=None, ge=0)
     cached: bool
 
@@ -790,6 +815,12 @@ class ExtractionChainEntry(BaseModel):
     extraction_sha256: str = Field(pattern=_HEX64_PATTERN)
     record_count: int = Field(ge=0)
     runtime_seconds: float = Field(ge=0)
+    # Added 2026-05-06 (audit_line plumbing). Optional / nullable for
+    # backward compatibility with the 3 extractions.jsonl lines written
+    # before this field existed. New writes always populate it; legacy
+    # reads default to None. Migration approach: nullable, no
+    # retroactive backfill — see docs/decisions-log.md.
+    audit_line: int | None = Field(default=None, ge=1)
     prev_extraction_hash: str = Field(pattern=_HEX64_PATTERN)
     this_extraction_hash: str = Field(pattern=_HEX64_PATTERN)
 
@@ -939,9 +970,16 @@ class QueryRecordsResult(BaseModel):
     same property the tier-1 size-budget test pins. `matched_count` is
     the count *before* limit/offset, so the agent can decide whether
     to widen the limit or refine the filters.
+
+    `audit_line` is the audit-chain line number for THIS query_records
+    invocation. The analyst uses it directly when constructing an
+    `EvidenceRef` for `record_finding` — eliminates the probe-finding
+    pattern observed in process_analyst v2 (failure mode #1 in
+    `docs/accuracy-report.md`).
     """
 
     extraction: ExtractionRef
+    audit_line: int = Field(ge=1)
     matched_count: int = Field(ge=0)
     returned_count: int = Field(ge=0)
     records: list[dict]
@@ -956,9 +994,13 @@ class GroupByResult(BaseModel):
     unique field values across the extraction (post-filter); a high
     `distinct_values` with a short `groups` list tells the agent the
     field is high-cardinality.
+
+    `audit_line` carries the audit-chain line for THIS call (same
+    contract as `QueryRecordsResult.audit_line`).
     """
 
     extraction: ExtractionRef
+    audit_line: int = Field(ge=1)
     field: str
     total_records: int = Field(ge=0)
     distinct_values: int = Field(ge=0)
@@ -1000,6 +1042,7 @@ class SetDifferenceResult(BaseModel):
 
     extraction_a: ExtractionRef
     extraction_b: ExtractionRef
+    audit_line: int = Field(ge=1)
     key: str
     direction: Literal["a_minus_b", "b_minus_a", "symmetric"]
     a_only_count: int = Field(ge=0)
@@ -1025,6 +1068,7 @@ class SubtreeResult(BaseModel):
     """
 
     extraction: ExtractionRef
+    audit_line: int = Field(ge=1)
     root_pid: int = Field(ge=0)
     root_found: bool
     depth_traversed: int = Field(ge=0)

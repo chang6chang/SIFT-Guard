@@ -465,6 +465,51 @@ class TestToolSurface:
     # the return type back to PslistResult shows up here.
     # -----------------------------------------------------------------
 
+    def test_audit_line_in_extraction_ref_is_nullable(self, tmp_path: Path):
+        """ExtractionRef.audit_line must be Optional[int] — `None` is
+        the migration semantic for legacy chain entries written
+        before the field existed. A future change that makes it
+        required would re-break the migration approach.
+        """
+        from server.schemas import ExtractionRef
+        schema = ExtractionRef.model_json_schema()
+        prop = schema["properties"]["audit_line"]
+        # pydantic v2 emits Optional[int] as anyOf[{type:integer}, {type:null}]
+        any_of = prop.get("anyOf") or []
+        types = {t.get("type") for t in any_of}
+        assert "null" in types, (
+            "ExtractionRef.audit_line must accept null per the "
+            "no-retroactive-backfill migration approach"
+        )
+        assert "integer" in types, (
+            "ExtractionRef.audit_line must also accept int — value type"
+        )
+
+    def test_audit_line_required_on_tier2_result_models(self, tmp_path: Path):
+        """Tier-2 *Result.audit_line is REQUIRED (no `None`). Every
+        tier-2 call happens under the new schema, so there's never a
+        case where audit_line should be missing."""
+        from server.schemas import (
+            QueryRecordsResult,
+            GroupByResult,
+            SetDifferenceResult,
+            SubtreeResult,
+        )
+        for cls in (
+            QueryRecordsResult,
+            GroupByResult,
+            SetDifferenceResult,
+            SubtreeResult,
+        ):
+            schema = cls.model_json_schema()
+            assert "audit_line" in schema["required"], (
+                f"{cls.__name__}.audit_line must be required, not optional"
+            )
+            prop = schema["properties"]["audit_line"]
+            assert prop.get("type") == "integer", (
+                f"{cls.__name__}.audit_line must be `int`, not nullable"
+            )
+
     def test_tier1_descriptions_advertise_summary_return(self, tmp_path: Path):
         listing = _run_async(_list_tools_only(tmp_path))
         for name in ("vol_pslist", "vol_psscan", "vol_pstree", "vol_netscan"):

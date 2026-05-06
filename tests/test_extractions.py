@@ -273,6 +273,103 @@ class TestLoadExtraction:
         with pytest.raises(HashMismatchError):
             load_extraction(tmp_path, EVIDENCE_ID, "windows.pslist.PsList")
 
+    def test_audit_line_persisted_through_chain_and_load(self, tmp_path: Path):
+        """write_extraction(audit_line=N) → load_extraction returns
+        ExtractionRef with audit_line=N. Round-trip integrity through
+        the extractions.jsonl chain entry."""
+        ref = write_extraction(
+            tmp_path,
+            EVIDENCE_ID,
+            "windows.pslist.PsList",
+            _pslist_result([_process_record(4)]),
+            runtime_seconds=14.7,
+            audit_line=42,
+        )
+        assert ref.audit_line == 42
+        assert ref.cached is False
+
+        # Reload — cached ref must carry the same audit_line.
+        loaded_ref, _ = load_extraction(
+            tmp_path, EVIDENCE_ID, "windows.pslist.PsList"
+        )
+        assert loaded_ref.audit_line == 42
+        assert loaded_ref.cached is True
+
+        # Chain entry on disk also carries audit_line.
+        from server.extractions_log import find_extraction_entry
+        chain_entry = find_extraction_entry(
+            tmp_path, EVIDENCE_ID, "windows.pslist.PsList"
+        )
+        assert chain_entry is not None
+        assert chain_entry.audit_line == 42
+
+    def test_legacy_chain_entry_without_audit_line_loads_as_none(
+        self, tmp_path: Path
+    ):
+        """Load a chain entry written without `audit_line` (the
+        pre-2026-05-06 schema) and confirm it surfaces as None on the
+        ExtractionRef. This pins the migration semantic: no
+        retroactive backfill of historical entries."""
+        # Write a synthetic legacy chain line directly — no audit_line
+        # field at all. Mirrors the shape of the 3 lines already on
+        # disk in case-data/extractions.jsonl from week-5 verification.
+        import json as _json
+        from server.schemas import ExtractionChainEntry
+        from server.extractions_log import _GENESIS_PREV_HASH
+
+        # Compose the chain line manually with the legacy field set.
+        # Real extraction file + sidecar must also exist for the load
+        # path to reach the chain-entry read.
+        result = _pslist_result([_process_record(4), _process_record(100)])
+        payload = result.model_dump_json().encode("utf-8")
+        import hashlib
+        sha = hashlib.sha256(payload).hexdigest()
+
+        case_dir = tmp_path
+        ext_dir = case_dir / "extractions" / EVIDENCE_ID
+        ext_dir.mkdir(parents=True)
+        (ext_dir / "windows.pslist.PsList.json").write_bytes(payload)
+        (ext_dir / "windows.pslist.PsList.sha256").write_text(sha + "\n")
+
+        # Hand-write the chain JSONL line with legacy field set
+        # (no audit_line key).
+        ts = NOW_UTC
+        chained = dict(
+            line_number=1,
+            timestamp=ts,
+            evidence_id=EVIDENCE_ID,
+            plugin_name="windows.pslist.PsList",
+            extraction_id="11111111-1111-4111-8111-111111111111",
+            extraction_sha256=sha,
+            record_count=2,
+            runtime_seconds=14.7,
+            audit_line=None,  # explicit None — schema accepts it the same as absent
+            prev_extraction_hash=_GENESIS_PREV_HASH,
+        )
+        this_hash = ExtractionChainEntry.compute_this_extraction_hash(**chained)
+        # Build the legacy line by hand WITHOUT including `audit_line` in
+        # the JSON output, mirroring the on-disk shape of a pre-fix entry.
+        legacy = {k: v for k, v in chained.items() if k != "audit_line"}
+        legacy["timestamp"] = ts.isoformat()
+        legacy["this_extraction_hash"] = this_hash
+        # Stored hash was computed *with* audit_line=None — that's the
+        # canonical form the new writer emits for the absent-field case.
+        # The legacy on-disk hash from week-5 was computed WITHOUT the
+        # field, so its hash differs. For load_extraction's purposes,
+        # only the .json sha (matched against sidecar + chain) is
+        # verified; this test focuses on the audit_line=None surfacing.
+        (case_dir / "extractions.jsonl").write_text(
+            _json.dumps(legacy, default=str) + "\n"
+        )
+
+        loaded_ref, _ = load_extraction(
+            case_dir, EVIDENCE_ID, "windows.pslist.PsList"
+        )
+        assert loaded_ref.audit_line is None, (
+            "legacy chain entries without audit_line must load as None — "
+            "no retroactive backfill"
+        )
+
     def test_chain_line_persisted_runtime_seconds(self, tmp_path: Path):
         # The fresh-write ref carries `runtime_seconds`; the cached
         # load returns `runtime_seconds=None`. But the chain entry

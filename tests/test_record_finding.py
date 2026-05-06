@@ -499,6 +499,165 @@ _ON_DISK_FINDINGS_BEFORE = (
 # ---------------------------------------------------------------------------
 
 
+class TestAuditLineProbeFixRegressionGuard:
+    """End-to-end regression test for the audit_line plumbing fix
+    (2026-05-06, decisions-log entry "audit_line plumbing").
+
+    v2 of process_analyst spent ~16 turns brute-forcing valid
+    `(audit_line, source_tool)` pairs because tier-1/tier-2 returns
+    didn't surface their own audit-chain line number. This test
+    codifies the fix as a regression check: dispatch a tier-1 tool,
+    capture `ExtractionRef.audit_line` from the result, and use it
+    in record_finding's `EvidenceRef`. The first call must succeed
+    — no probing, no rejection."""
+
+    def test_tier1_audit_line_is_directly_usable_in_evidence_ref(
+        self, tmp_path: Path
+    ):
+        from unittest.mock import patch
+        from server.tools.memory import vol_pslist
+
+        case_dir = _seed_case_dir(tmp_path, seed_audit=False)
+        # No pre-seeded audit line; vol_pslist will write its own.
+        # Mock the runner so we don't reach SSH.
+        fixture = (
+            PROJECT_ROOT / "tests" / "fixtures" / "vol_pslist_sample.json"
+        ).read_text(encoding="utf-8")
+        with patch(
+            "server.tools.memory.get_vol_version", return_value="2.27.0"
+        ), patch(
+            "server.tools.memory.run_vol_plugin",
+            return_value=(fixture, "vol", 5.0),
+        ):
+            summary = vol_pslist(VALID_EVIDENCE_ID, case_dir=str(case_dir))
+
+        # The fix: audit_line is on the returned summary.
+        assert summary.extraction.audit_line is not None
+        captured_audit_line = summary.extraction.audit_line
+
+        # Construct record_finding using the captured audit_line.
+        # No probing — first call accepted.
+        finding = record_finding(
+            evidence_id=VALID_EVIDENCE_ID,
+            analyst="process_analyst",
+            category="process_hidden",
+            severity="medium",
+            confidence="MEDIUM",
+            title="Direct audit_line use — no probe needed",
+            description=(
+                "Synthesized finding to verify the audit_line plumbing "
+                "fix: tier-1 ExtractionRef.audit_line plugs directly "
+                "into EvidenceRef.audit_line on the first record_finding "
+                "call without probing. Eliminates failure-mode #1."
+            ),
+            evidence_refs=[
+                EvidenceRef(
+                    source_tool="vol_pslist",
+                    audit_line=captured_audit_line,
+                    detail="proved-valid via tier-1 return",
+                )
+            ],
+            hypothesis=None,
+            case_dir=str(case_dir),
+        )
+
+        # No rejection — finding committed.
+        assert finding.state == "DRAFT"
+        # The chain ended up with: line 1 (vol_pslist), line 2 (the
+        # record_finding success). The captured audit_line is line 1.
+        assert captured_audit_line == 1
+
+    def test_tier2_set_difference_audit_line_is_accepted_in_evidence_ref(
+        self, tmp_path: Path
+    ):
+        """Same regression check, tier-2 path: a `set_difference` call's
+        audit_line is directly usable as `EvidenceRef.audit_line` with
+        `source_tool="set_difference"`. Confirms the
+        `EvidenceRefSourceTool` literal expansion (2026-05-06) made
+        tier-2 names valid evidence sources for findings."""
+        from server.extractions import write_extraction
+        from server.schemas import (
+            ProcessRecord,
+            PslistResult,
+            PsscanResult,
+        )
+        from server.tools.analytical import set_difference
+
+        case_dir = _seed_case_dir(tmp_path, seed_audit=False)
+
+        # Pre-write both extractions so set_difference has data to diff.
+        def pr(pid: int) -> ProcessRecord:
+            return ProcessRecord(
+                pid=pid, ppid=4, image_file_name="x.exe", offset_v=0,
+                threads=1, handles=None, session_id=None, wow64=False,
+                create_time=NOW_UTC, exit_time=None,
+            )
+        write_extraction(
+            case_dir, VALID_EVIDENCE_ID, "windows.pslist.PsList",
+            PslistResult(
+                evidence_id=VALID_EVIDENCE_ID,
+                plugin_name="windows.pslist.PsList",
+                volatility_version="2.27.0",
+                processes=[pr(4), pr(100)],
+                command_executed="vol",
+                runtime_seconds=14.7,
+                invoked_at=NOW_UTC,
+            ),
+            runtime_seconds=14.7,
+        )
+        write_extraction(
+            case_dir, VALID_EVIDENCE_ID, "windows.psscan.PsScan",
+            PsscanResult(
+                evidence_id=VALID_EVIDENCE_ID,
+                plugin_name="windows.psscan.PsScan",
+                volatility_version="2.27.0",
+                processes=[pr(4), pr(100), pr(9999)],
+                command_executed="vol",
+                runtime_seconds=396.0,
+                invoked_at=NOW_UTC,
+            ),
+            runtime_seconds=396.0,
+        )
+
+        diff = set_difference(
+            evidence_id=VALID_EVIDENCE_ID,
+            plugin_a="windows.psscan.PsScan",
+            plugin_b="windows.pslist.PsList",
+            key="pid",
+            direction="a_minus_b",
+            case_dir=str(case_dir),
+        )
+        assert diff.audit_line >= 1
+        assert diff.a_only_count == 1
+
+        # Use diff.audit_line directly with source_tool="set_difference".
+        finding = record_finding(
+            evidence_id=VALID_EVIDENCE_ID,
+            analyst="process_analyst",
+            category="process_hidden",
+            severity="medium",
+            confidence="MEDIUM",
+            title="Tier-2 source_tool acceptance regression test",
+            description=(
+                "Verifies that a tier-2 set_difference call's audit_line "
+                "is a valid EvidenceRef target with "
+                "source_tool='set_difference' (the 2026-05-06 literal "
+                "expansion). First call accepted, no probe."
+            ),
+            evidence_refs=[
+                EvidenceRef(
+                    source_tool="set_difference",
+                    audit_line=diff.audit_line,
+                    detail="psscan ∖ pslist on pid surfaced PID 9999",
+                )
+            ],
+            hypothesis=None,
+            case_dir=str(case_dir),
+        )
+        assert finding.state == "DRAFT"
+        assert finding.evidence_refs[0].source_tool == "set_difference"
+
+
 class TestFixtureRoundTrip:
     def test_three_fixture_findings_validate_against_DraftFinding(self):
         fixture_path = (

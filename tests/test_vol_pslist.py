@@ -415,6 +415,78 @@ class TestVolPslistRecordWarnings:
 # ---------------------------------------------------------------------------
 
 
+class TestVolPslistAuditLinePlumbing:
+    def test_fresh_call_populates_audit_line_on_extraction_ref(
+        self, tmp_path: Path
+    ):
+        """Fresh tier-1 call: ExtractionRef.audit_line equals the audit
+        chain line where this very invocation was logged. Closes the
+        v2 probe-finding pattern (failure mode #1 in
+        docs/accuracy-report.md): the analyst has the audit_line
+        directly off the return value."""
+        case_dir = _make_case_dir(tmp_path)
+        fixture_stdout = PSLIST_FIXTURE.read_text(encoding="utf-8")
+        with patch(
+            "server.tools.memory.get_vol_version", return_value="2.27.0"
+        ), patch(
+            "server.tools.memory.run_vol_plugin",
+            return_value=(fixture_stdout, "ssh ... vol ...", 12.3),
+        ):
+            summary = vol_pslist(VALID_EVIDENCE_ID, case_dir=str(case_dir))
+
+        # Fresh extraction: audit_line populated.
+        assert summary.extraction.audit_line is not None
+        # The success audit entry IS the line referenced — verify by
+        # reading the audit chain.
+        audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
+        lines = [
+            json.loads(l)
+            for l in audit_path.read_text().splitlines()
+            if l.strip()
+        ]
+        success_lines = [l for l in lines if l["tool_name"] == "vol_pslist"]
+        assert len(success_lines) == 1
+        assert summary.extraction.audit_line == success_lines[0]["line_number"]
+
+    def test_cached_call_carries_original_invocation_audit_line(
+        self, tmp_path: Path
+    ):
+        """Cached tier-1 call: ExtractionRef.audit_line is the ORIGINAL
+        invocation's line number, not the cache-hit's audit line. The
+        cache-hit is logged separately as `vol_pslist:cached`."""
+        case_dir = _make_case_dir(tmp_path)
+        fixture_stdout = PSLIST_FIXTURE.read_text(encoding="utf-8")
+        with patch(
+            "server.tools.memory.get_vol_version", return_value="2.27.0"
+        ), patch(
+            "server.tools.memory.run_vol_plugin",
+            return_value=(fixture_stdout, "ssh ... vol ...", 12.3),
+        ):
+            first = vol_pslist(VALID_EVIDENCE_ID, case_dir=str(case_dir))
+            original_audit_line = first.extraction.audit_line
+            # Second call hits the cache.
+            second = vol_pslist(VALID_EVIDENCE_ID, case_dir=str(case_dir))
+
+        assert second.extraction.cached is True
+        # The cache-hit audit line is NOT what's surfaced — the
+        # original invocation's line is what stays in the ExtractionRef.
+        assert second.extraction.audit_line == original_audit_line
+
+        # The cache hit IS audited separately, just not as the
+        # ExtractionRef's audit_line.
+        audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
+        lines = [
+            json.loads(l)
+            for l in audit_path.read_text().splitlines()
+            if l.strip()
+        ]
+        cached_lines = [
+            l for l in lines if l["tool_name"] == "vol_pslist:cached"
+        ]
+        assert len(cached_lines) == 1
+        assert cached_lines[0]["line_number"] != original_audit_line
+
+
 class TestAuditChain:
     def test_audit_chain_extends_from_existing_on_disk_chain(
         self, tmp_path: Path

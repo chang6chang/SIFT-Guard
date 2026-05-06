@@ -109,4 +109,28 @@ def append_audit_entry(
     return entry
 
 
-__all__ = ["append_audit_entry"]
+def peek_next_line_number(case_dir: Path | str) -> int:
+    """Return the audit-chain line number that the next
+    `append_audit_entry` would use.
+
+    Used by tier-1 / tier-2 tools to pre-determine the audit line
+    where their own success entry will land, so they can embed that
+    line into the returned `ExtractionRef` (tier-1) or result model
+    (tier-2). The agent then has the line number available without
+    having to probe `record_finding`'s audit-chain validation by
+    submitting placeholder findings.
+
+    Single-process-server contract: between this peek and the matching
+    `append_audit_entry` call there must be no other audit writes.
+    The MCP server is single-process by construction (see
+    `server/audit.py` module docstring); a future multi-process design
+    would route writes through a queue and would need a different
+    line-number-allocation primitive.
+    """
+    case_dir_path = Path(case_dir).resolve()
+    audit_path = case_dir_path / _AUDIT_SUBDIR / _AUDIT_FILENAME
+    line_number, _ = _read_chain_state(audit_path)
+    return line_number
+
+
+__all__ = ["append_audit_entry", "peek_next_line_number"]

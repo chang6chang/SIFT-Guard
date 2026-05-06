@@ -197,6 +197,74 @@ class TestSetDifferenceFlagshipCase:
 # ---------------------------------------------------------------------------
 
 
+class TestSetDifferenceAuditLinePlumbing:
+    def test_result_audit_line_and_extraction_refs_audit_lines(
+        self, tmp_path: Path
+    ):
+        """SetDifferenceResult.audit_line is THIS call's chain line.
+        The two ExtractionRefs carry the two source extractions'
+        audit_lines (independent of THIS call). All three values must
+        be distinct."""
+        case_dir = _seed_case_dir(tmp_path)
+        # Pre-write each side with a known audit_line so we can pin
+        # the assertion.
+        from server.extractions import write_extraction
+        write_extraction(
+            case_dir,
+            EVIDENCE_ID,
+            "windows.pslist.PsList",
+            PslistResult(
+                evidence_id=EVIDENCE_ID,
+                plugin_name="windows.pslist.PsList",
+                volatility_version="2.27.0",
+                processes=[_pr(4)],
+                command_executed="vol",
+                runtime_seconds=14.7,
+                invoked_at=NOW_UTC,
+            ),
+            runtime_seconds=14.7,
+            audit_line=10,
+        )
+        write_extraction(
+            case_dir,
+            EVIDENCE_ID,
+            "windows.psscan.PsScan",
+            PsscanResult(
+                evidence_id=EVIDENCE_ID,
+                plugin_name="windows.psscan.PsScan",
+                volatility_version="2.27.0",
+                processes=[_pr(4), _pr(9999)],
+                command_executed="vol",
+                runtime_seconds=396.0,
+                invoked_at=NOW_UTC,
+            ),
+            runtime_seconds=396.0,
+            audit_line=20,
+        )
+
+        result = set_difference(
+            evidence_id=EVIDENCE_ID,
+            plugin_a="windows.psscan.PsScan",
+            plugin_b="windows.pslist.PsList",
+            key="pid",
+            direction="a_minus_b",
+            case_dir=str(case_dir),
+        )
+        # Source audit_lines come from the sources.
+        assert result.extraction_a.audit_line == 20
+        assert result.extraction_b.audit_line == 10
+        # Result's own audit_line is the chain entry for THIS call.
+        audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
+        lines = [
+            json.loads(l) for l in audit_path.read_text().splitlines() if l.strip()
+        ]
+        success_lines = [l for l in lines if l["tool_name"] == "set_difference"]
+        assert len(success_lines) == 1
+        assert result.audit_line == success_lines[0]["line_number"]
+        # All three audit lines distinct.
+        assert len({result.audit_line, 10, 20}) == 3
+
+
 class TestSetDifferenceDuplicateKeys:
     def test_a_only_returns_all_records_for_duplicated_key(
         self, tmp_path: Path

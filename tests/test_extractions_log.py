@@ -95,6 +95,7 @@ class TestGenesisAppend:
             extraction_sha256=entry.extraction_sha256,
             record_count=entry.record_count,
             runtime_seconds=entry.runtime_seconds,
+            audit_line=entry.audit_line,
             prev_extraction_hash=entry.prev_extraction_hash,
         )
         assert recomputed == entry.this_extraction_hash

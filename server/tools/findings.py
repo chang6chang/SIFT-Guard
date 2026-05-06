@@ -71,6 +71,13 @@ ALLOWED_SOURCE_TOOLS: frozenset[str] = frozenset(
         "vol_psscan",
         "vol_pstree",
         "vol_netscan",
+        # Tier-2 tools added 2026-05-06: a tier-2 result's
+        # `audit_line` field is the analyst's direct entry point for
+        # citing a derived analysis as evidence.
+        "query_records",
+        "group_by",
+        "set_difference",
+        "subtree",
     }
 )
 

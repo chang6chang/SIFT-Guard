@@ -514,3 +514,42 @@ retained on disk per the experiment's "do NOT manually clean up
 findings.jsonl" rule and because the architecture has no revocation
 primitive — once a finding lands in the chain, the chain extends
 forward only.
+
+## 2026-05-06 — `audit_line` plumbing into ExtractionRef + tier-2 results
+
+**Decision:** Surface the audit-chain line of the originating tier-1
+invocation in `ExtractionRef.audit_line`, and the calling tool's own
+audit line in tier-2 result models (`QueryRecordsResult.audit_line`,
+`GroupByResult.audit_line`, `SetDifferenceResult.audit_line`,
+`SubtreeResult.audit_line`). Eliminates the probe-finding pattern
+documented in `docs/process-analyst-v2-results.md` (failure mode #1
+in `docs/accuracy-report.md`).
+
+**Migration approach: nullable, no retroactive backfill.** The 3
+existing `extractions.jsonl` lines (from the 2026-05-06 tier-1/tier-2
+live verification) were written before this field existed; loading
+them yields `audit_line=None` in the returned `ExtractionRef`. New
+writes always populate it. The schema is asymmetric:
+`ExtractionRef.audit_line` is `Optional[int]` (nullable for legacy);
+the four tier-2 `*Result.audit_line` fields are required `int` (every
+tier-2 call happens under the new schema). Append-only invariant
+holds — neither `audit.jsonl`, `findings.jsonl`, nor
+`extractions.jsonl` was modified retroactively. `EvidenceRefSourceTool`
+expanded to include the four tier-2 names (`query_records`,
+`group_by`, `set_difference`, `subtree`) so derived analyses can be
+cited as evidence directly.
+
+**Live verification on Rocba (cached state, 2026-05-06):**
+
+    step 1: vol_pslist (cached) → ExtractionRef.audit_line = None
+            (correct legacy migration semantic)
+    step 2: set_difference(psscan, pslist, pid, a_minus_b)
+            → Result.audit_line = 100 (populated, new)
+              extraction_a/b.audit_line = None (legacy sources)
+    step 3: record_finding(EvidenceRef.audit_line=100,
+                           source_tool="set_difference")
+            → accepted on first call; no probe pattern
+
+The probe-finding workflow that contaminated `findings.jsonl` lines
+2-8 in the v2 experiment is no longer reachable: every tool the
+analyst can call surfaces the audit_line it just produced.

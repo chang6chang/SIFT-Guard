@@ -194,6 +194,28 @@ class TestGroupByRejections:
             )
 
 
+class TestGroupByAuditLinePlumbing:
+    def test_result_carries_call_audit_line(self, tmp_path: Path):
+        """GroupByResult.audit_line equals the chain line where THIS
+        call was logged. Closes the v2 probe-finding gap for
+        group_by-sourced findings."""
+        case_dir = _seed_case_dir(tmp_path)
+        _seed_pslist(case_dir, [_pr(4, 0, "System")])
+        result = group_by(
+            evidence_id=EVIDENCE_ID,
+            plugin_name="windows.pslist.PsList",
+            field="image_file_name",
+            case_dir=str(case_dir),
+        )
+        audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
+        lines = [
+            json.loads(l) for l in audit_path.read_text().splitlines() if l.strip()
+        ]
+        success_lines = [l for l in lines if l["tool_name"] == "group_by"]
+        assert len(success_lines) == 1
+        assert result.audit_line == success_lines[0]["line_number"]
+
+
 class TestGroupByAuditTrail:
     def test_success_writes_audit_line(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)

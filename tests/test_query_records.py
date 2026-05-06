@@ -312,6 +312,72 @@ class TestQueryRecordsRejections:
 # ---------------------------------------------------------------------------
 
 
+class TestQueryRecordsAuditLinePlumbing:
+    def test_result_carries_call_audit_line(self, tmp_path: Path):
+        """Tier-2 contract: QueryRecordsResult.audit_line equals the
+        audit-chain line where THIS query_records call was logged.
+        The analyst can use it directly as `EvidenceRef.audit_line`
+        with `source_tool="query_records"` in record_finding."""
+        case_dir = _seed_case_dir(tmp_path)
+        _seed_pslist(case_dir, [_pr(4, 0, "System")])
+
+        result = query_records(
+            evidence_id=EVIDENCE_ID,
+            plugin_name="windows.pslist.PsList",
+            case_dir=str(case_dir),
+        )
+
+        # audit_line populated.
+        assert result.audit_line >= 1
+
+        # Cross-check against the actual audit-chain entry.
+        audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
+        lines = [
+            json.loads(l)
+            for l in audit_path.read_text().splitlines()
+            if l.strip()
+        ]
+        success_lines = [
+            l for l in lines if l["tool_name"] == "query_records"
+        ]
+        assert len(success_lines) == 1
+        assert result.audit_line == success_lines[0]["line_number"]
+
+    def test_extraction_ref_carries_source_audit_line(self, tmp_path: Path):
+        """The ExtractionRef inside the Result carries the SOURCE
+        extraction's audit_line, populated by write_extraction at
+        seeding time. That value is independent of the query_records
+        call's own audit_line."""
+        case_dir = _seed_case_dir(tmp_path)
+        # Override _seed_pslist to use a known audit_line.
+        from server.extractions import write_extraction
+        from server.schemas import PslistResult
+        write_extraction(
+            case_dir,
+            EVIDENCE_ID,
+            "windows.pslist.PsList",
+            PslistResult(
+                evidence_id=EVIDENCE_ID,
+                plugin_name="windows.pslist.PsList",
+                volatility_version="2.27.0",
+                processes=[_pr(4, 0, "System")],
+                command_executed="vol",
+                runtime_seconds=14.7,
+                invoked_at=NOW_UTC,
+            ),
+            runtime_seconds=14.7,
+            audit_line=99,
+        )
+        result = query_records(
+            evidence_id=EVIDENCE_ID,
+            plugin_name="windows.pslist.PsList",
+            case_dir=str(case_dir),
+        )
+        assert result.extraction.audit_line == 99
+        # The Result's own audit_line is independent of the source's.
+        assert result.audit_line != 99
+
+
 class TestQueryRecordsSizeBudget:
     def test_default_limit_full_projection_under_10kb(self, tmp_path: Path):
         """Tier-2 budget: at the default limit (50) with full projection,

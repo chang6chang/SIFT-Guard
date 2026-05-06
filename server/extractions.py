@@ -109,6 +109,7 @@ def write_extraction(
     plugin_name: PluginName,
     result: BaseModel,
     runtime_seconds: float,
+    audit_line: int | None = None,
 ) -> ExtractionRef:
     """Persist a tier-1 Volatility result.
 
@@ -165,6 +166,7 @@ def write_extraction(
         extraction_sha256=sha256,
         record_count=record_count,
         runtime_seconds=runtime_seconds,
+        audit_line=audit_line,
     )
 
     return ExtractionRef(
@@ -174,6 +176,7 @@ def write_extraction(
         record_count=record_count,
         extraction_sha256=sha256,
         extractions_chain_line=chain_entry.line_number,
+        audit_line=audit_line,
         runtime_seconds=runtime_seconds,
         cached=False,
     )
@@ -239,6 +242,7 @@ def load_extraction(
         record_count=chain_entry.record_count,
         extraction_sha256=chain_entry.extraction_sha256,
         extractions_chain_line=chain_entry.line_number,
+        audit_line=chain_entry.audit_line,
         runtime_seconds=None,
         cached=True,
     )

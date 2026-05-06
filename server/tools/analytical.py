@@ -41,7 +41,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from server.audit import append_audit_entry
+from server.audit import append_audit_entry, peek_next_line_number
 from server.extractions import (
     ExtractionNotFoundError,
     HashMismatchError,
@@ -451,8 +451,14 @@ def query_records(
     projected = [_project(r, fields) for r in sliced]
     truncated = matched_count > offset + limit
 
+    # All rejection paths have cleared. The next audit line is THIS
+    # call's success line; capture it so the analyst can reference it
+    # directly in `record_finding`'s `EvidenceRef`.
+    audit_line = peek_next_line_number(case_dir_path)
+
     result = QueryRecordsResult(
         extraction=ref,
+        audit_line=audit_line,
         matched_count=matched_count,
         returned_count=len(projected),
         records=projected,
@@ -537,8 +543,11 @@ def group_by(
     distinct_values = len(counter)
     groups = list(counter.most_common(top_n))
 
+    audit_line = peek_next_line_number(case_dir_path)
+
     result = GroupByResult(
         extraction=ref,
+        audit_line=audit_line,
         field=field,
         total_records=len(filtered),
         distinct_values=distinct_values,
@@ -731,9 +740,12 @@ def set_difference(
 
     truncated = total_matching > len(diff_records)
 
+    audit_line = peek_next_line_number(case_dir_path)
+
     result = SetDifferenceResult(
         extraction_a=ref_a,
         extraction_b=ref_b,
+        audit_line=audit_line,
         key=key,
         direction=direction,  # type: ignore[arg-type]
         a_only_count=len(a_only),
@@ -869,8 +881,11 @@ def subtree(
         and _count_descendants(root_node, max_depth) > descendant_count
     )
 
+    audit_line = peek_next_line_number(case_dir_path)
+
     result = SubtreeResult(
         extraction=ref,
+        audit_line=audit_line,
         root_pid=root_pid,
         root_found=True,
         depth_traversed=deepest_seen,
