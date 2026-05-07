@@ -299,7 +299,8 @@ finding (`4d82f7a8`) on top of a stable 4-element prior core; a
 "persistent core stable, growth on top" pattern would never trip
 `R_b` on its current rule. Behaves correctly per spec; design
 observation, not a bug. **Deferred** — a future `R_b'` "subset
-stability" rule could refine. Source: `decisions-log.md`. Rubric:
+stability" rule could refine. Source: `docs/decisions-log.md` §
+"R_b strict equality: subset stability observation". Rubric:
 design transparency.
 
 ### #7 — RAG not consulted in promotion (project-wide)
@@ -337,7 +338,7 @@ assessment and the supporting evidence.
 | **Three writers, three roles, three chains.** | HIGH | Per-subagent tool-surface restrictions in `.claude/agents/*.md`; closed Literal types on `AnalystName`, `FindingState`, `FindingConfidence`, `FindingCategory`, `FindingSeverity`; `tests/test_mcp_protocol.py::test_thirteen_tool_surface_is_locked`; orchestrator-only `update_finding` access. |
 | **Every tool call appears in the audit chain.** | HIGH | Per-tool tests assert audit-log append on success and rejection paths. Audit-chain line count: 457; rejections: 44; success ratio 90.4%. The 13 tool entry-points each have a corresponding test in `tests/test_*.py`. |
 | **Architectural enforcement beats prompt enforcement.** | MEDIUM-HIGH | Empirically supported by failure modes #1, #2, #3 (architecture compensated for prompt failures with zero bad data on disk). The synthetic-injection demo shows defense-in-depth holding under adversarial stress. Caveat: the `untrusted_fields` discipline still relies partly on prompt enforcement for analyst behavior on evidence-derived strings; primary defense is architectural (tool-surface restriction, schema Literal[]). |
-| **Findings are reproducible from chain replay alone.** | HIGH | Hash-chained `findings.jsonl` + `correlations.jsonl` + `iterations.jsonl` carry every promotion's drivers; `promote()` is pure (`tests/test_promotion.py`). Walking the chains reconstructs every state transition. |
+| **Findings are reproducible from chain replay alone.** | HIGH | Hash-chained `findings.jsonl` + `correlations.jsonl` + `iterations.jsonl` carry every promotion's drivers; `promote()` is pure (`tests/test_promotion.py`). Walking the chains reconstructs every state transition. Underlying tier-1 extractions (`case-data/extractions/<evidence_id>/<plugin>.json`) are SHA-256-stamped and chained in `extractions.jsonl`; given the extractions, the four primary chains reproduce every promotion's rationale. |
 | **Autonomous self-correction loop.** | MEDIUM-HIGH | Demonstrated end-to-end on Rocba (4 distinct runs, clean termination via `R_a`-equivalent `no_followup_pending` short-circuit) and on synthetic-injected (`request_followup` → `focus_context` → closed-negative on iter 2). The R5-cumulative limitation (failure mode #5) is the disclosed gap. |
 
 ## Quantitative metrics from the chains
@@ -392,6 +393,14 @@ are the failure-mode-#5 in-memory-only entries). One R3 update on
 iterations-instrumented runs (week-6 substrate live-verification
 emitting a corroboration via `update_finding` directly), which
 accounts for the 45-vs-44 R3 difference.
+
+The 6 `weakens` correlations recorded did not drive R2 promotions
+because R2 only fires on findings already at HIGH confidence —
+none of the weakened findings on this evidence had reached HIGH
+prior to weakening. Weakens against MEDIUM or LOW findings are
+preserved in the chain as supplementary evidence per
+`docs/confidence-methodology.md` § "What this methodology does
+NOT yet do".
 
 ### Audit chain (`audit/sift-guard-mcp.jsonl`, 457 lines)
 
