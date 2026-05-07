@@ -121,7 +121,11 @@ def _build_prompt(
         "validator": (
             "Validate the DRAFT findings below by emitting correlations. "
             "You see only DRAFT-state findings; CONFIRMED findings are out "
-            "of scope for this iteration."
+            "of scope for this iteration.\n"
+            "Before emitting a corroborates or contradicts correlation for "
+            "any finding, call rag_query to check for matching ATT&CK "
+            "techniques or Sigma detection rules. Cite the audit_line from "
+            "the rag_query result in your correlation."
         ),
     }
     intro = role_intros.get(agent, f"Run as {agent}.")

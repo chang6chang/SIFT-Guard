@@ -10,11 +10,12 @@ the live FAISS index — same surface area
 audit chain present.
 
 Tests deliberately exercise the live index (rag/data/) rather
-than mocking it. The corpus is small (697 records, ~700 KiB),
-the retriever's lazy model load amortizes across this file's
-queries, and the load-bearing property — that a validator's
-rag_query call lands real ATT&CK content in correlation
-hypotheses — is what we want to pin against drift.
+than mocking it. The merged corpus (697 ATT&CK + ~2147 Sigma =
+~2844 records) is small enough to load fast, the retriever's
+lazy model load amortizes across this file's queries, and the
+load-bearing property — that a validator's rag_query call lands
+real grounding content in correlation hypotheses — is what we
+want to pin against drift.
 """
 
 from __future__ import annotations
