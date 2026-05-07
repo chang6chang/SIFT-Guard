@@ -15,13 +15,13 @@ evidence-derived fields. Two analyst subagents (process and
 network) and one validator subagent operate over a 13-tool MCP
 server with closed-Literal payloads and a hash-chained audit
 trail; a Python orchestrator drives the 5-step self-correction
-loop with R1–R6 promotion rules. Across four orchestrator
-invocations, the system wrote 56 substantive findings and 7
+loop with R1–R6 promotion rules. Across five orchestrator
+invocations, the system wrote 68 substantive findings and 7
 probe-pattern artifacts into a single shared chain, the validator
-emitted 55 correlations, and the orchestrator applied 70
-state-update writes (R1=22 contradiction-driven, R3=45 strong
-corroboration, R4=3 moderate corroboration). 47 findings reached
-CONFIRMED, 6 reached DISPUTED, 10 remain DRAFT awaiting future
+emitted 84 correlations, and the orchestrator applied 92
+state-update writes (R1=34 contradiction-driven, R3=55 strong
+corroboration, R4=3 moderate corroboration). 58 findings reached
+CONFIRMED, 6 reached DISPUTED, 11 remain DRAFT awaiting future
 correlation. Eight failure modes were caught during development —
 documented below with the architectural response and resolution
 chain — and four design choices are explicitly deferred.
@@ -303,7 +303,7 @@ stability" rule could refine. Source: `docs/decisions-log.md` §
 "R_b strict equality: subset stability observation". Rubric:
 design transparency.
 
-### #7 — RAG not consulted in promotion (project-wide)
+### #7 — RAG not consulted in promotion (project-wide) — CLOSED for empirical exercise
 
 CLAUDE.md's HIGH definition mentions "technique matches a
 RAG-retrieved MITRE TTP" as a criterion. The promotion rules
@@ -311,10 +311,37 @@ consult only correlation type + strength + contradiction severity.
 RAG is exposed as the 13th MCP tool (week 7 G-2) and the
 validator's hypothesis prose can cite techniques, but mechanical
 promotion is correlation-driven only. Rules are honest about what
-they evaluate. **Deferred** — a hypothetical R7+ "named-technique
-corroboration" requires rule-engine and schema changes. Source:
-`docs/decisions-log.md` "RAG queryable but not mechanically
-promoting". Rubric: design transparency.
+they evaluate. A hypothetical R7+ "named-technique corroboration"
+remains **deferred** — it requires rule-engine and schema changes.
+
+**Closed empirically** in post-rag-sigma Rocba run
+(`v0.7-rag-sigma`). Validator made 8 autonomous rag_query calls
+across 2 iterations, producing 18 RAG-cited correlations covering
+6 distinct MITRE TTPs (T1014, T1021.001, T1055, T1055.012, T1110,
+T1110.001). Two correlations composed multi-technique grounding
+from parallel rag_query lookups. Sigma detection rules surfaced
+organically alongside ATT&CK technique definitions.
+
+Sources: `docs/decisions-log.md` "RAG queryable but not
+mechanically promoting"; commit `09b45cd` (rag-sigma corpus +
+validator dispatch nudge); tag `v0.7-rag-sigma-verified` (run
+results). Rubric: design transparency, closure on empirical
+exercise.
+
+#### Corpus expansion
+
+The `v0.7-rag-sigma` corpus is **2844 records** (697 MITRE ATT&CK
+Enterprise techniques at `ATT&CK-v19.0` + 2147 SigmaHQ Windows
+detection rules at `r2026-04-01`), up from 697 ATT&CK-only at
+`v0.7-architecture-diagram`. The merge keeps a single FAISS index
+and a single retriever surface; the exact-ID short-circuit's
+sort key places ATT&CK records before Sigma records on the same
+`technique_id` so a query like `rag_query(technique_id="T1055")`
+lands the canonical ATT&CK definition at rank 1 with score=1.0
+and fills the rest with relevant Sigma detections via vector
+search. Sigma rule licensing is DRL 1.1 — permissive,
+MIT-flavored with attribution + license-disclosure requirements;
+documented in `rag/SOURCES.md`.
 
 ### #8 — Disk-side analysts not implemented (project-wide)
 
@@ -346,48 +373,53 @@ assessment and the supporting evidence.
 All numbers derived from the on-disk hash-chained logs as of
 2026-05-07.
 
-### Findings (`findings.jsonl`, 133 lines = 63 unique findings + 70 updates)
+### Findings (`findings.jsonl`, 167 lines = 75 unique findings + 92 updates)
 
 | | Count |
 |---|---|
-| Substantive findings (Rocba) | 44 |
+| Substantive findings (Rocba) | 56 |
 | Probe findings (Rocba, from process_analyst v2 — failure mode #2) | 7 |
 | Substantive findings (synthetic-injected) | 12 |
-| Total unique findings | 63 |
+| Total unique findings | 75 |
 
 Final state distribution per evidence (last-write-wins over the
 chain):
 
 | Evidence | CONFIRMED/HIGH | CONFIRMED/MEDIUM | DRAFT/DISPUTED | DRAFT/MEDIUM | DRAFT/LOW |
 |---|---|---|---|---|---|
-| Rocba | 39 | 1 | 2 | 1 | 8 |
+| Rocba | 49 | 1 | 2 | 3 | 8 |
 | Synthetic | 7 | 1 | 4 | 0 | 0 |
-| **Total** | **46** | **2** | **6** | **1** | **8** |
+| **Total** | **56** | **2** | **6** | **3** | **8** |
 
-Categories surfaced by analyst writers (DRAFT lines): `process_anomaly` 24, `process_hidden` 13, `network_anomaly` 13, `network_lateral_movement` 8, `process_masquerade` 3, `network_beacon` 1, `other` 1.
+Categories surfaced by analyst writers (DRAFT lines): `process_anomaly` 29, `process_hidden` 16, `network_anomaly` 15, `network_lateral_movement` 10, `process_masquerade` 3, `network_beacon` 1, `other` 1.
 
-### Correlations (`correlations.jsonl`, 55 lines)
+### Correlations (`correlations.jsonl`, 84 lines)
 
 | Type | Count | Sub-distribution |
 |---|---|---|
-| `corroborates` | 33 | strong=29, moderate=4 |
-| `contradicts` | 9 | material=3, fundamental=6 |
-| `weakens` | 6 | — |
-| `strengthens` | 4 | — |
-| `request_followup` | 3 | — |
+| `corroborates` | 39 | strong=34, moderate=5 |
+| `contradicts` | 15 | material=7, fundamental=6, minor=2 |
+| `weakens` | 15 | — |
+| `strengthens` | 10 | — |
+| `request_followup` | 5 | — |
+
+Of the post-rag-sigma run's 29 new correlations, **18 cite at least
+one rag_query audit_line** in `evidence_refs` (62%); two compose
+multi-technique grounding from parallel rag_query lookups. See
+failure-mode #7 closure above.
 
 ### Updates by promotion rule (chain truth from `findings.jsonl` UPDATE entries)
 
 | Rule | Update writes | Chain effect |
 |---|---|---|
-| R1 (contradiction) | 22 | DRAFT/* → DRAFT/DISPUTED |
-| R3 (strong corroboration) | 45 | DRAFT/* → CONFIRMED/HIGH |
+| R1 (contradiction) | 34 | DRAFT/* → DRAFT/DISPUTED |
+| R3 (strong corroboration) | 55 | DRAFT/* → CONFIRMED/HIGH |
 | R4 (moderate corroboration) | 3 | DRAFT/* → CONFIRMED/max(F.confidence, MEDIUM) |
 | R2, R5, R6 | 0 | (R6 chain-silent by design; R5 cumulative gap; R2 not exercised on this evidence) |
-| **Total update_finding writes** | **70** | |
+| **Total update_finding writes** | **92** | |
 
-`iterations.jsonl` records 157 promotion *decisions* (R6=79
-chain-silent no-ops, R3=44, R1=22, R4=3, R5=9 — the 9 R5 decisions
+`iterations.jsonl` records 204 promotion *decisions* (R6=104
+chain-silent no-ops, R3=54, R1=34, R4=3, R5=9 — the 9 R5 decisions
 are the failure-mode-#5 in-memory-only entries). One R3 update on
 `findings.jsonl` line 19 predates the orchestrator's
 iterations-instrumented runs (week-6 substrate live-verification
@@ -407,25 +439,26 @@ NOT yet do".
 | Tool | Calls | Rejections |
 |---|---|---|
 | `query_records` | 122 | 3 (`unknown_field`) |
-| `update_finding` | 70 | 0 |
-| `record_finding` | 63 | 28 (27 `invalid_audit_ref` from probe pattern, 1 `schema_validation_failed`) |
-| `record_correlation` | 55 | 13 (all `invalid_payload`, validator's first run — failure mode #3) |
-| `group_by` | 24 | 0 |
-| `set_difference` | 22 | 0 |
-| `vol_pslist` (cached + fresh) | 17 | 0 |
-| `vol_psscan` (cached + fresh) | 11 | 0 |
-| `vol_pstree` (cached + fresh) | 11 | 0 |
-| `vol_netscan` (cached + fresh) | 7 | 0 |
+| `query_records` | 144 | 3 (`unknown_field`) |
+| `record_finding` | 103 | 28 (27 `invalid_audit_ref` from probe pattern, 1 `schema_validation_failed`) |
+| `record_correlation` | 97 | 13 (all `invalid_payload`, validator's first run — failure mode #3) |
+| `update_finding` | 92 | 0 |
+| `group_by` | 27 | 0 |
+| `set_difference` | 26 | 1 (`unknown_field`) |
+| `vol_pslist` (cached + fresh) | 19 | 0 |
+| `vol_psscan` (cached + fresh) | 13 | 0 |
+| `vol_pstree` (cached + fresh) | 13 | 0 |
+| `rag_query` | 10 | 0 |
+| `vol_netscan` (cached + fresh) | 8 | 0 |
 | `subtree` | 6 | 0 |
 | `register_evidence` | 3 | 0 |
-| `rag_query` | 2 | 0 |
 
-Rejection ratio: 44 / 457 = 9.6%. The two large rejection
+Rejection ratio: 45 / 561 = 8.0%. The two large rejection
 clusters (27 + 13) are both attributable to single documented
 failure modes (#2 and #3 above) and were resolved within the
 sessions that produced them.
 
-### Iterations (`iterations.jsonl`, 7 lines = 4 distinct orchestrator runs)
+### Iterations (`iterations.jsonl`, 9 lines = 5 distinct orchestrator runs)
 
 | Run | Evidence | Iterations | Tokens (uncached, cumulative) | Wallclock | Termination |
 |---|---|---|---|---|---|
@@ -433,6 +466,14 @@ sessions that produced them.
 | 2 | Rocba | 1 | 159,875 | 9.7 min | continue (validator's first run; 11 invalid-payload rejections — failure mode #3) |
 | 3 | Synthetic | 3 | 250,050 | 13.6 min | `max_iterations_reached` (cap=3, natural quiescence) |
 | 4 | Rocba (post-R5-fix) | 2 | 294,640 | 17.2 min | `no_followup_pending` short-circuit |
+| 5 | Rocba (post-rag-sigma, `v0.7-rag-sigma`) | 2 | 301,366 | 18.6 min | **`R_b_disputed_set_unchanged`** — first naturally-fired R_b across all runs |
+
+Run 5 is the first run in which the validator made autonomous
+rag_query calls (8 across 2 iterations) and where R_b fired on
+its own. The 6 stable DISPUTED findings (4 synthetic + 2 Rocba)
+form the persistent stalemate that R_b correctly identifies as
+needing human review. See failure-mode #7 closure for the
+RAG-grounding details.
 
 ### Tests
 
