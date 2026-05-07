@@ -17,9 +17,10 @@ flowchart TD
     Reg --> EvDir
 
     %% --- MCP server tools ---
-    subgraph MCP["SIFT-Guard MCP server (12 typed tools)"]
+    subgraph MCP["SIFT-Guard MCP server (13 typed tools)"]
         Tier1["Tier-1 wrappers<br/>vol_pslist · vol_psscan<br/>vol_pstree · vol_netscan<br/>persists extractions/ + extractions.jsonl"]
         Tier2["Tier-2 analytical<br/>query_records · group_by<br/>set_difference · subtree"]
+        RAG["rag_query<br/>ATT&CK + Sigma retrieval<br/>(validator-only)"]
         RecF["record_finding"]
         RecC["record_correlation"]
         UpdF["update_finding"]
@@ -41,6 +42,9 @@ flowchart TD
     NA --> Tier2
     Val --> Tier1
     Val --> Tier2
+
+    %% RAG retrieval: validator-only by frontmatter restriction.
+    Val --> RAG
 
     %% Write paths: role-restricted by frontmatter + schema.
     PA --> RecF
@@ -68,6 +72,7 @@ flowchart TD
     Reg --> Audit
     Tier1 --> Audit
     Tier2 --> Audit
+    RAG --> Audit
     RecF --> Audit
     RecC --> Audit
     UpdF --> Audit
@@ -85,7 +90,7 @@ flowchart TD
     class Orch orchestrator
     class Findings,Corrs,Iters,Audit chain
     class EvDir storage
-    class Reg,Tier1,Tier2,RecF,RecC,UpdF tool
+    class Reg,Tier1,Tier2,RAG,RecF,RecC,UpdF tool
 ```
 
 ## Legend
@@ -95,7 +100,7 @@ flowchart TD
 | Blue boxes (`process_analyst`, `network_analyst`) | Analyst subagents — write `DraftFinding` entries via `record_finding`. |
 | Orange box (`validator`) | Validator subagent — writes correlation entries only; cannot mutate findings. |
 | Green box (`Orchestrator`) | Plain Python (not an LLM). Drives the 5-step loop and is the sole writer of `update_finding` (DRAFT → CONFIRMED / DISPUTED). |
-| White boxes inside the MCP-server subgraph | The 12 typed MCP tools, grouped by role. |
+| White boxes inside the MCP-server subgraph | The 13 typed MCP tools, grouped by role. |
 | Yellow cylinder | Read-only evidence storage (chmod 444 from registration). |
 | Grey dashed cylinders | The four hash-chained JSONL chains. |
 | Solid arrow `→` | A direct call or write. |
@@ -114,7 +119,7 @@ every call regardless.
 
 ## MCP tools by writer role
 
-The 12 tools the MCP server exposes, grouped by what's allowed to
+The 13 tools the MCP server exposes, grouped by what's allowed to
 call them. Every successful invocation appends one line to
 `audit.jsonl`; every rejection appends a typed `<tool>:rejected_*`
 line.
@@ -130,6 +135,7 @@ line.
 | `group_by` | Tier-2 (analytical) | Any subagent + the orchestrator's MCP client |
 | `set_difference` | Tier-2 (analytical) | Any subagent + the orchestrator's MCP client |
 | `subtree` | Tier-2 (analytical) | Any subagent + the orchestrator's MCP client |
+| `rag_query` | retrieval (RAG) | `validator` only (frontmatter restriction) — searches the merged ATT&CK + Sigma corpus |
 | `record_finding` | finding writer | `process_analyst` and `network_analyst` only (DISPUTED self-mark rejected) |
 | `record_correlation` | correlation writer | `validator` only |
 | `update_finding` | promotion writer | The orchestrator only (DRAFT → DRAFT/CONFIRMED transitions) |
@@ -177,8 +183,8 @@ This diagram reflects what ships as of the
 - `orchestrator/promotion.py` — R1-R6 rule engine
 - `server/schemas.py` — three-writer chain schemas + Literal
   constraints on payload values
-- `server/tools/{evidence,memory,analytical,findings,correlations}.py`
-  — the 12 tool implementations
+- `server/tools/{evidence,memory,analytical,findings,correlations,rag}.py`
+  — the 13 tool implementations
 - `.claude/agents/{process,network,validator}_analyst.md` — the
   per-subagent tool-surface restriction (the architectural
   enforcement that makes "validator can't write findings" true at
