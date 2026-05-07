@@ -8,7 +8,7 @@ arbitrary case paths. `CASE_DIR` is a module-level constant resolved
 by the server, not a parameter the agent can set — the agent can only
 name evidence by `evidence_id` registered through `register_evidence`.
 
-Tool surface as of week 6 day 1 (12 tools):
+Tool surface as of week 7 (13 tools):
   Tier-0  register_evidence (read-only catalog)
   Tier-1  vol_pslist, vol_psscan, vol_pstree, vol_netscan
           — invoke Volatility, persist full output to extractions/,
@@ -18,6 +18,9 @@ Tool surface as of week 6 day 1 (12 tools):
   Writes  record_finding       (analyst → DRAFT entry on findings.jsonl)
           record_correlation   (validator → entry on correlations.jsonl)
           update_finding       (orchestrator → UPDATE entry on findings.jsonl)
+  RAG     rag_query            (validator-only at the agent surface;
+                                 queries the ATT&CK enterprise corpus
+                                 by technique_id or semantic_query)
 """
 
 from __future__ import annotations
@@ -48,6 +51,7 @@ from server.schemas import (
     PsscanSummary,
     PstreeSummary,
     QueryRecordsResult,
+    RagQueryResult,
     RequestFollowupCorrelation,
     SetDifferenceResult,
     StrengthensCorrelation,
@@ -74,6 +78,7 @@ from server.tools.memory import (
     vol_psscan as _vol_psscan_impl,
     vol_pstree as _vol_pstree_impl,
 )
+from server.tools.rag import rag_query as _rag_query_impl
 
 
 # Fixed at server startup. The agent does NOT control where the case
@@ -516,6 +521,44 @@ def update_finding(
         promotion_rule=promotion_rule,
         driving_correlation_ids=driving_correlation_ids,
         orchestrator_version=orchestrator_version,
+        case_dir=CASE_DIR,
+    )
+
+
+@mcp.tool()
+def rag_query(
+    technique_id: str | None = None,
+    semantic_query: str | None = None,
+    top_k: int = 5,
+) -> RagQueryResult:
+    """Query the MITRE ATT&CK enterprise corpus.
+
+    Validator-only tool surface at the agent layer (process_analyst
+    and network_analyst do not have this tool listed in their
+    frontmatter). Routes to the week-3 FAISS index of 697 ATT&CK
+    techniques (CC-BY 4.0).
+
+    Exactly one of `technique_id` and `semantic_query` MUST be set.
+    `technique_id` accepts canonical ATT&CK form (`T1055` /
+    `T1055.001`) and routes to the retriever's exact-ID
+    short-circuit when the ID is in the corpus (rank-1 score=1.0
+    with vector neighbors filling the remaining slots up to top_k);
+    when the ID matches the regex but is NOT in the corpus, the
+    tool returns `hits=[]` rather than falling through to vector
+    search. `semantic_query` is passed through to vector search;
+    capped at 500 characters. `top_k` defaults to 5, capped at 20.
+
+    The promotion rules R1-R6 do NOT mechanically use RAG hits to
+    compute confidence. Citing techniques in a correlation's
+    hypothesis grounds the validator's reasoning for human review;
+    it does not affect promotion. Reference the call's `audit_line`
+    in `EvidenceRef.audit_line` (with `source_tool="rag_query"`)
+    to make the citation traceable through the audit chain.
+    """
+    return _rag_query_impl(
+        technique_id=technique_id,
+        semantic_query=semantic_query,
+        top_k=top_k,
         case_dir=CASE_DIR,
     )
 

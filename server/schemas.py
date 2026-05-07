@@ -562,6 +562,11 @@ EvidenceRefSourceTool = Literal[
     "group_by",
     "set_difference",
     "subtree",
+    # Week 7 G-2: validator can cite a `rag_query` audit line in a
+    # correlation's `evidence_refs` to ground hypotheses in named
+    # MITRE ATT&CK techniques. Promotion rules R1-R6 still ignore
+    # RAG content; the citation is for human review and audit.
+    "rag_query",
 ]
 
 
@@ -1693,6 +1698,93 @@ class CorrelationChainEntry(BaseModel):
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# RAG query substrate (week 7 G-2) — `rag_query` is the 13th MCP tool. It
+# exposes the week-3 ATT&CK FAISS index to the validator subagent for
+# grounding correlation hypotheses in named techniques. The orchestrator's
+# R1-R6 promotion rules continue to ignore RAG content; mechanical
+# RAG-grounded promotion (R7+) is deferred. See
+# `docs/decisions-log.md` 2026-05-?? "RAG queryable but not mechanically
+# promoting" entry.
+#
+# `untrusted_fields` is intentionally empty (and constrained to be empty
+# at the schema level): the corpus is vendor-curated MITRE ATT&CK
+# material at a pinned revision, not evidence-derived strings under
+# attacker control. If a future RAG source emits user-controllable
+# content, that source needs its own schema with appropriate
+# untrusted_fields, not a relaxation of this one.
+# ---------------------------------------------------------------------------
+
+
+class RagHit(BaseModel):
+    """One retrieved corpus record. Mirrors `rag.schemas.RagRecord`'s
+    consumer-facing fields, projected for the agent — `source` and
+    `license` from RagRecord are dropped here because the corpus is
+    pinned at the repo level (vendor-curated MITRE CTI ATT&CK
+    enterprise, CC-BY 4.0; see `rag/SOURCES.md`) and re-emitting them
+    on every hit would be noise. `embedding_model_version` is
+    surfaced once at the result level, not per-hit.
+    """
+
+    technique_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str
+    kill_chain_phases: list[str] = Field(default_factory=list)
+    platforms: list[str] = Field(default_factory=list)
+    citation_url: str = Field(min_length=1)
+    similarity_score: float = Field(ge=0.0, le=1.0)
+
+
+class RagQueryResult(BaseModel):
+    """Agent-visible return shape for `rag_query`.
+
+    `query_kind` reflects which of the two input shapes routed the
+    call (`technique_id` for the exact-ID short-circuit,
+    `semantic` for the vector search). `query_value` carries the
+    actual T-id or query string for the audit trail.
+
+    `audit_line` is the audit-chain line where THIS rag_query
+    invocation's success entry was logged — same provenance pattern
+    as tier-2 results, so the validator can cite the line in a
+    correlation's `EvidenceRef` without probing.
+
+    `embedding_model_version` is read from the FAISS index's
+    meta sidecar at retrieval time; same value the
+    `rag.retriever.Retriever` enforces against `model_name` at
+    construction. Carrying it on the result lets a future
+    audit-replay verify that scores were computed against the
+    expected model.
+
+    `untrusted_fields` is constrained to the empty list — see
+    module-level comment above for why. The schema-level
+    `model_validator` enforces this so a future contributor cannot
+    silently weaken the contract.
+    """
+
+    audit_line: int = Field(ge=1)
+    query_kind: Literal["technique_id", "semantic"]
+    query_value: str = Field(min_length=1)
+    hits: list[RagHit]
+    embedding_model_version: str = Field(min_length=1)
+    untrusted_fields: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _untrusted_fields_must_be_empty(self) -> "RagQueryResult":
+        """Vendor-curated MITRE ATT&CK content is not evidence-derived.
+        The empty list is intentional and a load-bearing property — if
+        a future RAG source surfaces attacker-controllable strings, it
+        needs its own schema with appropriate `untrusted_fields`, not a
+        weakening of this one. See module-level comment."""
+        if self.untrusted_fields:
+            raise ValueError(
+                "RagQueryResult.untrusted_fields must be empty; vendor-"
+                "curated corpus is not evidence-derived. If a new RAG "
+                "source needs untrusted markings, add a separate result "
+                "type rather than relaxing this constraint."
+            )
+        return self
+
+
 __all__ = [
     "AnalystName",
     "ArtifactClass",
@@ -1737,6 +1829,8 @@ __all__ = [
     "PstreeResult",
     "PstreeSummary",
     "QueryRecordsResult",
+    "RagHit",
+    "RagQueryResult",
     "RequestFollowupCorrelation",
     "SetDifferenceResult",
     "StrengthensCorrelation",

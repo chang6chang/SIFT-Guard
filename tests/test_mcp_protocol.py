@@ -155,7 +155,7 @@ def _extract_record(call_result) -> dict | None:
 
 
 class TestToolSurface:
-    def test_twelve_tool_surface_is_locked(self, tmp_path: Path):
+    def test_thirteen_tool_surface_is_locked(self, tmp_path: Path):
         # Surface lock: every new MCP tool added to server/main.py
         # forces an explicit update here. Adding a tool without
         # extending this set means the surface grew silently — which
@@ -165,6 +165,12 @@ class TestToolSurface:
         # adds two writes — record_correlation (validator) and
         # update_finding (orchestrator) — bringing the surface from
         # 10 to 12. record_finding remains the analyst's write.
+        # Week-7 G-2 expansion: rag_query exposes the ATT&CK corpus
+        # to the validator subagent for grounding correlation
+        # hypotheses; 12 → 13. The agent-layer surface restriction
+        # to validator-only lives in `.claude/agents/validator.md`,
+        # not at the MCP-server level — every connected client sees
+        # all 13 tools listed.
         listing = _run_async(_list_tools_only(tmp_path))
         tool_names = {t.name for t in listing.tools}
         assert tool_names == {
@@ -180,9 +186,10 @@ class TestToolSurface:
             "record_finding",
             "record_correlation",
             "update_finding",
+            "rag_query",
         }, (
-            "expected exactly the 12-tool surface (tier-0/tier-1/tier-2 "
-            "plus three writes); got "
+            "expected exactly the 13-tool surface (tier-0/tier-1/tier-2 "
+            "plus three writes plus rag_query); got "
             f"{sorted(tool_names)}"
         )
 
@@ -839,4 +846,5 @@ class TestRoundTrip:
             "record_finding",
             "record_correlation",
             "update_finding",
+            "rag_query",
         }

@@ -302,6 +302,78 @@ class TestRecordCorrelationHappyPaths:
             "image_names": ["svchost.exe"],
         }
 
+    def test_evidence_ref_with_rag_query_source_tool_accepted(
+        self, tmp_path: Path
+    ):
+        """Week 7 G-2 regression: a correlation citing a rag_query
+        audit line in evidence_refs must validate. The validator
+        runs rag_query to ground a hypothesis in a named MITRE
+        technique, then references the call's audit_line in the
+        correlation's EvidenceRef. The audit-chain validator
+        requires the line's tool_name to match the ref's
+        source_tool — adding "rag_query" to EvidenceRefSourceTool
+        must cover the round-trip without further changes.
+        """
+        case_dir = _seed_case_dir(tmp_path)
+
+        # Append a synthetic rag_query success line to the audit
+        # chain. Live tests/test_rag_query.py exercise the real tool
+        # against the FAISS index; here we only need a chain entry
+        # whose tool_name is "rag_query" so the EvidenceRef
+        # validator finds a match.
+        class _Stub(BaseModel):
+            stub: str = "ok"
+
+        append_audit_entry(
+            case_dir=case_dir,
+            tool_name="rag_query",
+            evidence_id=None,
+            input_args={"technique_id": "T1055"},
+            output=_Stub(),
+        )
+        # Chain after this append: line 1 vol_pslist, line 2
+        # record_finding, line 3 rag_query.
+        rag_audit_line = 3
+
+        result = record_correlation(
+            case_id="case-rocba",
+            iteration_number=1,
+            correlation_type="corroborates",
+            evidence_refs=[
+                EvidenceRef(
+                    source_tool="vol_pslist",
+                    audit_line=1,
+                    detail="seeded process-side observation",
+                ),
+                EvidenceRef(
+                    source_tool="rag_query",
+                    audit_line=rag_audit_line,
+                    detail=(
+                        "T1055 (Process Injection) retrieved at "
+                        "rank 1, similarity_score=1.0"
+                    ),
+                ),
+            ],
+            hypothesis=(
+                "The process_hidden finding maps onto MITRE T1055 "
+                "(Process Injection); the validator's independent "
+                "rag_query lookup confirms the technique-id match."
+            ),
+            target_finding_ids=[FID_A],
+            strength="moderate",
+            case_dir=str(case_dir),
+        )
+        # The correlation lands in the chain; one of its
+        # evidence_refs cites the rag_query audit line.
+        assert result.correlation_type == "corroborates"
+        ref_sources = {ref.source_tool for ref in result.evidence_refs}
+        assert "rag_query" in ref_sources
+
+        # Audit chain extends with the record_correlation success
+        # line (the call validated and wrote).
+        audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
+        assert audit[-1]["tool_name"] == "record_correlation"
+
 
 # ---------------------------------------------------------------------------
 # Server-controlled fields are not agent-supplied

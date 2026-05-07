@@ -878,3 +878,112 @@ that was relaxed here. Not in scope for this hotfix.
   citations" pattern — applies only to R5 today; if a future
   rule needs the same, lift the pattern then.
 - Hash-chained-writer base-class extraction. Still deferred.
+
+
+## 2026-05-?? — RAG queryable but not mechanically promoting
+
+Week 3's RAG infrastructure (697 ATT&CK enterprise techniques, faiss-cpu,
+sentence-transformers all-MiniLM-L6-v2, CC-BY 4.0 corpus pinned per
+`rag/SOURCES.md`) is exposed via `mcp__sift-guard__rag_query` as the
+13th MCP tool. Validator-only at the agent surface
+(`.claude/agents/validator.md`); the analyst frontmatters
+(`process_analyst.md`, `network_analyst.md`) deliberately do NOT
+list this tool. Validator can cite techniques in correlation
+hypotheses; the orchestrator's R1-R6 promotion rules continue to
+ignore RAG content.
+
+### Rationale
+
+The CLAUDE.md confidence definition includes "technique matches a
+RAG-retrieved MITRE TTP" as a HIGH criterion. Mechanical
+RAG-grounded promotion (a hypothetical R7+ "named-technique
+corroboration") requires changes to the rule engine, the schema,
+and the worked-example tests; it is a wider design conversation
+that is deferred. Exposing the RAG as a queryable tool is a
+smaller step that:
+
+- closes the "RAG never used at runtime" gap (the index has been
+  built and validated since week 3 but no runtime caller existed);
+- makes correlation hypotheses citable to MITRE technique IDs,
+  which the human-review path of DISPUTED findings already
+  benefits from;
+- preserves the validated R1-R6 behavior on Rocba — no promotion
+  semantics change, no chain-write semantics change.
+
+### Tool contract (G-2 scope)
+
+`rag_query(technique_id=..., semantic_query=..., top_k=5) ->
+RagQueryResult`. Exactly one of the two query inputs MUST be set;
+both / neither each fire a typed audit-on-rejection. `top_k`
+capped at 20; `semantic_query` capped at 500 chars; `technique_id`
+must match the canonical `T<4 digits>[.<3 digits>]` form. A
+`technique_id` that matches the regex but is NOT in the corpus
+returns `hits=[]` (a typed "not found" outcome) rather than
+falling through to vector search — the agent passed the value
+under `technique_id` and meant the exact-ID semantic.
+
+`RagQueryResult.untrusted_fields` is constrained to `[]` by a
+schema-level model_validator. The corpus is vendor-curated MITRE
+ATT&CK material at a pinned revision, not evidence-derived
+strings. If a future RAG source emits user-controllable content,
+that source needs its own schema with appropriate
+`untrusted_fields`, not a relaxation of this one.
+
+`EvidenceRefSourceTool` extended with `"rag_query"` so the
+validator can cite a `rag_query` audit line in a correlation's
+`evidence_refs`; round-trip exercised by
+`tests/test_record_correlation.py::test_evidence_ref_with_rag_query_source_tool_accepted`.
+
+### Live verification
+
+Three calls against the live FAISS index (697 records,
+`rag/data/attack-enterprise.{faiss,records.json,meta.json}`):
+
+  Call 1 — `rag_query(technique_id="T1055")` → audit line 455.
+    rank-1 hit T1055 (Process Injection), score=1.0, plus 4
+    vector-search neighbors. Embedding model:
+    sentence-transformers/all-MiniLM-L6-v2.
+
+  Call 2 — `rag_query(semantic_query="hidden process injection",
+    top_k=3)` → audit line 456. Cohort: T1055 (Process Injection,
+    0.678), T1055.002 (Portable Executable Injection, 0.581),
+    T1564.010 (Process Argument Spoofing, 0.563). All on-topic
+    process-injection / process-anomaly techniques; semantic
+    grounding is healthy.
+
+  Call 3 — `record_correlation(strengthens, ...)` citing
+    `EvidenceRef(source_tool="rag_query", audit_line=455)` in the
+    correlation's evidence_refs → audit line 457. Accepted on the
+    first call (no probe pattern); the audit-line provenance check
+    matched on `tool_name=="rag_query"`.
+
+### What this is NOT
+
+- NOT a new promotion rule. R1-R6 unchanged. `update_finding`'s
+  `driving_correlation_ids` invariant unchanged. The validator's
+  hypothesis prose carries the technique citation; the
+  orchestrator's mechanical promotion is correlation-driven only.
+- NOT analyst-callable. process_analyst and network_analyst
+  frontmatters do NOT list `rag_query`. The agent-layer surface
+  restriction is intentional — the analysts surface raw evidence;
+  the validator grounds it in named techniques.
+- NOT a fallback retrieval path. No keyword search, no BM25, no
+  hybrid scoring. The exact-ID short-circuit + faiss-cpu vector
+  search is the contract.
+- NOT a re-ingest. The week-3 index is the canonical artifact;
+  this PR does not modify it.
+
+### Out of scope (deferred)
+
+- Mechanical RAG-grounded promotion (R7+): a hypothetical rule
+  that consumes `rag_query` hits in correlation evidence_refs to
+  drive confidence transitions. Requires correlation-type or
+  rule-engine extension; not in this PR.
+- Multiple corpora. The current corpus is ATT&CK enterprise
+  only. SANS posters and Sigma-rule-derived corpora were noted in
+  week-3 plans but are not built; if added, they would populate
+  the same `RagHit` shape with different `citation_url` values.
+- Per-hit license / source surfacing. `RagHit` deliberately drops
+  the `source` and `license` fields from the upstream
+  `RagRecord` because the corpus is repo-pinned; if multiple
+  corpora are added, surface them.

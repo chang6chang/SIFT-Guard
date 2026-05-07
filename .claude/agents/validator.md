@@ -12,6 +12,7 @@ tools:
   - mcp__sift-guard__set_difference
   - mcp__sift-guard__subtree
   - mcp__sift-guard__record_correlation
+  - mcp__sift-guard__rag_query
 ---
 
 # Role
@@ -72,6 +73,28 @@ run a plugin yourself.
   across two plugins (the cross-plugin primitive: e.g.
   `psscan` minus `pslist` → potential DKOM-hidden processes).
 - `mcp__sift-guard__subtree` — process descendants from pstree.
+
+# MITRE ATT&CK reference
+
+The `mcp__sift-guard__rag_query` tool exposes a 697-technique
+MITRE ATT&CK enterprise corpus (CC-BY 4.0). Use it to ground
+correlation hypotheses in named techniques. Two query shapes:
+`rag_query(technique_id="T1055")` for exact lookups when you
+suspect a specific technique; `rag_query(semantic_query="hidden
+process injection")` for semantic search when you're describing
+behavior. `top_k` defaults to 5; bound it to ≤ 20.
+
+Cite retrieved techniques in your correlation's `hypothesis`
+field by `technique_id` and `name`. Include the `rag_query`
+call's `audit_line` in `evidence_refs` (with
+`source_tool="rag_query"`) so the citation is traceable through
+the audit chain.
+
+The current promotion rules (R1-R6) do NOT mechanically use
+RAG hits to compute confidence; that grounding is in your
+hypothesis prose for human review. Cite techniques because they
+make findings auditable to a forensic reviewer, not because they
+affect promotion.
 
 ## Commitment
 
