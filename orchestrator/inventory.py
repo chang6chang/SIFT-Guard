@@ -3,8 +3,13 @@
 Three things this module does:
 
   1. **Scan** — walk a directory recursively for files whose
-     extensions match the configured memory / disk / mixed sets.
-     Stable order (sorted) so manifests are reproducible.
+     extensions match the configured memory / disk / split-image
+     / mixed sets. Stable order (sorted) so manifests are
+     reproducible. Files under known-non-evidence directories
+     (`baseline/`, `precooked/`) are skipped — DFIR cases
+     conventionally place reference timelines, parsed CSVs, and
+     pristine OS images there, none of which the loop should
+     re-register as evidence.
 
   2. **Magic-byte detection** — read the first 16 bytes of each
      candidate and refine the type guess:
@@ -12,13 +17,35 @@ Three things this module does:
        - E01 header (45 56 46 09 0D 0A FF 00) → disk
        - VHDX header (76 68 64 78 66 69 6C 65) → disk
      Magic-byte hits override the extension-only guess; nothing
-     hits when the file is shorter than 16 bytes.
+     hits when the file is shorter than 16 bytes. Raw memory dumps
+     (FTK Imager `.001` split images, dd output) have no
+     distinguishing magic — the filename heuristic is what drives
+     the type guess for those.
 
   3. **Group by host** — extract a host token from each filename
      (e.g. ``win7-64-nfury-10.3.58.6.raw`` → ``nfury``) and bucket
      files by that token. Files sharing a token belong to the same
      host. Files whose token cannot be inferred are each their own
      host, named after the filename stem.
+
+Split-image (`.001`) heuristic
+------------------------------
+
+FTK Imager produces split images with sequential `.001` / `.002`
+extensions. The first segment is what `register_evidence` picks
+up; subsequent segments share the registration. Per the SRL-2015
+dataset convention (used by the SANS "Find Evil!" hackathon),
+memory split images carry "memory" in the filename
+(`nfury-memory.001`) and disk split images do not. The scanner
+applies that as a heuristic:
+
+    extension == ".001" AND "memory" in filename.lower()  →  memory
+    extension == ".001" AND "memory" NOT in filename      →  unknown
+
+`unknown` here is the safe fallback — could be a split disk image,
+could be something else entirely. Operators wanting to force the
+type can pre-rename the file to include the role word, or edit
+the manifest after `--scan-only`.
 
 The scan + group output is then handed back to the caller, which
 calls ``register_evidence`` for each `EvidenceFile`, builds a
@@ -57,9 +84,51 @@ _DISK_EXTENSIONS: frozenset[str] = frozenset(
 # Treat as unknown so the operator must annotate post-scan, OR the
 # magic-byte detector resolves it to one of the two.
 _MIXED_EXTENSIONS: frozenset[str] = frozenset({".aff4"})
+# FTK Imager split-image extensions. The first segment carries
+# `.001`; subsequent segments are `.002`, `.003`, etc. The scanner
+# only picks up `.001` — register_evidence's first-segment hash
+# captures the entire image regardless of split count. Type
+# detection for `.001` is filename-based (see module docstring's
+# split-image heuristic section).
+_SPLIT_IMAGE_EXTENSIONS: frozenset[str] = frozenset({".001"})
 
 _ALL_SCANNED_EXTENSIONS: frozenset[str] = (
-    _MEMORY_EXTENSIONS | _DISK_EXTENSIONS | _MIXED_EXTENSIONS
+    _MEMORY_EXTENSIONS
+    | _DISK_EXTENSIONS
+    | _MIXED_EXTENSIONS
+    | _SPLIT_IMAGE_EXTENSIONS
+)
+
+# Known non-evidence file extensions. These are explicitly skipped
+# (with a debug log) when encountered. The set is informational —
+# without an entry here, an unknown extension is silently skipped
+# by the `_ALL_SCANNED_EXTENSIONS` membership check. Surfacing
+# them here gives operators a documented "we considered it and
+# decided it's not evidence" answer.
+#
+#   .mans  — Mandiant Memoryze session files (analysis state, not
+#            an image)
+#   .csv / .dump / .xlsx / .body / .ioc / .txt — common SRL-style
+#            "precooked" parser output left next to evidence for
+#            convenience; not images themselves
+_KNOWN_NON_EVIDENCE_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".mans",
+        ".csv",
+        ".dump",
+        ".xlsx",
+        ".body",
+        ".ioc",
+        ".txt",
+    }
+)
+
+# Directory components whose contents are conventionally NOT
+# evidence — DFIR cases place reference timelines, parsed CSVs,
+# and pristine baseline OS images here. The scanner skips any
+# file whose path includes one of these components.
+_NON_EVIDENCE_DIR_NAMES: frozenset[str] = frozenset(
+    {"baseline", "precooked"}
 )
 
 
@@ -134,13 +203,44 @@ class _ScanCandidate:
 
 
 def _detect_evidence_type_by_extension(path: Path) -> EvidenceType:
-    """Extension-first guess; refined by magic-byte detection."""
+    """Extension-first guess; refined by magic-byte detection.
+
+    For `.001` split-image extensions the guess is filename-based:
+    `"memory"` substring in the filename → memory; otherwise unknown.
+    See the module docstring's split-image heuristic section for the
+    rationale. Magic-byte detection cannot disambiguate raw memory
+    dumps from split disk images by header alone, so the filename
+    is the most reliable signal we have.
+    """
     ext = path.suffix.lower()
     if ext in _MEMORY_EXTENSIONS:
         return "memory"
     if ext in _DISK_EXTENSIONS:
         return "disk"
+    if ext in _SPLIT_IMAGE_EXTENSIONS:
+        if "memory" in path.name.lower():
+            return "memory"
+        return "unknown"
     return "unknown"
+
+
+def _is_under_non_evidence_dir(path: Path, evidence_root: Path) -> bool:
+    """True iff any path component between `evidence_root` and `path`
+    is a known non-evidence directory name (`baseline/`,
+    `precooked/`).
+
+    Resolves both sides so symlink games can't smuggle a file
+    under a real `baseline/` into the scan output.
+    """
+    try:
+        rel = path.resolve().relative_to(evidence_root.resolve())
+    except ValueError:
+        # Outside the scan root — let the caller handle it; this
+        # check is not the path-confinement guard.
+        return False
+    return any(
+        seg.lower() in _NON_EVIDENCE_DIR_NAMES for seg in rel.parts
+    )
 
 
 def _refine_evidence_type_by_magic(
@@ -214,13 +314,36 @@ def _scan_directory(
 ) -> list[tuple[Path, EvidenceType, int]]:
     """Walk `evidence_dir` recursively; return
     `[(path, evidence_type, size_bytes), ...]` sorted by path.
-    Entries with extensions outside the scanned set are skipped.
+
+    Filtering rules, in order:
+      1. Skip non-files (directories, symlinks-to-directories, etc.).
+      2. Skip files under known non-evidence subdirectories
+         (`baseline/`, `precooked/`).
+      3. Log + skip files with known non-evidence extensions
+         (`.mans`, `.csv`, `.dump`, `.xlsx`, `.body`, `.ioc`,
+         `.txt`) — informational, since the membership check in
+         step 4 would skip them silently anyway.
+      4. Skip files whose extension is outside `_ALL_SCANNED_EXTENSIONS`.
     """
     results: list[tuple[Path, EvidenceType, int]] = []
     for path in sorted(evidence_dir.rglob("*")):
         if not path.is_file():
             continue
-        if path.suffix.lower() not in _ALL_SCANNED_EXTENSIONS:
+        if _is_under_non_evidence_dir(path, evidence_dir):
+            logger.debug(
+                "skipping %s — under non-evidence directory",
+                path.relative_to(evidence_dir),
+            )
+            continue
+        ext = path.suffix.lower()
+        if ext in _KNOWN_NON_EVIDENCE_EXTENSIONS:
+            logger.debug(
+                "skipping %s — known non-evidence extension %s",
+                path.name,
+                ext,
+            )
+            continue
+        if ext not in _ALL_SCANNED_EXTENSIONS:
             continue
         ext_guess = _detect_evidence_type_by_extension(path)
         refined = _refine_evidence_type_by_magic(path, ext_guess)

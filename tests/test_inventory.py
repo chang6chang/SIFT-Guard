@@ -127,6 +127,187 @@ class TestScanEvidenceDirectory:
             scan_evidence_directory(tmp_path / "no-such-dir")
 
 
+class TestSplitImageDetection:
+    """`.001` (FTK Imager split-image) extension handling."""
+
+    def test_memory_in_filename_promotes_001_to_memory(self, tmp_path: Path):
+        from orchestrator.inventory import _detect_evidence_type_by_extension
+        p = tmp_path / "nfury-memory.001"
+        p.write_bytes(b"\x00" * 16)
+        assert _detect_evidence_type_by_extension(p) == "memory"
+
+    def test_no_memory_in_filename_keeps_001_as_unknown(
+        self, tmp_path: Path
+    ):
+        # SRL-2015 disk split images use `name.E01`; bare `.001`
+        # without a "memory" hint is conservatively unknown.
+        from orchestrator.inventory import _detect_evidence_type_by_extension
+        p = tmp_path / "nfury.001"
+        p.write_bytes(b"\x00" * 16)
+        assert _detect_evidence_type_by_extension(p) == "unknown"
+
+    def test_memory_substring_match_is_case_insensitive(self, tmp_path: Path):
+        from orchestrator.inventory import _detect_evidence_type_by_extension
+        p = tmp_path / "Nfury-MEMORY.001"
+        p.write_bytes(b"\x00" * 16)
+        assert _detect_evidence_type_by_extension(p) == "memory"
+
+
+class TestNonEvidenceFiltering:
+    """Skip rules for known non-evidence files + directories."""
+
+    def test_baseline_subdir_is_skipped(self, tmp_path: Path):
+        evidence_dir = tmp_path / "evidence"
+        baseline = evidence_dir / "baseline"
+        baseline.mkdir(parents=True)
+        # A genuinely-shaped disk image, but under baseline/ → skip.
+        from tests.test_inventory import _E01_HEADER  # noqa: F401
+        (baseline / "win7-baseline.img").write_bytes(b"\x00" * 16)
+        # And a real evidence file at the top-level so the result
+        # set is non-empty.
+        (evidence_dir / "nfury-memory.raw").write_bytes(b"\x00" * 16)
+        result = scan_evidence_directory(evidence_dir)
+        all_paths = [p.name for _, _, files in result for p, _, _ in files]
+        assert "win7-baseline.img" not in all_paths
+        assert "nfury-memory.raw" in all_paths
+
+    def test_precooked_subdir_is_skipped(self, tmp_path: Path):
+        evidence_dir = tmp_path / "evidence"
+        precooked = evidence_dir / "precooked"
+        precooked.mkdir(parents=True)
+        # Even an arguably-eligible extension under precooked/ is
+        # skipped — the directory contract overrides the extension
+        # guess.
+        (precooked / "stale.raw").write_bytes(b"\x00" * 16)
+        (evidence_dir / "real-memory.raw").write_bytes(b"\x00" * 16)
+        result = scan_evidence_directory(evidence_dir)
+        all_paths = [p.name for _, _, files in result for p, _, _ in files]
+        assert "stale.raw" not in all_paths
+        assert "real-memory.raw" in all_paths
+
+    def test_mans_extension_is_skipped(self, tmp_path: Path):
+        evidence_dir = tmp_path / "evidence"
+        evidence_dir.mkdir()
+        (evidence_dir / "session.mans").write_bytes(b"\x00" * 16)
+        (evidence_dir / "nfury-memory.raw").write_bytes(b"\x00" * 16)
+        result = scan_evidence_directory(evidence_dir)
+        all_paths = [p.name for _, _, files in result for p, _, _ in files]
+        assert "session.mans" not in all_paths
+        assert "nfury-memory.raw" in all_paths
+
+
+class TestSrlDatasetLayout:
+    """End-to-end fixture matching the SRL-2015 / SANS Standard
+    Forensic Case directory layout: 4 hosts × (memory .001 + disk
+    .E01) plus precooked/ and baseline/ noise that must NOT appear
+    in the manifest output."""
+
+    _HOSTS = ("nfury", "nromanoff", "controller", "tdungan")
+
+    def _seed(self, evidence_dir: Path) -> None:
+        from tests.test_inventory import _E01_HEADER
+
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        for host in self._HOSTS:
+            host_dir = evidence_dir / host
+            host_dir.mkdir()
+            # Memory split-image first segment.
+            (host_dir / f"{host}-memory.001").write_bytes(b"\x00" * 16)
+            # Disk image (E01 header so magic-byte detection
+            # confirms the type).
+            (host_dir / f"{host}.E01").write_bytes(_E01_HEADER)
+            # Mandiant Memoryze session — must be skipped.
+            (host_dir / f"{host}.mans").write_bytes(b"\x00" * 16)
+
+        # precooked/ — common DFIR convention for parsed output.
+        # All extensions are non-evidence; the directory rule is
+        # what catches them in case any one extension drifts back
+        # into the scan set.
+        precooked = evidence_dir / "precooked"
+        precooked.mkdir()
+        for name in (
+            "timeline.csv",
+            "plaso.dump",
+            "notes.txt",
+            "findings.xlsx",
+            "timeline.body",
+            "iocs.ioc",
+        ):
+            (precooked / name).write_bytes(b"\x00" * 16)
+
+        # baseline/ — pristine reference images that must not be
+        # registered as evidence.
+        baseline = evidence_dir / "baseline"
+        baseline.mkdir()
+        (baseline / "win7-baseline.img").write_bytes(b"\x00" * 16)
+        (baseline / "win10-baseline.img").write_bytes(b"\x00" * 16)
+
+    def test_four_hosts_each_with_two_evidence_files(self, tmp_path: Path):
+        evidence_dir = tmp_path / "evidence"
+        self._seed(evidence_dir)
+        result = scan_evidence_directory(evidence_dir)
+        host_ids = sorted(host_id for host_id, _, _ in result)
+        assert host_ids == sorted(self._HOSTS)
+        for host_id, _, files in result:
+            names = {p.name for p, _, _ in files}
+            assert names == {f"{host_id}-memory.001", f"{host_id}.E01"}, (
+                f"host {host_id} should have exactly memory.001 + .E01; "
+                f"got {names}"
+            )
+
+    def test_memory_001_files_typed_as_memory(self, tmp_path: Path):
+        evidence_dir = tmp_path / "evidence"
+        self._seed(evidence_dir)
+        result = scan_evidence_directory(evidence_dir)
+        memory_001 = [
+            (p.name, t)
+            for _, _, files in result
+            for p, t, _ in files
+            if p.name.endswith(".001")
+        ]
+        assert len(memory_001) == 4
+        assert all(t == "memory" for _, t in memory_001)
+
+    def test_disk_e01_files_typed_as_disk(self, tmp_path: Path):
+        evidence_dir = tmp_path / "evidence"
+        self._seed(evidence_dir)
+        result = scan_evidence_directory(evidence_dir)
+        disk_e01 = [
+            (p.name, t)
+            for _, _, files in result
+            for p, t, _ in files
+            if p.name.lower().endswith(".e01")
+        ]
+        assert len(disk_e01) == 4
+        assert all(t == "disk" for _, t in disk_e01)
+
+    def test_mans_csv_txt_dump_baseline_img_all_skipped(
+        self, tmp_path: Path
+    ):
+        evidence_dir = tmp_path / "evidence"
+        self._seed(evidence_dir)
+        result = scan_evidence_directory(evidence_dir)
+        all_names = [
+            p.name
+            for _, _, files in result
+            for p, _, _ in files
+        ]
+        # .mans (per-host)
+        assert not any(n.endswith(".mans") for n in all_names)
+        # precooked/ files (any extension under that dir)
+        for skipped_ext in (".csv", ".dump", ".xlsx", ".body", ".ioc", ".txt"):
+            assert not any(
+                n.endswith(skipped_ext) for n in all_names
+            ), f"a {skipped_ext} file leaked into the manifest"
+        # baseline/*.img
+        assert not any(
+            n.endswith(".img") and "baseline" in n.lower()
+            for n in all_names
+        )
+        # Total file count: 4 hosts × 2 files = 8.
+        assert len(all_names) == 8
+
+
 class TestFormatInventoryTable:
     def test_two_host_two_evidence_table(self):
         ef_a = EvidenceFile(
