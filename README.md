@@ -328,6 +328,95 @@ configured to use.
   [`docs/accuracy-report.md`](docs/accuracy-report.md) Run 5 for
   the full chain-truth numbers.
 
+## Multi-host case (advanced)
+
+For cases with multiple evidence files across hosts:
+
+```bash
+python -m orchestrator.main run-case \
+    --evidence-dir /path/to/evidence/directory \
+    --case-dir case-data \
+    --max-iterations 10
+```
+
+The orchestrator will:
+
+- Scan the directory for memory (`.raw`, `.mem`, `.lime`, `.vmem`)
+  and disk (`.E01`, `.dd`, `.vhdx`) images. Magic-byte detection
+  refines the type guess (LiME header → memory; EVF / vhdxfile
+  headers → disk).
+- Group files by host using filename heuristics. Common DFIR
+  naming like `win7-64-nfury-10.3.58.6.raw` strips the platform
+  prefix (`win7-64`), the trailing IPv4, and the role suffix to
+  yield host_id `nfury`. Files sharing a host token bucket
+  together; pure-role filenames (`memory.raw`) land as their own
+  singleton bucket.
+- Register each file via `register_evidence` and persist a
+  `case-data/manifest.json` (additive layer on top of
+  `CASE.yaml`'s registration ledger).
+- Print a summary table to stdout for visual confirmation:
+
+  ```
+  Host       | Evidence              | Type   | Size    | OS Guess
+  -----------+-----------------------+--------+---------+---------
+  nfury      | nfury-memory.raw      | memory | 13.3 GB | —
+  nfury      | nfury-disk.E01        | disk   | 8.1 GB  | —
+  controller | controller-memory.raw | memory | 16.3 GB | —
+  ```
+
+- Dispatch per-host analysts (`process_analyst` + `network_analyst`
+  for memory; `disk_analyst` for disk images). Sequential within
+  and across hosts (single-process audit-chain writer constraint).
+- Run cross-host correlation — the validator looks for shared
+  IPs, binary hashes, timestamps, and named MITRE TTPs across
+  hosts and emits `correlation_type="cross_host"` correlations.
+  Cross-host corroborations feed the same R3 strong-corroboration
+  promotion path as single-source corroborates, because the two
+  hosts are independent sources by construction.
+- All findings land in the SAME `findings.jsonl` (append-only
+  hash chain); each carries a `host_id` so per-host slicing for
+  reporting is one query away.
+
+Preview the host grouping without running analysis:
+
+```bash
+python -m orchestrator.main run-case \
+    --evidence-dir /path/to/evidence/directory \
+    --case-dir case-data \
+    --scan-only
+```
+
+This runs the scan + registration + manifest write pass and
+exits before the loop dispatches any subagent — useful for
+sanity-checking how the heuristic bucketed your files.
+
+**Token budget** scales with host count: ~500K base + ~250K per
+host (capped at 5M total). Override with `--token-budget`
+explicitly, e.g. `--token-budget 1500000` for a 4-host case
+where iterations run wider than the heuristic predicts.
+
+**Note: disk-side tools require additional setup** — a SIFT
+Workstation VM with `log2timeline.py` (plaso), `python-evtx`,
+and RegRipper installed. The mount utility in
+`server/runners/disk_mount.py` shells out to `ewfmount` /
+`mount -o ro,loop` / `guestmount`, which require root or
+NOPASSWD sudo. For dev / CI environments without privileged
+mount access, set `SIFT_DISK_PREMOUNTED_PATH=/mnt/disk1` and
+the utility skips every shell-out, validates `/proc/mounts`
+shows the path is read-only, and returns it. See the
+`server/runners/disk_mount.py` "Verification notes" docstring
+for tool-name overrides (`SIFT_DISK_LOG2TIMELINE_BIN`,
+`SIFT_DISK_REGRIPPER_BIN`, etc.) for SIFT 2026.1 deviations.
+
+The legacy single-evidence form remains supported:
+
+```bash
+# New canonical
+python -m orchestrator.main run --evidence-id <uuid>
+# Legacy shim (still works)
+python -m orchestrator.run --evidence-id <uuid>
+```
+
 ## Interpreting results
 
 The four hash-chained logs under `case-data/` are the
@@ -427,6 +516,9 @@ full refresh after bumping `ATTACK_TAG` or `SIGMA_TAG`, delete
 | [`docs/accuracy-report.md`](docs/accuracy-report.md) | The required Devpost accuracy deliverable: chain-truth numbers, eight documented failure modes, five measured claims with confidence assessments. |
 | [`docs/confidence-methodology.md`](docs/confidence-methodology.md) | Four confidence levels, three writer roles, six promotion rules R1-R6, worked examples from the live chains. |
 | [`docs/loop-design.md`](docs/loop-design.md) | The 5-step ANALYZE / CORRELATE / PROMOTE / PLAN / WRITE loop, termination flags, sequential-dispatch rationale. |
+| [`orchestrator/manifest.py`](orchestrator/manifest.py) | `CaseManifest` / `HostEvidence` / `EvidenceFile` pydantic models + JSON persistence for multi-evidence (`run-case`) orchestration. The manifest sits on top of `CASE.yaml`'s registration ledger; it is rewritten by every `run-case` invocation and references evidence_ids by `CASE.yaml`. |
+| [`orchestrator/inventory.py`](orchestrator/inventory.py) | Directory scanner + magic-byte detection (LiME / E01 / VHDX) + host-from-filename grouping heuristic. Produces the per-host buckets `run-case` registers + assembles into a `CaseManifest`. |
+| [`server/runners/disk_mount.py`](server/runners/disk_mount.py) | Disk-mount utility (env-var override + real ewfmount/mount/guestmount shellout, /proc/mounts validation), per-tool subprocess runners, parsers for plaso / prefetch / EVTX / RegRipper output. SIFT-2026.1 verification notes inline. |
 | [`docs/validator-design.md`](docs/validator-design.md) | V-C hybrid design choices; why the validator is a subagent (not a function), why it can re-query plugins, why it sees only DRAFT findings. |
 | [`docs/adversarial-robustness.md`](docs/adversarial-robustness.md) | Threat model, layered defenses, demo on the synthetic injection-content image. |
 | [`docs/synthetic-demo-image.md`](docs/synthetic-demo-image.md) | Construction of the synthetic adversarial image. |
@@ -435,14 +527,30 @@ full refresh after bumping `ATTACK_TAG` or `SIGMA_TAG`, delete
 
 ## Status
 
-477 unit tests + 4 deselected integration tests. 19 MCP tools.
-RAG corpus: 2844 records (697 MITRE ATT&CK Enterprise techniques
-+ 2147 SigmaHQ Windows detection rules). End-to-end runs
-validated on the SANS Standard Forensic Case (Rocba) and on the
-synthetic adversarial-robustness demo image; the validator
-exercises `rag_query` autonomously under live dispatch with
-correlation hypotheses grounded in named MITRE TTPs and Sigma
-rule context.
+477 unit tests + 4 deselected integration tests. 19 MCP tools
+(register_evidence + 6 memory tier-1 + 4 disk tier-1 + 4 tier-2
+analytical + rag_query + record_finding + record_correlation +
+update_finding). RAG corpus: 2844 records (697 MITRE ATT&CK
+Enterprise techniques + 2147 SigmaHQ Windows detection rules).
+
+End-to-end runs validated on the SANS Standard Forensic Case
+(Rocba) and on the synthetic adversarial-robustness demo image;
+the validator exercises `rag_query` autonomously under live
+dispatch with correlation hypotheses grounded in named MITRE
+TTPs and Sigma rule context.
+
+**Multi-evidence orchestration with cross-host correlation**
+(week 8). `python -m orchestrator.main run-case --evidence-dir`
+scans a directory, auto-groups files by host (filename
+heuristics + magic-byte detection: LiME / E01 / VHDX), registers
+each file, and drives a multi-host loop. Per-host analyst
+dispatch (memory → process+network; disk → disk_analyst); single
+validator dispatch over host-grouped findings; new `cross_host`
+correlation type for shared-indicator linkages across hosts
+(IPs, binary hashes, synchronized timestamps, named TTPs).
+Cross-host correlations feed the existing R3 strong-corroboration
+promotion path. The legacy `python -m orchestrator.run
+--evidence-id` single-evidence shim remains supported.
 
 ## License
 

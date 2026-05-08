@@ -124,10 +124,11 @@ validator to `record_finding` or `update_finding`; no arrow from
 the analysts to `record_correlation` or `update_finding`; no arrow
 from the orchestrator to `record_finding` or `record_correlation`.
 The frontmatter of each subagent
-(`.claude/agents/{process,network,validator}_analyst.md`)
-restricts its visible tool surface; the schema (`server/schemas.py`)
-restricts the payloads it can construct; the audit chain captures
-every call regardless.
+(`.claude/agents/{process,network,disk}_analyst.md` plus
+`.claude/agents/validator.md`) restricts its visible tool
+surface; the schema (`server/schemas.py`) restricts the
+payloads it can construct; the audit chain captures every call
+regardless.
 
 ## MCP tools by writer role
 
@@ -179,19 +180,24 @@ The orchestrator's `run_loop()` reads the registered evidence's
 `artifact_class` from `CASE.yaml` and dispatches the matching
 analyst subagents (`process_analyst` + `network_analyst` for
 memory images; `disk_analyst` for disk images / triage zips —
-multiple analysts run in parallel when both artifact classes are
-registered), each of which calls Tier-1 / Tier-2 tools and
-commits its observations as DRAFT findings via `record_finding`.
-The orchestrator then dispatches the `validator` subagent with a
-summary of every DRAFT finding; the validator independently calls
-the same tool surface and commits cross-source / cross-plugin
-observations as one of five correlation types via
-`record_correlation`. The orchestrator's PROMOTE step applies the
+analysts run sequentially per the single-process audit-chain
+writer constraint), each of which calls Tier-1 / Tier-2 tools
+and commits its observations as DRAFT findings via
+`record_finding`. The orchestrator then dispatches the
+`validator` subagent with a summary of every DRAFT finding; the
+validator independently calls the same tool surface and commits
+observations as one of six correlation types via
+`record_correlation` (`corroborates`, `contradicts`,
+`strengthens`, `weakens`, `request_followup`, and `cross_host`
+for multi-host runs where a shared indicator links findings
+across host_ids). The orchestrator's PROMOTE step applies the
 six-rule R1-R6 engine
 (`orchestrator/promotion.py`,
 documented in `docs/confidence-methodology.md`) per finding and
-writes any non-R6 outcome via `update_finding`. The PLAN step
-computes the four termination flags
+writes any non-R6 outcome via `update_finding`; cross_host
+correlations feed the same R3 strong-corroboration path because
+the two hosts are independent sources by construction. The PLAN
+step computes the four termination flags
 (`R_a_zero_unresolved`, `R_b_disputed_set_unchanged`,
 `R_c_token_budget_exceeded`,
 `max_iterations_reached`); if none fires and at least one
@@ -201,6 +207,14 @@ The WRITE step appends one record to `iterations.jsonl`, and the
 loop terminates when any flag fires or no follow-up remains —
 every iteration's full provenance is reconstructible from the
 four hash-chained logs alone.
+
+Multi-evidence runs (`python -m orchestrator.main run-case
+--evidence-dir <path>`) follow the same five-step loop via
+`run_loop_multi_host` but iterate per-host per-evidence: each
+manifest host's evidence files dispatch their respective
+analysts in turn, the validator sees host-grouped findings, and
+the `manifest_summary` field on each iteration record captures
+the host count + per-host evidence counts for replay.
 
 ## Sources
 
