@@ -276,14 +276,19 @@ class TestRejectEvidenceNotFound:
 class TestRejectUnknownAnalyst:
     def test_audit_line_appended_no_finding_written(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
+        # Week 8: disk_analyst became a valid AnalystName so the
+        # original test's stand-in is now allow-listed. Pick a name
+        # that nobody allow-lists — `pcap_analyst` (the future-but-
+        # unshipped pcap-side family) — to keep the rejection path
+        # exercised.
         with pytest.raises(ValueError) as exc_info:
             record_finding(
-                **_good_args(analyst="disk_analyst"),
+                **_good_args(analyst="pcap_analyst"),
                 case_dir=str(case_dir),
             )
         assert str(exc_info.value) == "analyst not in allow-list"
         # Sanitized — claimed analyst name not echoed.
-        assert "disk_analyst" not in str(exc_info.value)
+        assert "pcap_analyst" not in str(exc_info.value)
 
         audit_lines = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
         assert audit_lines[-1]["tool_name"] == (

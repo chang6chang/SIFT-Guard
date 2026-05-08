@@ -101,6 +101,14 @@ class IterationPayload(BaseModel):
     tokens_used_uncached: int = Field(ge=0, default=0)
     cumulative_tokens_uncached: int = Field(ge=0, default=0)
     termination_check: TerminationCheck
+    # Multi-evidence (run-case) iteration record. Single-evidence
+    # runs leave this None (backward-compatible with existing
+    # iterations.jsonl lines that pre-date the field). When set:
+    #   {"host_count": 3, "evidence_counts_by_host": {"nfury": 2,
+    #    "controller": 1, "victim03": 1}}
+    # — enough provenance to reconstruct which hosts the iteration
+    # spanned without re-reading manifest.json.
+    manifest_summary: dict[str, Any] | None = None
 
     @field_validator("started_at", "completed_at")
     @classmethod

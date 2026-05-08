@@ -51,6 +51,7 @@ from server.schemas import (
     CorroboratesCorrelation,
     CorrelationChainEntry,
     CorrelationType,
+    CrossHostCorrelation,
     EvidenceRef,
     RequestFollowupCorrelation,
     StrengthensCorrelation,
@@ -185,6 +186,8 @@ def _build_payload(
     related_finding_ids: list[str] | None,
     focus_context: dict[str, Any] | None,
     rationale: str | None,
+    host_ids: list[str] | None,
+    shared_indicator: dict[str, Any] | None,
 ):
     """Construct the typed pydantic correlation by `correlation_type`.
 
@@ -213,6 +216,8 @@ def _build_payload(
             or related_finding_ids is not None
             or focus_context not in (None, {})
             or rationale is not None
+            or host_ids is not None
+            or shared_indicator not in (None, {})
         ):
             raise ValueError(
                 "corroborates accepts target_finding_ids + strength only"
@@ -235,6 +240,8 @@ def _build_payload(
             or related_finding_ids is not None
             or focus_context not in (None, {})
             or rationale is not None
+            or host_ids is not None
+            or shared_indicator not in (None, {})
         ):
             raise ValueError(
                 "contradicts accepts finding_a_id + finding_b_id + "
@@ -269,6 +276,8 @@ def _build_payload(
             or related_finding_ids is not None
             or focus_context not in (None, {})
             or rationale is not None
+            or host_ids is not None
+            or shared_indicator not in (None, {})
         ):
             raise ValueError(
                 "strengthens accepts target_finding_id only"
@@ -290,6 +299,8 @@ def _build_payload(
             or related_finding_ids is not None
             or focus_context not in (None, {})
             or rationale is not None
+            or host_ids is not None
+            or shared_indicator not in (None, {})
         ):
             raise ValueError(
                 "weakens accepts target_finding_id only"
@@ -308,6 +319,8 @@ def _build_payload(
             or strength is not None
             or severity is not None
             or resolvable_by_followup is not None
+            or host_ids is not None
+            or shared_indicator not in (None, {})
         ):
             raise ValueError(
                 "request_followup accepts target_analyst + "
@@ -328,6 +341,38 @@ def _build_payload(
             related_finding_ids=related_finding_ids,
             focus_context=focus_context or {},
             rationale=rationale,
+        )
+    if correlation_type == CorrelationType.CROSS_HOST.value:
+        if (
+            finding_a_id is not None
+            or finding_b_id is not None
+            or target_finding_id is not None
+            or severity is not None
+            or resolvable_by_followup is not None
+            or target_analyst is not None
+            or related_finding_ids is not None
+            or focus_context not in (None, {})
+            or rationale is not None
+        ):
+            raise ValueError(
+                "cross_host accepts target_finding_ids + host_ids + "
+                "shared_indicator + strength only"
+            )
+        if (
+            target_finding_ids is None
+            or host_ids is None
+            or strength is None
+        ):
+            raise ValueError(
+                "cross_host requires target_finding_ids, host_ids, "
+                "and strength"
+            )
+        return CrossHostCorrelation(
+            **common,
+            target_finding_ids=target_finding_ids,
+            host_ids=host_ids,
+            shared_indicator=shared_indicator or {},
+            strength=strength,  # type: ignore[arg-type]
         )
     # Unreachable: caller checks type membership before calling us.
     raise ValueError(f"unknown correlation_type {correlation_type!r}")
@@ -374,6 +419,8 @@ def record_correlation(
     related_finding_ids: list[str] | None = None,
     focus_context: dict[str, Any] | None = None,
     rationale: str | None = None,
+    host_ids: list[str] | None = None,
+    shared_indicator: dict[str, Any] | None = None,
     case_dir: str = "case-data",
 ):
     """Commit a correlation entry to the case.
@@ -463,6 +510,8 @@ def record_correlation(
             related_finding_ids=related_finding_ids,
             focus_context=focus_context,
             rationale=rationale,
+            host_ids=host_ids,
+            shared_indicator=shared_indicator,
         )
     except (ValueError, ValidationError):
         _log_rejection(

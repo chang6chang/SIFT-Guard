@@ -37,6 +37,7 @@ from server.schemas import (
     ContradictsCorrelation,
     CorrelationStrength,
     CorroboratesCorrelation,
+    CrossHostCorrelation,
     DraftFinding,
     EvidenceRecord,
     EvidenceRef,
@@ -556,6 +557,7 @@ def record_finding(
     description: str,
     evidence_refs: list[EvidenceRef],
     hypothesis: str | None = None,
+    host_id: str | None = None,
 ) -> DraftFinding:
     """Commit a DRAFT finding to the case.
 
@@ -566,11 +568,19 @@ def record_finding(
     is set by the validator, not the analyst.
 
     Required: a registered evidence_id; an analyst from {process_analyst,
-    network_analyst, validator}; at least one EvidenceRef whose audit_line
-    points at a real line in case-data/audit/sift-guard-mcp.jsonl AND whose
-    source_tool matches that line's tool_name. Server fills finding_id (UUIDv4),
-    created_at (UTC now), state ("DRAFT"), and tool_invocations (derived from
+    network_analyst, disk_analyst, validator}; at least one EvidenceRef
+    whose audit_line points at a real line in
+    case-data/audit/sift-guard-mcp.jsonl AND whose source_tool matches
+    that line's tool_name. Server fills finding_id (UUIDv4), created_at
+    (UTC now), state ("DRAFT"), and tool_invocations (derived from
     evidence_refs).
+
+    `host_id` is optional and used in multi-evidence (run-case) mode
+    where the orchestrator hands each analyst dispatch a host context.
+    The orchestrator's user-prompt names the host; the analyst passes
+    that identifier through as `host_id` so the finding can later be
+    grouped by host for cross-host correlation. Single-evidence
+    (run --evidence-id) mode leaves it None.
 
     Errors are sanitized — invalid evidence_id, unknown analyst, DISPUTED
     self-mark, mismatched audit refs, and pydantic constraint failures all
@@ -587,6 +597,7 @@ def record_finding(
         description=description,
         evidence_refs=evidence_refs,
         hypothesis=hypothesis,
+        host_id=host_id,
         case_dir=CASE_DIR,
     )
 
@@ -601,6 +612,7 @@ def record_correlation(
         "strengthens",
         "weakens",
         "request_followup",
+        "cross_host",
     ],
     evidence_refs: list[EvidenceRef],
     hypothesis: str,
@@ -615,12 +627,15 @@ def record_correlation(
     related_finding_ids: list[str] | None = None,
     focus_context: dict[str, Any] | None = None,
     rationale: str | None = None,
+    host_ids: list[str] | None = None,
+    shared_indicator: dict[str, Any] | None = None,
 ) -> (
     CorroboratesCorrelation
     | ContradictsCorrelation
     | StrengthensCorrelation
     | WeakensCorrelation
     | RequestFollowupCorrelation
+    | CrossHostCorrelation
 ):
     """Commit a correlation entry to the case.
 
@@ -663,6 +678,8 @@ def record_correlation(
         related_finding_ids=related_finding_ids,
         focus_context=focus_context,
         rationale=rationale,
+        host_ids=host_ids,
+        shared_indicator=shared_indicator,
         case_dir=CASE_DIR,
     )
 

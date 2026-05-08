@@ -90,24 +90,55 @@ def _build_prompt(
     iteration_number: int,
     focus_context: dict[str, Any] | None = None,
     findings_summary: list[dict[str, Any]] | None = None,
+    host_id: str | None = None,
+    host_label: str | None = None,
+    host_grouped_findings: list[dict[str, Any]] | None = None,
 ) -> str:
     """Construct the structured user message for the subagent.
 
     The shape varies by agent role:
-      - process_analyst / network_analyst: evidence_id (+ optional
-        focus_context). They discover findings independently.
+      - process_analyst / network_analyst / disk_analyst: evidence_id
+        (+ optional focus_context, + optional host context). They
+        discover findings independently.
       - validator: evidence_id, case_id, iteration_number,
-        findings_summary. The findings_summary is the list of DRAFT
-        findings to correlate (filtered to exclude CONFIRMED).
+        findings_summary OR host_grouped_findings. The findings input
+        is the list of DRAFT findings to correlate (filtered to
+        exclude CONFIRMED). When `host_grouped_findings` is provided
+        (run-case mode), the prompt presents one ``=== Findings from
+        host: ===`` block per host so the validator can read shared
+        indicators across hosts at a glance.
+
+    `host_id` / `host_label` are populated by the multi-evidence
+    orchestrator and produce a "You are analyzing evidence from
+    host: <label> (<id>)" line at the top of the analyst prompt.
+    Single-evidence runs leave them None and emit no host line.
     """
     lines = [
         f"evidence_id: {evidence_id}",
         f"case_id: {case_id}",
         f"iteration_number: {iteration_number}",
     ]
+    if host_id is not None:
+        lines.append(f"host_id: {host_id}")
+    if host_label is not None and host_label != host_id:
+        lines.append(f"host_label: {host_label}")
     if focus_context is not None:
         lines.append(f"focus_context: {json.dumps(focus_context)}")
-    if findings_summary is not None:
+    if host_grouped_findings is not None:
+        # Host-grouped block. Each entry is
+        # {host_id, host_label, findings: [...]} — formatted for
+        # readability rather than re-JSON'd, so the validator's
+        # in-prompt scan sees host blocks the way the user spec'd.
+        lines.append("findings_by_host:")
+        for block in host_grouped_findings:
+            host_text = (
+                f"  === Findings from host: "
+                f"{block.get('host_label', block['host_id'])} "
+                f"({block['host_id']}) ==="
+            )
+            lines.append(host_text)
+            lines.append(json.dumps(block.get("findings", []), indent=2))
+    elif findings_summary is not None:
         lines.append("findings_summary:")
         lines.append(json.dumps(findings_summary, indent=2))
 
@@ -117,6 +148,10 @@ def _build_prompt(
         ),
         "network_analyst": (
             "Analyze the registered Windows memory image for network anomalies."
+        ),
+        "disk_analyst": (
+            "Analyze the registered Windows disk image for filesystem, "
+            "execution, event-log, and registry anomalies."
         ),
         "validator": (
             "Validate the DRAFT findings below by emitting correlations. "
@@ -129,6 +164,34 @@ def _build_prompt(
         ),
     }
     intro = role_intros.get(agent, f"Run as {agent}.")
+    if host_id is not None and agent != "validator":
+        # Multi-evidence (run-case) analyst dispatch surfaces the host
+        # context at the top of the prompt — separate from the
+        # structured key/value lines the agent parses for tool calls.
+        host_text = host_label or host_id
+        intro = (
+            f"You are analyzing evidence from host: {host_text} "
+            f"({host_id}).\n" + intro
+        )
+    if agent == "validator" and host_grouped_findings is not None:
+        # The cross-host extension is communicated to the validator
+        # at run-time (in-prompt) rather than pinned in
+        # validator.md, so the same agent file works for both
+        # single-evidence and run-case modes.
+        intro = (
+            intro + "\n\n"
+            "Multi-host case: findings span multiple hosts (see "
+            "`findings_by_host` below). When you see two findings "
+            "on different hosts that share a load-bearing indicator "
+            "(an IP address, a binary hash, a synchronized timestamp, "
+            "a named MITRE ATT&CK technique), emit a correlation with "
+            "`correlation_type=\"cross_host\"`, list every involved "
+            "host_id in `host_ids`, and capture the shared indicator "
+            "in `shared_indicator` (e.g. "
+            "`{\"type\": \"ip\", \"value\": \"10.3.58.42\"}`). "
+            "Cross-host correlations are independent-source corroborations "
+            "and feed the same R3 strong-corroboration promotion path."
+        )
     return intro + "\n" + "\n".join(lines)
 
 
@@ -281,16 +344,26 @@ def dispatch_analyst(
     iteration_number: int,
     cwd: Path,
     focus_context: dict[str, Any] | None = None,
+    host_id: str | None = None,
+    host_label: str | None = None,
     max_budget_usd: float = 5.0,
     timeout_seconds: int = 1800,
 ) -> DispatchResult:
-    """High-level dispatch for an analyst subagent."""
+    """High-level dispatch for an analyst subagent.
+
+    `host_id` / `host_label` populated by run-case orchestration —
+    surface as a "You are analyzing evidence from host:" line at the
+    top of the analyst's prompt. Single-evidence runs leave them
+    None and the prompt is unchanged.
+    """
     prompt = _build_prompt(
         agent=agent,
         evidence_id=evidence_id,
         case_id=case_id,
         iteration_number=iteration_number,
         focus_context=focus_context,
+        host_id=host_id,
+        host_label=host_label,
     )
     return dispatch_subagent(
         agent,
@@ -306,18 +379,27 @@ def dispatch_validator(
     evidence_id: str,
     case_id: str,
     iteration_number: int,
-    findings_summary: list[dict[str, Any]],
+    findings_summary: list[dict[str, Any]] | None = None,
+    host_grouped_findings: list[dict[str, Any]] | None = None,
     cwd: Path,
     max_budget_usd: float = 5.0,
     timeout_seconds: int = 1800,
 ) -> DispatchResult:
-    """High-level dispatch for the validator subagent."""
+    """High-level dispatch for the validator subagent.
+
+    Either `findings_summary` (single-evidence) OR
+    `host_grouped_findings` (run-case) must be set. When the
+    host-grouped form is provided, the validator's prompt frames the
+    findings as per-host blocks and gains the cross-host correlation
+    instructions inline.
+    """
     prompt = _build_prompt(
         agent="validator",
         evidence_id=evidence_id,
         case_id=case_id,
         iteration_number=iteration_number,
         findings_summary=findings_summary,
+        host_grouped_findings=host_grouped_findings,
     )
     return dispatch_subagent(
         "validator",

@@ -63,7 +63,7 @@ _AUDIT_RELATIVE_PATH = ("audit", "sift-guard-mcp.jsonl")
 # Same set, two enforcement layers: schema for protocol-level, runtime
 # for audit-on-rejection visibility.
 ALLOWED_ANALYSTS: frozenset[str] = frozenset(
-    {"process_analyst", "network_analyst", "validator"}
+    {"process_analyst", "network_analyst", "disk_analyst", "validator"}
 )
 
 # Source tools an EvidenceRef is allowed to point at. Mirrors the
@@ -77,6 +77,15 @@ ALLOWED_SOURCE_TOOLS: frozenset[str] = frozenset(
         "vol_psscan",
         "vol_pstree",
         "vol_netscan",
+        # Week 8 additions: cmdline + malfind on the memory side,
+        # plus four disk-side tier-1 tools whose audit_line is a
+        # legitimate citation surface for record_finding.
+        "vol_cmdline",
+        "vol_malfind",
+        "disk_mft_timeline",
+        "disk_prefetch",
+        "disk_evtx",
+        "disk_registry",
         # Tier-2 tools added 2026-05-06: a tier-2 result's
         # `audit_line` field is the analyst's direct entry point for
         # citing a derived analysis as evidence.
@@ -210,6 +219,7 @@ def record_finding(
     description: str,
     evidence_refs: list[EvidenceRef],
     hypothesis: str | None = None,
+    host_id: str | None = None,
     case_dir: str = "case-data",
 ) -> DraftFinding:
     """Commit a DRAFT finding to the case.
@@ -302,6 +312,7 @@ def record_finding(
             description=description,
             evidence_refs=evidence_refs,
             hypothesis=hypothesis,
+            host_id=host_id,
             created_at=datetime.now(tz=timezone.utc),
             tool_invocations=sorted(
                 {f"{r.source_tool}:{r.audit_line}" for r in evidence_refs}

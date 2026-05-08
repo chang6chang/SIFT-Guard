@@ -581,6 +581,12 @@ class TestToolSurface:
             "description",
             "evidence_refs",
             "hypothesis",
+            # Week 8 multi-evidence (run-case): orchestrator passes
+            # the host context to the analyst; the analyst forwards
+            # it as `host_id`. Optional — single-evidence runs leave
+            # it None so the on-disk findings.jsonl stays
+            # backward-compatible with pre-week-8 records.
+            "host_id",
         }, (
             "record_finding parameter set drifted; got "
             f"{sorted(properties.keys())}. If `case_dir`, `finding_id`, "
@@ -640,6 +646,12 @@ class TestToolSurface:
             "related_finding_ids",
             "focus_context",
             "rationale",
+            # Week 8 cross_host correlation type adds two fields.
+            # Optional — every other correlation type rejects them
+            # via the per-type field-overflow check in
+            # server.tools.correlations._build_payload.
+            "host_ids",
+            "shared_indicator",
         }, (
             "record_correlation parameter set drifted; got "
             f"{sorted(properties.keys())}. If `correlation_id`, "
@@ -697,9 +709,9 @@ class TestToolSurface:
             )
 
     def test_record_correlation_correlation_type_enum(self, tmp_path: Path):
-        # `correlation_type` is one of five Literal values; the JSON
-        # schema must surface the closed enum so a client can autocomplete
-        # / validate against it.
+        # `correlation_type` is one of six Literal values (week 8
+        # adds `cross_host`); the JSON schema must surface the closed
+        # enum so a client can autocomplete / validate against it.
         listing = _run_async(_list_tools_only(tmp_path))
         tool = _tool_by_name(listing, "record_correlation")
         # FastMCP may resolve Literal[Enum] either as `enum: [...]`
@@ -721,6 +733,7 @@ class TestToolSurface:
             "strengthens",
             "weakens",
             "request_followup",
+            "cross_host",
         }, (
             "correlation_type enum drifted; got "
             f"{observed_values}. Adding a correlation type requires "

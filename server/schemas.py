@@ -845,6 +845,15 @@ class DraftFinding(BaseModel):
     hypothesis: str | None = Field(default=None, max_length=1000)
     created_at: datetime
     tool_invocations: list[str] = Field(default_factory=list)
+    # Multi-evidence orchestration (run-case mode). The orchestrator
+    # injects this into the analyst's user-prompt; the analyst passes
+    # it through to record_finding. Single-evidence runs leave it None
+    # — backward-compatible with the existing on-disk findings.jsonl
+    # records that pre-date the field. Stable across the case lifecycle:
+    # a finding's host_id never changes, so it is safe to use as a
+    # group key in the validator's host-grouped findings_summary and
+    # in `cross_host` correlation reasoning.
+    host_id: str | None = Field(default=None, max_length=128)
 
     @field_validator("finding_id", "evidence_id")
     @classmethod
@@ -2129,11 +2138,27 @@ class CorrelationType(StrEnum):
     STRENGTHENS = "strengthens"
     WEAKENS = "weakens"
     REQUEST_FOLLOWUP = "request_followup"
+    # Multi-evidence orchestration. Emitted when two findings on
+    # different hosts share an indicator (IP, binary hash, timestamp,
+    # named TTP). Treated by promotion as a corroborates-equivalent
+    # under R3 because the two sources are independent by
+    # construction (different hosts).
+    CROSS_HOST = "cross_host"
 
 
 CorrelationStrength = Literal["weak", "moderate", "strong"]
 ContradictionSeverity = Literal["minor", "material", "fundamental"]
-FollowupTargetAnalyst = Literal["process_analyst", "network_analyst"]
+# `disk_analyst` joins the followup-target Literal in week 8 alongside
+# the multi-evidence (run-case) orchestration mode. Single-evidence
+# memory-only runs never request a disk_analyst followup; the validator's
+# run-time prompt is what scopes the choice. Architectural enforcement
+# stays at the schema level — only the four named analyst roles can be
+# the target of a request_followup.
+FollowupTargetAnalyst = Literal[
+    "process_analyst",
+    "network_analyst",
+    "disk_analyst",
+]
 
 
 class _BaseCorrelation(BaseModel):
@@ -2328,6 +2353,52 @@ class RequestFollowupCorrelation(_BaseCorrelation):
         return _validate_uuid4_list(v, "related_finding_ids")
 
 
+class CrossHostCorrelation(_BaseCorrelation):
+    """Two or more findings on DIFFERENT hosts share a load-bearing
+    indicator (an IP address, a binary hash, a synchronized timestamp,
+    a named MITRE ATT&CK technique). Treated by promotion as a
+    corroborates-equivalent under R3 because the two sources are
+    independent by construction (different hosts, different
+    acquisitions, different analysts).
+
+    `target_finding_ids` is the list of finding_ids the correlation
+    spans (≥2). `host_ids` is the parallel list of host_ids those
+    findings live on (≥2 distinct values, validated). `shared_indicator`
+    captures what the indicator IS — kept structured so a future
+    audit-replay can reconstruct exactly which IP / hash /
+    timestamp / TTP was the linkage point.
+
+    `strength` mirrors CorroboratesCorrelation's qualitative read so
+    the promotion engine can apply the same threshold rules.
+    """
+
+    correlation_type: Literal[CorrelationType.CROSS_HOST] = (
+        CorrelationType.CROSS_HOST
+    )
+    target_finding_ids: list[str] = Field(min_length=2)
+    host_ids: list[str] = Field(min_length=2)
+    shared_indicator: dict[str, Any] = Field(default_factory=dict)
+    strength: CorrelationStrength
+
+    @field_validator("target_finding_ids")
+    @classmethod
+    def _validate_cross_host_target_uuids(cls, v: list[str]) -> list[str]:
+        return _validate_uuid4_list(v, "target_finding_ids")
+
+    @field_validator("host_ids")
+    @classmethod
+    def _validate_cross_host_host_ids(cls, v: list[str]) -> list[str]:
+        # Distinct-host invariant: a "cross-host" correlation that lists
+        # the same host twice is not actually cross-host. Schema-level
+        # enforcement so the agent cannot drift away from the contract.
+        if len(set(v)) < 2:
+            raise ValueError(
+                "cross_host requires ≥2 distinct host_ids; got "
+                f"{len(set(v))} distinct value(s)"
+            )
+        return v
+
+
 # Discriminated union for `correlations.jsonl` line payloads. The
 # `correlation_type` field is the discriminator; pydantic dispatches
 # to the matching variant by the literal value.
@@ -2338,6 +2409,7 @@ CorrelationPayload = Annotated[
         StrengthensCorrelation,
         WeakensCorrelation,
         RequestFollowupCorrelation,
+        CrossHostCorrelation,
     ],
     Field(discriminator="correlation_type"),
 ]
@@ -2483,6 +2555,7 @@ __all__ = [
     "CorrelationPayload",
     "CorrelationStrength",
     "CorrelationType",
+    "CrossHostCorrelation",
     "DraftFinding",
     "EvidenceRecord",
     "EvidenceRef",

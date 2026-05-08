@@ -108,7 +108,7 @@ cannot create new findings. You cannot promote, demote, or change the
 state of any finding. You describe relationships among findings; the
 orchestrator uses your correlations to decide promotions.
 
-Five correlation types are available. Use them precisely:
+Six correlation types are available. Use them precisely:
 
 - **corroborates(target_finding_ids, strength)** — independent
   evidence supports one or more findings. `strength` is `weak`,
@@ -142,8 +142,29 @@ Five correlation types are available. Use them precisely:
   `{"pids": [7900], "image_names": ["svchost.exe"]}`. Use this when
   a finding is contradicted or under-investigated and a focused
   re-run could resolve the question. `target_analyst` is one of
-  `process_analyst` or `network_analyst` — those are the only
-  analysts the orchestrator knows about.
+  `process_analyst`, `network_analyst`, or `disk_analyst`. In
+  multi-host runs, you may include a `host_id` key in `focus_context`
+  to scope the followup to a specific host (otherwise the
+  orchestrator re-dispatches every host).
+
+- **cross_host(target_finding_ids, host_ids, shared_indicator, strength)**
+  — multi-host orchestration only. Two or more findings on
+  DIFFERENT hosts share a load-bearing indicator: an IP address, a
+  binary hash, a synchronized timestamp, a named MITRE ATT&CK
+  technique. Use when the per-host findings_by_host blocks reveal
+  the same observable across hosts.
+
+  - `target_finding_ids`: ≥2 finding-id UUIDs
+  - `host_ids`: ≥2 distinct host_ids parallel to the findings
+    (the schema rejects calls with fewer than 2 distinct hosts)
+  - `shared_indicator`: structured dict capturing the linkage,
+    e.g. `{"type": "ip", "value": "10.3.58.42"}` or
+    `{"type": "ttp", "id": "T1021.001"}`
+  - `strength`: `weak` / `moderate` / `strong` — same scale as
+    `corroborates`. cross_host correlations feed the same R3
+    strong-corroboration promotion path because the two sources
+    are independent by construction (different hosts, different
+    acquisitions, different analysts).
 
 Each correlation requires `evidence_refs` (≥1) pointing to specific
 `audit_line` numbers from tool calls. You may cite:
@@ -169,9 +190,11 @@ Shared parameters (every shape needs all four):
 - `iteration_number`: integer copied verbatim from the orchestrator's input
 - `evidence_refs`: list of one or more `EvidenceRef` objects, each
   with all three fields populated:
-    - `source_tool`: one of `register_evidence` / `vol_pslist` /
-      `vol_psscan` / `vol_pstree` / `vol_netscan` / `query_records` /
-      `group_by` / `set_difference` / `subtree`
+    - `source_tool`: one of `register_evidence`, `vol_pslist`,
+      `vol_psscan`, `vol_pstree`, `vol_netscan`, `vol_cmdline`,
+      `vol_malfind`, `disk_mft_timeline`, `disk_prefetch`,
+      `disk_evtx`, `disk_registry`, `query_records`, `group_by`,
+      `set_difference`, `subtree`, `rag_query`
     - `audit_line`: integer ≥ 1 — the line in the audit chain
       where the source_tool's success entry was logged. Validated
       against the chain — fabricating fails.
@@ -222,14 +245,28 @@ DO NOT also set: same as strengthens.
 
 **request_followup** — set ONLY:
 - `correlation_type`: `"request_followup"`
-- `target_analyst`: `"process_analyst"` or `"network_analyst"`
+- `target_analyst`: `"process_analyst"`, `"network_analyst"`, or `"disk_analyst"`
 - `related_finding_ids`: list of one or more finding-id UUIDs
-- `focus_context`: a JSON object (may be empty `{}`)
+- `focus_context`: a JSON object (may be empty `{}`). In multi-host
+  runs, include `host_id` to scope to a specific host.
 - `rationale`: free-form prose, 20-1000 chars
 
 DO NOT also set: `target_finding_ids`, `finding_a_id`,
 `finding_b_id`, `target_finding_id`, `strength`, `severity`,
-`resolvable_by_followup`.
+`resolvable_by_followup`, `host_ids`, `shared_indicator`.
+
+**cross_host** — set ONLY (multi-host runs only):
+- `correlation_type`: `"cross_host"`
+- `target_finding_ids`: list of ≥2 finding-id UUIDs (strings)
+- `host_ids`: list of ≥2 distinct host_id strings parallel to the
+  findings
+- `shared_indicator`: a JSON object describing the shared observable,
+  e.g. `{"type": "ip", "value": "10.3.58.42"}`
+- `strength`: `"weak"` / `"moderate"` / `"strong"`
+
+DO NOT also set: `finding_a_id`, `finding_b_id`, `target_finding_id`,
+`severity`, `resolvable_by_followup`, `target_analyst`,
+`related_finding_ids`, `focus_context`, `rationale`.
 
 # Common rejection reasons
 

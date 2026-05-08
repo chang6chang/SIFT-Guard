@@ -174,9 +174,9 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 # 6. Verify the index is on disk.
 ls rag/data/attack-enterprise.{faiss,records.json,meta.json}
 
-# 7. Run the test suite (424 tests, ~2 min — exercises the
+# 7. Run the test suite (477 tests, ~2 min — exercises the
 #    MCP tool surface, schema invariants, promotion rules,
-#    loop integration).
+#    loop integration, multi-evidence orchestration).
 .venv/bin/python -m pytest tests/ -q
 ```
 
@@ -435,7 +435,7 @@ full refresh after bumping `ATTACK_TAG` or `SIGMA_TAG`, delete
 
 ## Status
 
-424 unit tests + 4 deselected integration tests. 19 MCP tools.
+477 unit tests + 4 deselected integration tests. 19 MCP tools.
 RAG corpus: 2844 records (697 MITRE ATT&CK Enterprise techniques
 + 2147 SigmaHQ Windows detection rules). End-to-end runs
 validated on the SANS Standard Forensic Case (Rocba) and on the

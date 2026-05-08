@@ -1,15 +1,15 @@
-"""CLI entrypoint for the orchestrator.
+"""Legacy single-evidence CLI entrypoint.
 
-Usage:
+Backward-compat shim for week 6 / 7 invocations:
 
     python -m orchestrator.run \\
         --case-dir case-data \\
         --evidence-id 6770da81-f562-4643-b1d2-69d78104fb70
 
-The CLI is thin: parse args, configure logging, call run_loop, print
-a summary to stdout. iterations.jsonl + findings.jsonl + audit.jsonl
-are the authoritative artifacts; the printed summary exists for
-operator readability and the demo capture.
+Equivalent to the new subcommand form
+``python -m orchestrator.main run --evidence-id ...``. New work
+should prefer the subcommand form so the multi-evidence
+``run-case`` path is one CLI away.
 """
 
 from __future__ import annotations
