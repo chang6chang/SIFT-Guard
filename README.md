@@ -29,8 +29,9 @@ flowchart TD
     Reg --> EvDir
 
     %% --- MCP server tools ---
-    subgraph MCP["SIFT-Guard MCP server (15 typed tools)"]
-        Tier1["Tier-1 wrappers<br/>vol_pslist · vol_psscan<br/>vol_pstree · vol_netscan<br/>vol_cmdline · vol_malfind<br/>persists extractions/ + extractions.jsonl"]
+    subgraph MCP["SIFT-Guard MCP server (19 typed tools)"]
+        Tier1Mem["Tier-1 memory<br/>vol_pslist · vol_psscan<br/>vol_pstree · vol_netscan<br/>vol_cmdline · vol_malfind"]
+        Tier1Disk["Tier-1 disk<br/>disk_mft_timeline · disk_prefetch<br/>disk_evtx · disk_registry<br/>persists extractions/ + extractions.jsonl"]
         Tier2["Tier-2 analytical<br/>query_records · group_by<br/>set_difference · subtree"]
         RAG["rag_query<br/>ATT&CK + Sigma retrieval<br/>(validator-only)"]
         RecF["record_finding"]
@@ -38,21 +39,27 @@ flowchart TD
         UpdF["update_finding"]
     end
 
-    EvDir -->|read-only| Tier1
-    Tier1 -.->|reads cached extractions| Tier2
+    EvDir -->|read-only| Tier1Mem
+    EvDir -->|read-only ro mount| Tier1Disk
+    Tier1Mem -.->|reads cached extractions| Tier2
+    Tier1Disk -.->|reads cached extractions| Tier2
 
     %% --- Subagents + orchestrator ---
     PA["process_analyst<br/>subagent"]
     NA["network_analyst<br/>subagent"]
+    DA["disk_analyst<br/>subagent"]
     Val["validator<br/>subagent"]
     Orch["Orchestrator (Python)<br/>5-step loop:<br/>ANALYZE → CORRELATE →<br/>PROMOTE → PLAN → WRITE"]
 
     %% Read paths.
-    PA --> Tier1
+    PA --> Tier1Mem
     PA --> Tier2
-    NA --> Tier1
+    NA --> Tier1Mem
     NA --> Tier2
-    Val --> Tier1
+    DA --> Tier1Disk
+    DA --> Tier2
+    Val --> Tier1Mem
+    Val --> Tier1Disk
     Val --> Tier2
 
     %% RAG retrieval: validator-only by frontmatter restriction.
@@ -61,12 +68,14 @@ flowchart TD
     %% Write paths — role-restricted by frontmatter + schema.
     PA --> RecF
     NA --> RecF
+    DA --> RecF
     Val --> RecC
     Orch --> UpdF
 
     %% Control: orchestrator dispatches subagents.
     Orch -.->|dispatch| PA
     Orch -.->|dispatch| NA
+    Orch -.->|dispatch| DA
     Orch -.->|dispatch| Val
 
     %% --- Chains ---
@@ -81,7 +90,8 @@ flowchart TD
     Orch --> Iters
 
     Reg --> Audit
-    Tier1 --> Audit
+    Tier1Mem --> Audit
+    Tier1Disk --> Audit
     Tier2 --> Audit
     RAG --> Audit
     RecF --> Audit
@@ -96,16 +106,16 @@ flowchart TD
     classDef storage fill:#fff8dc,stroke:#aa9,color:#333
     classDef tool fill:#ffffff,stroke:#444,color:#222
 
-    class PA,NA analyst
+    class PA,NA,DA analyst
     class Val validator
     class Orch orchestrator
     class Findings,Corrs,Iters,Audit chain
     class EvDir storage
-    class Reg,Tier1,Tier2,RAG,RecF,RecC,UpdF tool
+    class Reg,Tier1Mem,Tier1Disk,Tier2,RAG,RecF,RecC,UpdF tool
 ```
 
 See [`docs/architecture-diagram.md`](docs/architecture-diagram.md)
-for the legend, the 15-tool table by writer role, and the
+for the legend, the 19-tool table by writer role, and the
 loop-narrative writeup.
 
 ## Prerequisites
@@ -164,7 +174,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 # 6. Verify the index is on disk.
 ls rag/data/attack-enterprise.{faiss,records.json,meta.json}
 
-# 7. Run the test suite (387 tests, ~2 min — exercises the
+# 7. Run the test suite (424 tests, ~2 min — exercises the
 #    MCP tool surface, schema invariants, promotion rules,
 #    loop integration).
 .venv/bin/python -m pytest tests/ -q
@@ -425,7 +435,7 @@ full refresh after bumping `ATTACK_TAG` or `SIGMA_TAG`, delete
 
 ## Status
 
-387 unit tests + 4 deselected integration tests. 15 MCP tools.
+424 unit tests + 4 deselected integration tests. 19 MCP tools.
 RAG corpus: 2844 records (697 MITRE ATT&CK Enterprise techniques
 + 2147 SigmaHQ Windows detection rules). End-to-end runs
 validated on the SANS Standard Forensic Case (Rocba) and on the

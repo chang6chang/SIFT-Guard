@@ -1,0 +1,3 @@
+{"executable_filename": "CMD.EXE", "run_count": 12, "last_run_times": ["2024-03-20T08:45:00+00:00", "2024-03-19T14:00:00+00:00"], "volume_path": "\\VOLUME{01d8a4-5a3b}\\", "referenced_files": ["\\WINDOWS\\SYSTEM32\\KERNEL32.DLL", "\\WINDOWS\\SYSTEM32\\NTDLL.DLL"]}
+{"executable_filename": "POWERSHELL.EXE", "run_count": 3, "last_run_times": ["2024-03-20T08:50:00+00:00"], "volume_path": "\\VOLUME{01d8a4-5a3b}\\", "referenced_files": ["\\WINDOWS\\SYSTEM32\\KERNEL32.DLL"]}
+{"executable_filename": "MIMIKATZ.EXE", "run_count": 1, "last_run_times": ["2024-03-21T02:13:00+00:00"], "volume_path": "\\VOLUME{01d8a4-5a3b}\\", "referenced_files": ["\\WINDOWS\\SYSTEM32\\NTDLL.DLL"]}

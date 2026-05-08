@@ -8,12 +8,13 @@ arbitrary case paths. `CASE_DIR` is a module-level constant resolved
 by the server, not a parameter the agent can set — the agent can only
 name evidence by `evidence_id` registered through `register_evidence`.
 
-Tool surface as of week 8 (15 tools):
+Tool surface as of week 8 (19 tools):
   Tier-0  register_evidence (read-only catalog)
   Tier-1  vol_pslist, vol_psscan, vol_pstree, vol_netscan,
-          vol_cmdline, vol_malfind
-          — invoke Volatility, persist full output to extractions/,
-            return a small Summary
+          vol_cmdline, vol_malfind  (memory)
+          disk_mft_timeline, disk_prefetch, disk_evtx, disk_registry
+          — invoke Volatility / SIFT disk parsers, persist full
+            output to extractions/, return a small Summary
   Tier-2  query_records, group_by, set_difference, subtree
           — read stored extractions, compose narrowed answers
   Writes  record_finding       (analyst → DRAFT entry on findings.jsonl)
@@ -39,6 +40,7 @@ from server.schemas import (
     DraftFinding,
     EvidenceRecord,
     EvidenceRef,
+    EvtxSummary,
     FieldFilter,
     FindingCategory,
     FindingConfidence,
@@ -47,14 +49,17 @@ from server.schemas import (
     FollowupTargetAnalyst,
     GroupByResult,
     MalfindSummary,
+    MftTimelineSummary,
     NetscanSummary,
     PluginName,
+    PrefetchSummary,
     PromotionRule,
     PslistSummary,
     PsscanSummary,
     PstreeSummary,
     QueryRecordsResult,
     RagQueryResult,
+    RegistrySummary,
     RequestFollowupCorrelation,
     SetDifferenceResult,
     StrengthensCorrelation,
@@ -74,6 +79,12 @@ from server.tools.evidence import register_evidence as _register_evidence_impl
 from server.tools.findings import (
     record_finding as _record_finding_impl,
     update_finding as _update_finding_impl,
+)
+from server.tools.disk import (
+    disk_evtx as _disk_evtx_impl,
+    disk_mft_timeline as _disk_mft_timeline_impl,
+    disk_prefetch as _disk_prefetch_impl,
+    disk_registry as _disk_registry_impl,
 )
 from server.tools.memory import (
     vol_cmdline as _vol_cmdline_impl,
@@ -268,6 +279,116 @@ def vol_malfind(evidence_id: str) -> MalfindSummary:
     a 19 GB Windows 10 image. Cache hits are instant.
     """
     return _vol_malfind_impl(evidence_id, case_dir=CASE_DIR)
+
+
+@mcp.tool()
+def disk_mft_timeline(evidence_id: str) -> MftTimelineSummary:
+    """Run plaso's MFT-only timeline against a registered disk image.
+
+    Tier-1 tool. Two-step plaso pipeline (`log2timeline.py
+    --parsers mft` writes a .plaso storage file; `psort.py -o
+    json_line` converts to JSON-line records). Returns a
+    `MftTimelineSummary` (≤10 KB) with `entry_type_distribution`
+    (created / modified / accessed / mft_modified counts),
+    `earliest_timestamp` / `latest_timestamp` bracketing the timeline,
+    `top_paths` (top 10 paths by entry count), and `distinct_paths`.
+    The full MftTimelineResult lives in the stored extraction at
+    `case-data/extractions/<evidence_id>/disk.mft.MftTimeline.json`;
+    specific timeline rows come from
+    `query_records(plugin_name="disk.mft.MftTimeline", ...)`.
+
+    Mount: invoked through the disk-mount utility, which honors
+    `SIFT_DISK_PREMOUNTED_PATH` for dev environments where root is
+    not available. Same cache contract and sanitized rejection
+    paths as `vol_pslist`:
+    `disk_mft_timeline:rejected_*`, `disk_mft_timeline:cached`,
+    `disk_mft_timeline:hash_mismatch`,
+    `disk_mft_timeline:record_validation_warning`,
+    `disk_mft_timeline:rejected_mount_failed`.
+
+    Cost: variable — plaso's MFT parser is the cheapest plaso
+    pipeline, but still scales with $MFT entry count. Tens of
+    seconds to several minutes depending on disk size. Cache hits
+    are instant.
+    """
+    return _disk_mft_timeline_impl(evidence_id, case_dir=CASE_DIR)
+
+
+@mcp.tool()
+def disk_prefetch(evidence_id: str) -> PrefetchSummary:
+    """Parse `Windows/Prefetch/*.pf` on a registered disk image.
+
+    Tier-1 tool. Each .pf file describes one executable's launch
+    history (Windows tracks up to 8 last-run timestamps per
+    executable in modern formats). Returns a `PrefetchSummary`
+    (≤10 KB) with `distinct_executables`, `total_run_count`,
+    `top_executables` (top 10 by run count), and earliest/latest
+    run-time bracketing. Specific prefetch entries (run counts,
+    last-run-time lists, referenced files) come from
+    `query_records(plugin_name="disk.prefetch.Prefetch", ...)`.
+
+    Cross-validation: prefetch proves execution. A binary present
+    in pslist + prefetch run_count > 0 + recent last_run_time is
+    high-confidence "ran on this host"; binary present in pslist
+    only is weaker (could be a recent injected/never-launched
+    process).
+
+    Same cache contract and sanitized rejection paths as
+    `disk_mft_timeline`. Cache hits are instant.
+    """
+    return _disk_prefetch_impl(evidence_id, case_dir=CASE_DIR)
+
+
+@mcp.tool()
+def disk_evtx(evidence_id: str) -> EvtxSummary:
+    """Parse Security and System EVTX logs on a registered disk image.
+
+    Tier-1 tool. Reads `Windows/System32/winevt/Logs/Security.evtx`
+    and `System.evtx` via the python-evtx parser; merges into one
+    extraction with each record carrying its source `channel`.
+    Returns an `EvtxSummary` (≤10 KB) with `event_id_distribution`
+    (top 10 EventIDs by count), `channel_distribution`, distinct
+    event-id count, and timestamp range. Specific events
+    (timestamps, sources, message summaries, logon types) come
+    from `query_records(plugin_name="disk.evtx.EventLog", ...)`.
+
+    Cross-validation: Event 4624/4625 (logon success/fail) +
+    netscan RDP connections from memory grounds an RDP brute-force
+    finding. Event 7045 (service install) + a service in the
+    registry's Services key + a running process by that name
+    grounds a persistence finding.
+
+    `message_summary` is treated as untrusted evidence content —
+    truncated to 500 characters in the parser. Same cache contract
+    and sanitized rejection paths as `disk_mft_timeline`.
+    """
+    return _disk_evtx_impl(evidence_id, case_dir=CASE_DIR)
+
+
+@mcp.tool()
+def disk_registry(evidence_id: str) -> RegistrySummary:
+    """Run RegRipper across SYSTEM / SOFTWARE / SAM / NTUSER.DAT
+    on a registered disk image.
+
+    Tier-1 tool. Enumerates the four canonical hives plus per-user
+    NTUSER.DAT files under `Users/*/`; merges into one extraction
+    with each record carrying its source `hive_name`. Returns a
+    `RegistrySummary` (≤10 KB) with `hive_distribution`,
+    `interesting_paths_distribution` (per-key-path-prefix bucket
+    over Run / RunOnce / Services / Policies / other), distinct
+    key count, and a top-N list of key paths. Specific values
+    come from
+    `query_records(plugin_name="disk.registry.Registry", ...)`.
+
+    Cross-validation: persistence keys (Run, RunOnce, Services)
+    cross-validate with running processes from pslist and with
+    binaries in MFT timeline / prefetch.
+
+    `value_data` is treated as untrusted evidence content —
+    truncated to 500 characters in the parser. Same cache contract
+    and sanitized rejection paths as `disk_mft_timeline`.
+    """
+    return _disk_registry_impl(evidence_id, case_dir=CASE_DIR)
 
 
 @mcp.tool()

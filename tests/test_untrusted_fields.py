@@ -218,6 +218,10 @@ class TestPluginUntrustedRecordFieldsMap:
             "windows.netscan.NetScan",
             "windows.cmdline.CmdLine",
             "windows.malfind.Malfind",
+            "disk.mft.MftTimeline",
+            "disk.prefetch.Prefetch",
+            "disk.evtx.EventLog",
+            "disk.registry.Registry",
         }
 
     def test_pslist_psscan_match_processrecord_string_fields(self):
@@ -264,6 +268,42 @@ class TestPluginUntrustedRecordFieldsMap:
         # ASCII strings from steering the analyst.
         assert PLUGIN_UNTRUSTED_RECORD_FIELDS["windows.malfind.Malfind"] == (
             "process_name", "vad_tag", "protection", "hex_dump", "disassembly",
+        )
+
+    def test_disk_mft_carries_full_path_string(self):
+        # MftTimelineRecord — full_path is the on-disk filename
+        # which an attacker who placed the binary controls.
+        # entry_type is a closed Literal; timestamp / file_size are
+        # kernel-structural.
+        assert PLUGIN_UNTRUSTED_RECORD_FIELDS["disk.mft.MftTimeline"] == (
+            "full_path",
+        )
+
+    def test_disk_prefetch_carries_executable_and_path_strings(self):
+        # PrefetchRecord — executable_name + volume_path +
+        # referenced_files all reflect on-disk strings the attacker
+        # influences. run_count and last_run_times are
+        # OS-recorded.
+        assert PLUGIN_UNTRUSTED_RECORD_FIELDS["disk.prefetch.Prefetch"] == (
+            "executable_name", "volume_path", "referenced_files",
+        )
+
+    def test_disk_evtx_carries_provider_channel_and_message_summary(self):
+        # EvtxRecord — source/channel are typically schema-controlled
+        # provider names but logged events can include attacker-
+        # controlled strings; message_summary is the rendered
+        # EventData and is the most directly attacker-controllable.
+        assert PLUGIN_UNTRUSTED_RECORD_FIELDS["disk.evtx.EventLog"] == (
+            "source", "channel", "message_summary",
+        )
+
+    def test_disk_registry_carries_hive_key_path_and_value(self):
+        # RegistryRecord — hive_name is one of a closed set but kept
+        # as untrusted for forward-compat; key_path / value_name /
+        # value_data are evidence-derived strings the attacker
+        # populates when adding persistence keys.
+        assert PLUGIN_UNTRUSTED_RECORD_FIELDS["disk.registry.Registry"] == (
+            "hive_name", "key_path", "value_name", "value_data",
         )
 
 

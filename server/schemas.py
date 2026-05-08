@@ -698,6 +698,10 @@ EvidenceRefSourceTool = Literal[
     "vol_netscan",
     "vol_cmdline",
     "vol_malfind",
+    "disk_mft_timeline",
+    "disk_prefetch",
+    "disk_evtx",
+    "disk_registry",
     "query_records",
     "group_by",
     "set_difference",
@@ -747,7 +751,12 @@ FindingState = Literal["DRAFT", "CONFIRMED", "DISPUTED"]
 # write findings against the active memory roster. Adding an analyst
 # requires an explicit edit — silent extension would erode the
 # audit-chain authorship signal.
-AnalystName = Literal["process_analyst", "network_analyst", "validator"]
+AnalystName = Literal[
+    "process_analyst",
+    "network_analyst",
+    "disk_analyst",
+    "validator",
+]
 
 
 class FindingRecordKind(StrEnum):
@@ -1082,6 +1091,16 @@ PluginName = Literal[
     "windows.netscan.NetScan",
     "windows.cmdline.CmdLine",
     "windows.malfind.Malfind",
+    # Disk-side tier-1 plugins. Not Volatility plugins — the names
+    # are SIFT-Guard's stable identifiers for the disk tool family,
+    # following the same lower.lower.PascalCase shape so a single
+    # PluginName Literal can identify any tier-1 extraction without
+    # branching by source. Each maps to a specific underlying SIFT
+    # tool documented in `server/runners/disk_mount.py`.
+    "disk.mft.MftTimeline",
+    "disk.prefetch.Prefetch",
+    "disk.evtx.EventLog",
+    "disk.registry.Registry",
 ]
 
 
@@ -1134,6 +1153,38 @@ PLUGIN_UNTRUSTED_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
         "protection",
         "hex_dump",
         "disassembly",
+    ),
+    # MFT timeline: full_path is the on-disk filename (attacker-
+    # influenceable on a compromised host); entry_type is a closed
+    # Literal of MFT timestamp categories so it stays
+    # schema-controlled. timestamp / file_size are kernel-structural.
+    "disk.mft.MftTimeline": ("full_path",),
+    # Prefetch: executable_name and the volume_path / referenced_files
+    # all reflect on-disk names whose values an attacker who placed a
+    # binary on disk can influence. Run counts and timestamps are
+    # OS-recorded and not free-form strings.
+    "disk.prefetch.Prefetch": (
+        "executable_name",
+        "volume_path",
+        "referenced_files",
+    ),
+    # EVTX: source/channel are typically schema-controlled provider
+    # names but logged events can include attacker-controlled
+    # account names and crafted payload strings; message_summary is
+    # the rendered EventData and is the most directly attacker-
+    # controllable field. logon_type is integer-coded by the
+    # Windows kernel.
+    "disk.evtx.EventLog": ("source", "channel", "message_summary"),
+    # Registry: value_data and value_name are evidence-derived
+    # strings the attacker can freely populate (Run keys, Services
+    # ImagePath, etc.); key_path is also influenceable when an
+    # attacker creates new keys; hive_name is one of a closed set
+    # but we keep it raw-string for forward-compat.
+    "disk.registry.Registry": (
+        "hive_name",
+        "key_path",
+        "value_name",
+        "value_data",
     ),
 }
 
@@ -1411,6 +1462,124 @@ class CmdLineSummary(BaseModel):
     )
 
 
+class MftTimelineSummary(BaseModel):
+    """Tier-1 return for `disk_mft_timeline`.
+
+    Distribution + recency signal: how many distinct entry types,
+    the count per entry type, the most-recent timestamp, the oldest
+    timestamp, and a top-N list of paths by entry count (a single
+    file produces up to 4 timeline rows). The top-paths list KEYS
+    are evidence-derived path strings; flagged via
+    `top_paths_keys` in `untrusted_fields`.
+
+    Specific timestamps and filenames come from tier-2
+    `query_records(plugin_name="disk.mft.MftTimeline", ...)`.
+    """
+
+    extraction: ExtractionRef
+    entry_type_distribution: dict[str, int]
+    earliest_timestamp: datetime | None = None
+    latest_timestamp: datetime | None = None
+    top_paths: list[tuple[str, int]] = Field(max_length=10)
+    distinct_paths: int = Field(ge=0)
+    untrusted_fields: list[str] = Field(
+        default_factory=lambda: ["top_paths_keys"]
+    )
+
+    @field_validator("earliest_timestamp", "latest_timestamp")
+    @classmethod
+    def _validate_optional_utc(
+        cls, v: datetime | None, info
+    ) -> datetime | None:
+        if v is None:
+            return v
+        return _enforce_utc(info.field_name, v)
+
+
+class PrefetchSummary(BaseModel):
+    """Tier-1 return for `disk_prefetch`.
+
+    `executable_run_counts` is the load-bearing field — a
+    `top_executables` list ordered by run count, descending. KEYS
+    are evidence-derived executable names so the field is flagged
+    in `untrusted_fields`. `distinct_executables` is the post-parse
+    cardinality; `total_run_count` sums every executable's
+    `run_count` (high values reflect lots of activity).
+    """
+
+    extraction: ExtractionRef
+    distinct_executables: int = Field(ge=0)
+    total_run_count: int = Field(ge=0)
+    top_executables: list[tuple[str, int]] = Field(max_length=10)
+    earliest_run_time: datetime | None = None
+    latest_run_time: datetime | None = None
+    untrusted_fields: list[str] = Field(
+        default_factory=lambda: ["top_executables_keys"]
+    )
+
+    @field_validator("earliest_run_time", "latest_run_time")
+    @classmethod
+    def _validate_optional_utc(
+        cls, v: datetime | None, info
+    ) -> datetime | None:
+        if v is None:
+            return v
+        return _enforce_utc(info.field_name, v)
+
+
+class EvtxSummary(BaseModel):
+    """Tier-1 return for `disk_evtx`.
+
+    Distribution-only summary: events grouped by event_id (top 10),
+    by channel (typically Security / System / a few others), and a
+    sample-timestamp range. The validator's RDP brute-force
+    cross-correlation reads tier-2 `query_records` against this
+    extraction filtered to event_id ∈ {4624, 4625, 4768}; the
+    summary tells it how many of those event types are present.
+    """
+
+    extraction: ExtractionRef
+    event_id_distribution: list[tuple[int, int]] = Field(max_length=10)
+    channel_distribution: dict[str, int]
+    earliest_timestamp: datetime | None = None
+    latest_timestamp: datetime | None = None
+    distinct_event_ids: int = Field(ge=0)
+    untrusted_fields: list[str] = Field(default_factory=list)
+
+    @field_validator("earliest_timestamp", "latest_timestamp")
+    @classmethod
+    def _validate_optional_utc(
+        cls, v: datetime | None, info
+    ) -> datetime | None:
+        if v is None:
+            return v
+        return _enforce_utc(info.field_name, v)
+
+
+class RegistrySummary(BaseModel):
+    """Tier-1 return for `disk_registry`.
+
+    Distribution-only summary: per-hive count, per-key-path-prefix
+    count for known-interesting paths (Run, RunOnce, Services,
+    Policies), and a top-N list of values by key path. KEYS are
+    evidence-derived key paths so the field is flagged in
+    `untrusted_fields`.
+
+    `interesting_paths_distribution` is bounded to a small fixed
+    set of well-known persistence keys (Run / RunOnce / Services /
+    Policies); other paths are tallied under `"other"`.
+    """
+
+    extraction: ExtractionRef
+    hive_distribution: dict[str, int]
+    interesting_paths_distribution: dict[str, int]
+    distinct_key_paths: int = Field(ge=0)
+    top_key_paths: list[tuple[str, int]] = Field(max_length=10)
+    untrusted_fields: list[str] = Field(
+        default_factory=lambda: ["top_key_paths_keys"]
+    )
+
+
 class MalfindSummary(BaseModel):
     """Tier-1 return for `vol_malfind`.
 
@@ -1440,6 +1609,300 @@ class MalfindSummary(BaseModel):
     untrusted_fields: list[str] = Field(
         default_factory=lambda: ["detections_by_process_keys"]
     )
+
+
+# ---------------------------------------------------------------------------
+# Disk-side tier-1 record / result / summary models.
+#
+# Each disk plugin follows the same envelope shape as the Volatility
+# memory tools (PluginName Literal pinned to one specific value;
+# evidence_id; volatility_version replaced by `tool_version` for
+# disk plugins since they are not Volatility); each record type
+# carries the fields the user-facing tier-1 tool returns.
+# ---------------------------------------------------------------------------
+
+
+# MFT timeline entry types — closed Literal so the discriminator stays
+# schema-controlled rather than absorbing whatever string the parser
+# happens to emit. Mirrors plaso's `timestamp_desc` MFT-relevant values.
+MftEntryType = Literal[
+    "created",
+    "modified",
+    "accessed",
+    "mft_modified",
+]
+
+
+class MftTimelineRecord(BaseModel):
+    """One MFT timeline entry from `log2timeline.py --parsers mft`.
+
+    `entry_type` distinguishes which of the four MFT timestamps this
+    row corresponds to (a single $STANDARD_INFORMATION attribute
+    produces up to four rows — created / modified / accessed /
+    mft_modified). `full_path` is the on-disk path string from the
+    MFT entry; treat as evidence-derived (an attacker who placed a
+    binary on disk controls the path).
+
+    `file_size` is from $STANDARD_INFORMATION's allocated/real-size
+    fields; null when the MFT entry is a directory or the size
+    attribute was unreadable. Same nullable convention as
+    ProcessRecord.handles.
+    """
+
+    timestamp: datetime
+    full_path: str
+    entry_type: MftEntryType
+    file_size: int | None = Field(default=None, ge=0)
+
+    @field_validator("timestamp")
+    @classmethod
+    def _validate_timestamp(cls, v: datetime) -> datetime:
+        return _enforce_utc("timestamp", v)
+
+
+class MftTimelineResult(BaseModel):
+    """Result envelope for the `disk.mft.MftTimeline` tier-1 plugin.
+
+    Same provenance shape as PslistResult but with `tool_version`
+    capturing the plaso version (e.g. `"plaso 20240126"`) rather
+    than Volatility's PACKAGE_VERSION. The two-step plaso pipeline
+    (log2timeline.py → psort.py) is recorded in `command_executed`
+    as the joined invocation string.
+    """
+
+    evidence_id: str
+    plugin_name: Literal["disk.mft.MftTimeline"]
+    tool_version: str = Field(min_length=1)
+    entries: list[MftTimelineRecord]
+    command_executed: str = Field(min_length=1)
+    runtime_seconds: float = Field(ge=0)
+    invoked_at: datetime
+
+    @field_validator("evidence_id")
+    @classmethod
+    def _validate_evidence_id(cls, v: str) -> str:
+        try:
+            parsed = UUID(v)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
+        if parsed.version != 4:
+            raise ValueError(
+                f"evidence_id must be UUID version 4, got version {parsed.version}"
+            )
+        return str(parsed)
+
+    @field_validator("invoked_at")
+    @classmethod
+    def _validate_invoked_at(cls, v: datetime) -> datetime:
+        return _enforce_utc("invoked_at", v)
+
+
+class PrefetchRecord(BaseModel):
+    """One prefetch (.pf) entry parsed from `Windows/Prefetch/*.pf`.
+
+    Each `.pf` file describes one executable's launch history.
+    `last_run_times` is the run-time list Windows maintains (up to
+    8 timestamps in modern formats); the most recent is
+    `last_run_times[0]` when present. `referenced_files` are the
+    DLLs / data files the executable touched during prelaunch — the
+    list can be hundreds of strings on a real prefetch entry, so we
+    cap it at 50 in the parser to keep the persisted record bounded.
+    """
+
+    executable_name: str
+    run_count: int = Field(ge=0)
+    last_run_times: list[datetime]
+    volume_path: str
+    referenced_files: list[str] = Field(max_length=50)
+
+    @field_validator("last_run_times")
+    @classmethod
+    def _validate_run_times(cls, v: list[datetime]) -> list[datetime]:
+        return [_enforce_utc("last_run_times", t) for t in v]
+
+
+class PrefetchResult(BaseModel):
+    """Result envelope for the `disk.prefetch.Prefetch` tier-1 plugin.
+
+    `tool_version` captures the prefetch parser version (the
+    python-prefetch package version on the SIFT VM). Same provenance
+    shape as the MFT envelope.
+    """
+
+    evidence_id: str
+    plugin_name: Literal["disk.prefetch.Prefetch"]
+    tool_version: str = Field(min_length=1)
+    entries: list[PrefetchRecord]
+    command_executed: str = Field(min_length=1)
+    runtime_seconds: float = Field(ge=0)
+    invoked_at: datetime
+
+    @field_validator("evidence_id")
+    @classmethod
+    def _validate_evidence_id(cls, v: str) -> str:
+        try:
+            parsed = UUID(v)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
+        if parsed.version != 4:
+            raise ValueError(
+                f"evidence_id must be UUID version 4, got version {parsed.version}"
+            )
+        return str(parsed)
+
+    @field_validator("invoked_at")
+    @classmethod
+    def _validate_invoked_at(cls, v: datetime) -> datetime:
+        return _enforce_utc("invoked_at", v)
+
+
+class EvtxRecord(BaseModel):
+    """One Windows event-log record parsed from a .evtx file.
+
+    `event_id` is the integer EventID (e.g. 4624 for successful logon,
+    7045 for service install). `source` is the provider/source name;
+    `channel` is the EVTX channel (e.g. "Security", "System"); both
+    are typically schema-controlled provider names but logged events
+    can include attacker-controlled strings, so they're flagged in
+    PLUGIN_UNTRUSTED_RECORD_FIELDS for the analyst's discipline.
+
+    `message_summary` is the rendered EventData (or a truncated
+    summary thereof). Hard-capped at 500 characters via
+    `Field(max_length=500)`; the parser truncates with `[truncated]`
+    suffix when the source string exceeds that. Treat as evidence-
+    derived attacker-influenceable content per CLAUDE.md.
+
+    `logon_type` is populated only for events 4624 / 4625 and a
+    handful of other logon-related event IDs; null for everything
+    else. Captured separately because it's the load-bearing field
+    for cross-validating RDP brute-force patterns from netscan.
+    """
+
+    event_id: int = Field(ge=0)
+    timestamp: datetime
+    source: str
+    channel: str
+    message_summary: str = Field(max_length=500)
+    logon_type: int | None = Field(default=None, ge=0)
+
+    @field_validator("timestamp")
+    @classmethod
+    def _validate_timestamp(cls, v: datetime) -> datetime:
+        return _enforce_utc("timestamp", v)
+
+
+class EvtxResult(BaseModel):
+    """Result envelope for the `disk.evtx.EventLog` tier-1 plugin.
+
+    Multiple .evtx files are merged into one extraction (Security +
+    System + ...); each record's `channel` distinguishes which file
+    it came from. `command_executed` records the parser invocation
+    (multi-file dumps are joined into a single command string for
+    the audit trail).
+    """
+
+    evidence_id: str
+    plugin_name: Literal["disk.evtx.EventLog"]
+    tool_version: str = Field(min_length=1)
+    events: list[EvtxRecord]
+    command_executed: str = Field(min_length=1)
+    runtime_seconds: float = Field(ge=0)
+    invoked_at: datetime
+
+    @field_validator("evidence_id")
+    @classmethod
+    def _validate_evidence_id(cls, v: str) -> str:
+        try:
+            parsed = UUID(v)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
+        if parsed.version != 4:
+            raise ValueError(
+                f"evidence_id must be UUID version 4, got version {parsed.version}"
+            )
+        return str(parsed)
+
+    @field_validator("invoked_at")
+    @classmethod
+    def _validate_invoked_at(cls, v: datetime) -> datetime:
+        return _enforce_utc("invoked_at", v)
+
+
+# Closed Literal of the four hive families register_evidence /
+# disk_registry both treat as canonical. NTUSER.DAT is per-user; the
+# parser path enumerates each `Users/<name>/NTUSER.DAT` it finds.
+RegistryHiveName = Literal[
+    "SYSTEM",
+    "SOFTWARE",
+    "SAM",
+    "NTUSER.DAT",
+]
+
+
+class RegistryRecord(BaseModel):
+    """One registry value parsed by RegRipper (or python-registry).
+
+    Each row is `(hive, key path, value name, value data, last
+    modified)`. Hive is one of the closed `RegistryHiveName` set;
+    key_path is the canonical backslash-separated key path
+    (e.g. `Microsoft\\Windows\\CurrentVersion\\Run`); value_name is
+    the value within that key; value_data is the rendered data
+    (DWORD/REG_SZ/REG_EXPAND_SZ string). Hard-capped at 500
+    characters via `Field(max_length=500)`; the parser truncates
+    with `[truncated]` suffix when needed.
+
+    `last_modified` reflects the parent key's last-write timestamp
+    (registry tracks key modification, not value modification).
+    """
+
+    hive_name: RegistryHiveName
+    key_path: str
+    value_name: str
+    value_data: str = Field(max_length=500)
+    last_modified: datetime | None = None
+
+    @field_validator("last_modified")
+    @classmethod
+    def _validate_optional_utc(cls, v: datetime | None) -> datetime | None:
+        if v is None:
+            return v
+        return _enforce_utc("last_modified", v)
+
+
+class RegistryResult(BaseModel):
+    """Result envelope for the `disk.registry.Registry` tier-1 plugin.
+
+    Multiple hives merged into one extraction; each record's
+    `hive_name` distinguishes the source. `command_executed`
+    records the joined RegRipper invocation across the hives that
+    were available on the mounted image.
+    """
+
+    evidence_id: str
+    plugin_name: Literal["disk.registry.Registry"]
+    tool_version: str = Field(min_length=1)
+    keys: list[RegistryRecord]
+    command_executed: str = Field(min_length=1)
+    runtime_seconds: float = Field(ge=0)
+    invoked_at: datetime
+
+    @field_validator("evidence_id")
+    @classmethod
+    def _validate_evidence_id(cls, v: str) -> str:
+        try:
+            parsed = UUID(v)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
+        if parsed.version != 4:
+            raise ValueError(
+                f"evidence_id must be UUID version 4, got version {parsed.version}"
+            )
+        return str(parsed)
+
+    @field_validator("invoked_at")
+    @classmethod
+    def _validate_invoked_at(cls, v: datetime) -> datetime:
+        return _enforce_utc("invoked_at", v)
 
 
 class FieldFilter(BaseModel):
@@ -2024,6 +2487,9 @@ __all__ = [
     "EvidenceRecord",
     "EvidenceRef",
     "EvidenceRefSourceTool",
+    "EvtxRecord",
+    "EvtxResult",
+    "EvtxSummary",
     "ExtractionChainEntry",
     "ExtractionRef",
     "FieldFilter",
@@ -2040,11 +2506,18 @@ __all__ = [
     "MalfindRecord",
     "MalfindResult",
     "MalfindSummary",
+    "MftEntryType",
+    "MftTimelineRecord",
+    "MftTimelineResult",
+    "MftTimelineSummary",
     "NetscanResult",
     "NetscanSummary",
     "NetworkRecord",
     "PLUGIN_UNTRUSTED_RECORD_FIELDS",
     "PluginName",
+    "PrefetchRecord",
+    "PrefetchResult",
+    "PrefetchSummary",
     "ProcessCmdLineRecord",
     "ProcessRecord",
     "ProcessScanRecord",
@@ -2059,6 +2532,10 @@ __all__ = [
     "QueryRecordsResult",
     "RagHit",
     "RagQueryResult",
+    "RegistryHiveName",
+    "RegistryRecord",
+    "RegistryResult",
+    "RegistrySummary",
     "RequestFollowupCorrelation",
     "SetDifferenceResult",
     "StrengthensCorrelation",

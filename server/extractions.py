@@ -252,22 +252,29 @@ def load_extraction(
 def _record_list_from_result(result: BaseModel) -> list:
     """Pull the records list from a tier-1 result model.
 
-    Tier-1 result models name their records list differently
-    (`processes` for pslist/psscan/pstree/cmdline, `connections` for
-    netscan, `detections` for malfind). Centralizing the lookup here
-    keeps `write_extraction` model-agnostic so future tier-1 plugins
-    can plug in by matching one of the conventions without touching
-    the storage layer.
+    Tier-1 result models name their records list differently across
+    plugin families:
+
+      - ``processes``  — pslist, psscan, pstree, cmdline
+      - ``connections`` — netscan
+      - ``detections`` — malfind
+      - ``entries``    — disk MFT timeline, disk prefetch
+      - ``events``     — disk evtx
+      - ``keys``       — disk registry
+
+    Centralizing the lookup here keeps ``write_extraction``
+    model-agnostic so a future tier-1 plugin can plug in by reusing
+    one of the conventions (or by adding a new branch here) without
+    touching the storage layer.
     """
-    if hasattr(result, "processes"):
-        return list(getattr(result, "processes"))
-    if hasattr(result, "connections"):
-        return list(getattr(result, "connections"))
-    if hasattr(result, "detections"):
-        return list(getattr(result, "detections"))
+    for field_name in ("processes", "connections", "detections",
+                       "entries", "events", "keys"):
+        if hasattr(result, field_name):
+            return list(getattr(result, field_name))
     raise TypeError(
-        f"tier-1 result {type(result).__name__} has neither processes, "
-        "connections, nor detections list"
+        f"tier-1 result {type(result).__name__} carries no recognized "
+        "record list (processes / connections / detections / entries / "
+        "events / keys)"
     )
 
 

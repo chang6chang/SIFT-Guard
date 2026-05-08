@@ -17,8 +17,9 @@ flowchart TD
     Reg --> EvDir
 
     %% --- MCP server tools ---
-    subgraph MCP["SIFT-Guard MCP server (15 typed tools)"]
-        Tier1["Tier-1 wrappers<br/>vol_pslist · vol_psscan<br/>vol_pstree · vol_netscan<br/>vol_cmdline · vol_malfind<br/>persists extractions/ + extractions.jsonl"]
+    subgraph MCP["SIFT-Guard MCP server (19 typed tools)"]
+        Tier1Mem["Tier-1 memory<br/>vol_pslist · vol_psscan<br/>vol_pstree · vol_netscan<br/>vol_cmdline · vol_malfind"]
+        Tier1Disk["Tier-1 disk<br/>disk_mft_timeline · disk_prefetch<br/>disk_evtx · disk_registry<br/>persists extractions/ + extractions.jsonl"]
         Tier2["Tier-2 analytical<br/>query_records · group_by<br/>set_difference · subtree"]
         RAG["rag_query<br/>ATT&CK + Sigma retrieval<br/>(validator-only)"]
         RecF["record_finding"]
@@ -26,21 +27,29 @@ flowchart TD
         UpdF["update_finding"]
     end
 
-    EvDir -->|read-only| Tier1
-    Tier1 -.->|reads cached extractions| Tier2
+    EvDir -->|read-only| Tier1Mem
+    EvDir -->|read-only ro mount| Tier1Disk
+    Tier1Mem -.->|reads cached extractions| Tier2
+    Tier1Disk -.->|reads cached extractions| Tier2
 
     %% --- Subagents + orchestrator ---
     PA["process_analyst<br/>subagent"]
     NA["network_analyst<br/>subagent"]
+    DA["disk_analyst<br/>subagent"]
     Val["validator<br/>subagent"]
     Orch["Orchestrator (Python)<br/>5-step loop:<br/>ANALYZE → CORRELATE →<br/>PROMOTE → PLAN → WRITE"]
 
-    %% Read paths: every subagent can call tier-1 + tier-2.
-    PA --> Tier1
+    %% Read paths: per-subagent tier-1 access is restricted by
+    %% frontmatter (memory analysts cannot call disk tools and
+    %% vice versa); tier-2 is open to every subagent.
+    PA --> Tier1Mem
     PA --> Tier2
-    NA --> Tier1
+    NA --> Tier1Mem
     NA --> Tier2
-    Val --> Tier1
+    DA --> Tier1Disk
+    DA --> Tier2
+    Val --> Tier1Mem
+    Val --> Tier1Disk
     Val --> Tier2
 
     %% RAG retrieval: validator-only by frontmatter restriction.
@@ -49,12 +58,14 @@ flowchart TD
     %% Write paths: role-restricted by frontmatter + schema.
     PA --> RecF
     NA --> RecF
+    DA --> RecF
     Val --> RecC
     Orch --> UpdF
 
     %% Control: orchestrator dispatches subagents.
     Orch -.->|dispatch| PA
     Orch -.->|dispatch| NA
+    Orch -.->|dispatch| DA
     Orch -.->|dispatch| Val
 
     %% --- Chains ---
@@ -70,7 +81,8 @@ flowchart TD
 
     %% Audit tap: every MCP tool call appends one line.
     Reg --> Audit
-    Tier1 --> Audit
+    Tier1Mem --> Audit
+    Tier1Disk --> Audit
     Tier2 --> Audit
     RAG --> Audit
     RecF --> Audit
@@ -85,22 +97,22 @@ flowchart TD
     classDef storage fill:#fff8dc,stroke:#aa9,color:#333
     classDef tool fill:#ffffff,stroke:#444,color:#222
 
-    class PA,NA analyst
+    class PA,NA,DA analyst
     class Val validator
     class Orch orchestrator
     class Findings,Corrs,Iters,Audit chain
     class EvDir storage
-    class Reg,Tier1,Tier2,RAG,RecF,RecC,UpdF tool
+    class Reg,Tier1Mem,Tier1Disk,Tier2,RAG,RecF,RecC,UpdF tool
 ```
 
 ## Legend
 
 | Element | Meaning |
 | --- | --- |
-| Blue boxes (`process_analyst`, `network_analyst`) | Analyst subagents — write `DraftFinding` entries via `record_finding`. |
+| Blue boxes (`process_analyst`, `network_analyst`, `disk_analyst`) | Analyst subagents — write `DraftFinding` entries via `record_finding`. |
 | Orange box (`validator`) | Validator subagent — writes correlation entries only; cannot mutate findings. |
 | Green box (`Orchestrator`) | Plain Python (not an LLM). Drives the 5-step loop and is the sole writer of `update_finding` (DRAFT → CONFIRMED / DISPUTED). |
-| White boxes inside the MCP-server subgraph | The 15 typed MCP tools, grouped by role. |
+| White boxes inside the MCP-server subgraph | The 19 typed MCP tools, grouped by role. |
 | Yellow cylinder | Read-only evidence storage (chmod 444 from registration). |
 | Grey dashed cylinders | The four hash-chained JSONL chains. |
 | Solid arrow `→` | A direct call or write. |
@@ -119,7 +131,7 @@ every call regardless.
 
 ## MCP tools by writer role
 
-The 15 tools the MCP server exposes, grouped by what's allowed to
+The 19 tools the MCP server exposes, grouped by what's allowed to
 call them. Every successful invocation appends one line to
 `audit.jsonl`; every rejection appends a typed `<tool>:rejected_*`
 line.
@@ -133,14 +145,26 @@ line.
 | `vol_netscan` | Tier-1 (memory) | Any subagent + the orchestrator's MCP client |
 | `vol_cmdline` | Tier-1 (memory) | `process_analyst` (frontmatter restriction) — fills the EPROCESS-only gap with user-space CommandLine strings |
 | `vol_malfind` | Tier-1 (memory) | `process_analyst` (frontmatter restriction) — flags VAD regions whose protection is RWX and whose contents look like code |
+| `disk_mft_timeline` | Tier-1 (disk) | `disk_analyst` (frontmatter restriction) — plaso MFT-only timeline (`log2timeline.py --parsers mft` + `psort.py -o json_line`) |
+| `disk_prefetch` | Tier-1 (disk) | `disk_analyst` (frontmatter restriction) — Windows/Prefetch/*.pf parser; proves execution |
+| `disk_evtx` | Tier-1 (disk) | `disk_analyst` (frontmatter restriction) — Security + System .evtx parser; cross-validates RDP brute-force / service-install patterns |
+| `disk_registry` | Tier-1 (disk) | `disk_analyst` (frontmatter restriction) — RegRipper across SYSTEM / SOFTWARE / SAM / NTUSER.DAT |
 | `query_records` | Tier-2 (analytical) | Any subagent + the orchestrator's MCP client |
 | `group_by` | Tier-2 (analytical) | Any subagent + the orchestrator's MCP client |
 | `set_difference` | Tier-2 (analytical) | Any subagent + the orchestrator's MCP client |
 | `subtree` | Tier-2 (analytical) | Any subagent + the orchestrator's MCP client |
 | `rag_query` | retrieval (RAG) | `validator` only (frontmatter restriction) — searches the merged ATT&CK + Sigma corpus |
-| `record_finding` | finding writer | `process_analyst` and `network_analyst` only (DISPUTED self-mark rejected) |
+| `record_finding` | finding writer | `process_analyst`, `network_analyst`, and `disk_analyst` only (DISPUTED self-mark rejected) |
 | `record_correlation` | correlation writer | `validator` only |
 | `update_finding` | promotion writer | The orchestrator only (DRAFT → DRAFT/CONFIRMED transitions) |
+
+The four `disk_*` tools are gated by `artifact_class is disk_image`
+inside their wrappers — calling them against a `memory_image`
+evidence_id raises a sanitized `evidence is not a disk image` and
+audits a `<tool>:rejected_wrong_artifact_class` line. The mount
+utility (`server.runners.disk_mount.mount_disk_image`) is
+internal to the server, NOT an MCP tool — the agent can only name
+an `evidence_id`, never a path or a mount.
 
 Tier-1 tools also persist the full Volatility output to
 `case-data/extractions/<evidence_id>/<plugin>.json` (with a
@@ -153,8 +177,10 @@ return-size budget.
 
 The orchestrator's `run_loop()` reads the registered evidence's
 `artifact_class` from `CASE.yaml` and dispatches the matching
-analyst subagents (currently `process_analyst` + `network_analyst`
-for memory images), each of which calls Tier-1 / Tier-2 tools and
+analyst subagents (`process_analyst` + `network_analyst` for
+memory images; `disk_analyst` for disk images / triage zips —
+multiple analysts run in parallel when both artifact classes are
+registered), each of which calls Tier-1 / Tier-2 tools and
 commits its observations as DRAFT findings via `record_finding`.
 The orchestrator then dispatches the `validator` subagent with a
 summary of every DRAFT finding; the validator independently calls
@@ -185,12 +211,18 @@ This diagram reflects what ships as of the
 - `orchestrator/promotion.py` — R1-R6 rule engine
 - `server/schemas.py` — three-writer chain schemas + Literal
   constraints on payload values
-- `server/tools/{evidence,memory,analytical,findings,correlations,rag}.py`
-  — the 15 tool implementations
-- `.claude/agents/{process,network,validator}_analyst.md` — the
-  per-subagent tool-surface restriction (the architectural
-  enforcement that makes "validator can't write findings" true at
-  the agent surface, not just at the schema)
+- `server/tools/{evidence,memory,disk,analytical,findings,correlations,rag}.py`
+  — the 19 tool implementations
+- `server/runners/disk_mount.py` — disk-mount utility + per-tool
+  subprocess runners + parsers; honors
+  `SIFT_DISK_PREMOUNTED_PATH` for dev/CI environments without
+  root
+- `.claude/agents/{process,network,disk}_analyst.md` and
+  `.claude/agents/validator.md` — the per-subagent tool-surface
+  restriction (the architectural enforcement that makes
+  "validator can't write findings" and "memory analysts can't
+  call disk tools" true at the agent surface, not just at the
+  schema)
 - `docs/confidence-methodology.md` — what the loop's PROMOTE step
   does in detail
 - `docs/loop-design.md`, `docs/validator-design.md`,

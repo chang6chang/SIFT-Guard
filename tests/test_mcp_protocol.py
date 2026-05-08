@@ -167,13 +167,15 @@ class TestToolSurface:
         # 10 to 12. record_finding remains the analyst's write.
         # Week-7 G-2 expansion: rag_query exposes the ATT&CK corpus
         # to the validator subagent for grounding correlation
-        # hypotheses; 12 → 13. Week-8 expansion: vol_cmdline (fills
-        # the EPROCESS-only gap with user-space CommandLine strings)
-        # and vol_malfind (RWX-VAD injection detector); 13 → 15. The
-        # agent-layer surface restriction to validator-only for
-        # rag_query lives in `.claude/agents/validator.md`, not at
-        # the MCP-server level — every connected client sees all 15
-        # tools listed.
+        # hypotheses; 12 → 13. Week-8 cmdline+malfind expansion:
+        # 13 → 15. Week-8 disk-side expansion: disk_mft_timeline,
+        # disk_prefetch, disk_evtx, disk_registry add four
+        # disk-image tier-1 wrappers; 15 → 19. The agent-layer
+        # surface restriction (validator-only for rag_query;
+        # process_analyst-only for cmdline/malfind; disk_analyst-
+        # only for the four disk tools) lives in
+        # `.claude/agents/<name>.md`, not at the MCP-server level
+        # — every connected client sees all 19 tools listed.
         listing = _run_async(_list_tools_only(tmp_path))
         tool_names = {t.name for t in listing.tools}
         assert tool_names == {
@@ -184,6 +186,10 @@ class TestToolSurface:
             "vol_netscan",
             "vol_cmdline",
             "vol_malfind",
+            "disk_mft_timeline",
+            "disk_prefetch",
+            "disk_evtx",
+            "disk_registry",
             "query_records",
             "group_by",
             "set_difference",
@@ -193,7 +199,7 @@ class TestToolSurface:
             "update_finding",
             "rag_query",
         }, (
-            "expected exactly the 15-tool surface (tier-0/tier-1/tier-2 "
+            "expected exactly the 19-tool surface (tier-0/tier-1/tier-2 "
             "plus three writes plus rag_query); got "
             f"{sorted(tool_names)}"
         )
@@ -408,6 +414,10 @@ class TestToolSurface:
             "windows.netscan.NetScan",
             "windows.cmdline.CmdLine",
             "windows.malfind.Malfind",
+            "disk.mft.MftTimeline",
+            "disk.prefetch.Prefetch",
+            "disk.evtx.EventLog",
+            "disk.registry.Registry",
         }, f"plugin_name enum drifted: {plugin_enum}"
         assert "evidence_id" in tool.inputSchema.get("required", [])
 
@@ -456,6 +466,10 @@ class TestToolSurface:
                 "windows.netscan.NetScan",
                 "windows.cmdline.CmdLine",
                 "windows.malfind.Malfind",
+                "disk.mft.MftTimeline",
+                "disk.prefetch.Prefetch",
+                "disk.evtx.EventLog",
+                "disk.registry.Registry",
             }, f"{side} enum drifted: {plugin_enum}"
 
     def test_subtree_parameter_set(self, tmp_path: Path):
@@ -850,6 +864,10 @@ class TestRoundTrip:
             "vol_netscan",
             "vol_cmdline",
             "vol_malfind",
+            "disk_mft_timeline",
+            "disk_prefetch",
+            "disk_evtx",
+            "disk_registry",
             "query_records",
             "group_by",
             "set_difference",

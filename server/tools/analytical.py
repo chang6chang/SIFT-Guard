@@ -130,6 +130,31 @@ _MALFIND_FIELDS: frozenset[str] = frozenset(
         "disassembly",
     }
 )
+_DISK_MFT_FIELDS: frozenset[str] = frozenset(
+    {"timestamp", "full_path", "entry_type", "file_size"}
+)
+_DISK_PREFETCH_FIELDS: frozenset[str] = frozenset(
+    {
+        "executable_name",
+        "run_count",
+        "last_run_times",
+        "volume_path",
+        "referenced_files",
+    }
+)
+_DISK_EVTX_FIELDS: frozenset[str] = frozenset(
+    {
+        "event_id",
+        "timestamp",
+        "source",
+        "channel",
+        "message_summary",
+        "logon_type",
+    }
+)
+_DISK_REGISTRY_FIELDS: frozenset[str] = frozenset(
+    {"hive_name", "key_path", "value_name", "value_data", "last_modified"}
+)
 _FIELDS_BY_PLUGIN: dict[str, frozenset[str]] = {
     "windows.pslist.PsList": _PSLIST_FIELDS,
     "windows.psscan.PsScan": _PSLIST_FIELDS,
@@ -137,6 +162,10 @@ _FIELDS_BY_PLUGIN: dict[str, frozenset[str]] = {
     "windows.netscan.NetScan": _NETSCAN_FIELDS,
     "windows.cmdline.CmdLine": _CMDLINE_FIELDS,
     "windows.malfind.Malfind": _MALFIND_FIELDS,
+    "disk.mft.MftTimeline": _DISK_MFT_FIELDS,
+    "disk.prefetch.Prefetch": _DISK_PREFETCH_FIELDS,
+    "disk.evtx.EventLog": _DISK_EVTX_FIELDS,
+    "disk.registry.Registry": _DISK_REGISTRY_FIELDS,
 }
 
 # Where the records list lives in each plugin's stored JSON.
@@ -147,6 +176,10 @@ _RECORDS_KEY_BY_PLUGIN: dict[str, str] = {
     "windows.netscan.NetScan": "connections",
     "windows.cmdline.CmdLine": "processes",
     "windows.malfind.Malfind": "detections",
+    "disk.mft.MftTimeline": "entries",
+    "disk.prefetch.Prefetch": "entries",
+    "disk.evtx.EventLog": "events",
+    "disk.registry.Registry": "keys",
 }
 
 

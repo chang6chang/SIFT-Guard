@@ -1,0 +1,4 @@
+{"datetime": "2024-03-15T10:00:00+00:00", "parser": "mft", "timestamp_desc": "Creation Time", "display_name": "/Windows/System32/cmd.exe", "filename": "cmd.exe", "file_size": 289792}
+{"datetime": "2024-03-16T11:30:00+00:00", "parser": "mft", "timestamp_desc": "Last Modification Time", "display_name": "/Windows/System32/cmd.exe", "filename": "cmd.exe", "file_size": 289792}
+{"datetime": "2024-03-20T08:45:00+00:00", "parser": "mft", "timestamp_desc": "Last Access Time", "display_name": "/Users/Public/notepad.exe", "filename": "notepad.exe", "file_size": 201728}
+{"datetime": "2024-03-20T08:46:00+00:00", "parser": "mft", "timestamp_desc": "MFT Entry Modification Time", "display_name": "/Users/Public/notepad.exe", "filename": "notepad.exe", "file_size": 201728}

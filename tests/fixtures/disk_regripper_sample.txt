@@ -1,0 +1,16 @@
+# === HIVE: SYSTEM ===
+Key: ControlSet001\Services\EvilSvc
+LastWrite Time = 2024-03-21T02:13:00+00:00
+ImagePath -> C:\Users\Public\evil.exe
+Start -> 2
+Type -> 16
+
+# === HIVE: SOFTWARE ===
+Key: Microsoft\Windows\CurrentVersion\Run
+LastWrite Time = 2024-03-21T02:14:00+00:00
+EvilLoader -> C:\Users\Public\loader.exe
+
+# === HIVE: NTUSER.DAT (alice) ===
+Key: Microsoft\Windows\CurrentVersion\Run
+LastWrite Time = 2024-03-21T02:15:00+00:00
+SkypeUpdater -> C:\Users\alice\AppData\Roaming\update.exe
