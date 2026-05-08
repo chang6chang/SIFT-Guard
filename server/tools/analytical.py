@@ -116,11 +116,27 @@ _NETSCAN_FIELDS: frozenset[str] = frozenset(
         "created",
     }
 )
+_CMDLINE_FIELDS: frozenset[str] = frozenset(
+    {"pid", "process_name", "cmdline"}
+)
+_MALFIND_FIELDS: frozenset[str] = frozenset(
+    {
+        "pid",
+        "process_name",
+        "vad_start",
+        "vad_tag",
+        "protection",
+        "hex_dump",
+        "disassembly",
+    }
+)
 _FIELDS_BY_PLUGIN: dict[str, frozenset[str]] = {
     "windows.pslist.PsList": _PSLIST_FIELDS,
     "windows.psscan.PsScan": _PSLIST_FIELDS,
     "windows.pstree.PsTree": _PSTREE_FIELDS,
     "windows.netscan.NetScan": _NETSCAN_FIELDS,
+    "windows.cmdline.CmdLine": _CMDLINE_FIELDS,
+    "windows.malfind.Malfind": _MALFIND_FIELDS,
 }
 
 # Where the records list lives in each plugin's stored JSON.
@@ -129,6 +145,8 @@ _RECORDS_KEY_BY_PLUGIN: dict[str, str] = {
     "windows.psscan.PsScan": "processes",
     "windows.pstree.PsTree": "processes",
     "windows.netscan.NetScan": "connections",
+    "windows.cmdline.CmdLine": "processes",
+    "windows.malfind.Malfind": "detections",
 }
 
 

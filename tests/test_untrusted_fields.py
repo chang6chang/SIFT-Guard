@@ -207,15 +207,17 @@ def _seed_netscan(case_dir: Path, records: list[NetworkRecord]) -> None:
 
 
 class TestPluginUntrustedRecordFieldsMap:
-    def test_map_has_all_four_supported_plugins(self):
+    def test_map_has_all_supported_plugins(self):
         # Every plugin in the PluginName Literal must appear in the map.
-        # Adding a fifth plugin without extending the map is the failure
+        # Adding a plugin without extending the map is the failure
         # mode this test catches.
         assert set(PLUGIN_UNTRUSTED_RECORD_FIELDS.keys()) == {
             "windows.pslist.PsList",
             "windows.psscan.PsScan",
             "windows.pstree.PsTree",
             "windows.netscan.NetScan",
+            "windows.cmdline.CmdLine",
+            "windows.malfind.Malfind",
         }
 
     def test_pslist_psscan_match_processrecord_string_fields(self):
@@ -243,6 +245,25 @@ class TestPluginUntrustedRecordFieldsMap:
         # Literal so its values are schema-controlled.
         assert PLUGIN_UNTRUSTED_RECORD_FIELDS["windows.netscan.NetScan"] == (
             "local_addr", "foreign_addr", "owner", "state",
+        )
+
+    def test_cmdline_carries_process_name_and_cmdline_strings(self):
+        # ProcessCmdLineRecord — process_name (image name) plus the
+        # user-space command line read out of
+        # _RTL_USER_PROCESS_PARAMETERS. The cmdline value is the
+        # half an attacker most directly controls.
+        assert PLUGIN_UNTRUSTED_RECORD_FIELDS["windows.cmdline.CmdLine"] == (
+            "process_name", "cmdline",
+        )
+
+    def test_malfind_carries_vad_and_memory_content_strings(self):
+        # MalfindRecord — process_name plus the four fields whose
+        # values come from suspect VAD memory: pool tag, page
+        # protection string, hex dump bytes, and disassembly text.
+        # Treating all four as data is what stops crafted shellcode
+        # ASCII strings from steering the analyst.
+        assert PLUGIN_UNTRUSTED_RECORD_FIELDS["windows.malfind.Malfind"] == (
+            "process_name", "vad_tag", "protection", "hex_dump", "disassembly",
         )
 
 

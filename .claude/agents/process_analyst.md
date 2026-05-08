@@ -6,6 +6,8 @@ tools:
   - mcp__sift-guard__vol_pslist
   - mcp__sift-guard__vol_psscan
   - mcp__sift-guard__vol_pstree
+  - mcp__sift-guard__vol_cmdline
+  - mcp__sift-guard__vol_malfind
   - mcp__sift-guard__query_records
   - mcp__sift-guard__group_by
   - mcp__sift-guard__set_difference
@@ -67,6 +69,22 @@ plugins, or walk subtrees.
   (25–45 s). Summary covers tree shape: top-level root count, max
   depth, depth distribution, largest subtree by descendant count,
   orphan count.
+- `mcp__sift-guard__vol_cmdline` — user-space command line for
+  every process, read from `_RTL_USER_PROCESS_PARAMETERS`. Fills
+  the gap left by pslist/psscan, which expose the EPROCESS image
+  name but not the command-line arguments. The summary's
+  `null_cmdline_count` / `with_cmdline_count` fields directly
+  quantify how much of the parameters block actually paged in;
+  specific command lines come from `query_records` against the
+  cmdline extraction.
+- `mcp__sift-guard__vol_malfind` — VAD-tree scan that flags pages
+  whose protection includes write+execute (typically
+  `PAGE_EXECUTE_READWRITE`) AND whose contents look like code
+  rather than zero-fill. Detects classic injected-shellcode
+  signatures. Summary's `protection_distribution` and
+  `detections_by_process` fields point at suspicious processes;
+  hex dumps, disassembly, and per-VAD addresses come from
+  `query_records` against the malfind extraction.
 
 A tier-1 tool's summary is your map. It tells you *where* to look;
 the records themselves come from tier-2 tools below.
@@ -142,5 +160,5 @@ unless a specific observation justifies further drill-down.
 - Do not analyze network state — that is `network_analyst`'s role.
 - Do not promote findings beyond DRAFT — that is the validator's role.
 - Do not investigate disk artifacts — none are registered.
-- Do not run tools you don't have access to (you only have the nine
-  above).
+- Do not run tools you don't have access to (you only have the
+  eleven above).

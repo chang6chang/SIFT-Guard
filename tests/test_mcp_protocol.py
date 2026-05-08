@@ -167,10 +167,13 @@ class TestToolSurface:
         # 10 to 12. record_finding remains the analyst's write.
         # Week-7 G-2 expansion: rag_query exposes the ATT&CK corpus
         # to the validator subagent for grounding correlation
-        # hypotheses; 12 → 13. The agent-layer surface restriction
-        # to validator-only lives in `.claude/agents/validator.md`,
-        # not at the MCP-server level — every connected client sees
-        # all 13 tools listed.
+        # hypotheses; 12 → 13. Week-8 expansion: vol_cmdline (fills
+        # the EPROCESS-only gap with user-space CommandLine strings)
+        # and vol_malfind (RWX-VAD injection detector); 13 → 15. The
+        # agent-layer surface restriction to validator-only for
+        # rag_query lives in `.claude/agents/validator.md`, not at
+        # the MCP-server level — every connected client sees all 15
+        # tools listed.
         listing = _run_async(_list_tools_only(tmp_path))
         tool_names = {t.name for t in listing.tools}
         assert tool_names == {
@@ -179,6 +182,8 @@ class TestToolSurface:
             "vol_psscan",
             "vol_pstree",
             "vol_netscan",
+            "vol_cmdline",
+            "vol_malfind",
             "query_records",
             "group_by",
             "set_difference",
@@ -188,7 +193,7 @@ class TestToolSurface:
             "update_finding",
             "rag_query",
         }, (
-            "expected exactly the 13-tool surface (tier-0/tier-1/tier-2 "
+            "expected exactly the 15-tool surface (tier-0/tier-1/tier-2 "
             "plus three writes plus rag_query); got "
             f"{sorted(tool_names)}"
         )
@@ -394,13 +399,15 @@ class TestToolSurface:
             "query_records parameter set drifted; got "
             f"{sorted(properties.keys())}"
         )
-        # plugin_name is a closed enum across the 4 supported plugins.
+        # plugin_name is a closed enum across the supported plugins.
         plugin_enum = properties["plugin_name"].get("enum", [])
         assert set(plugin_enum) == {
             "windows.pslist.PsList",
             "windows.psscan.PsScan",
             "windows.pstree.PsTree",
             "windows.netscan.NetScan",
+            "windows.cmdline.CmdLine",
+            "windows.malfind.Malfind",
         }, f"plugin_name enum drifted: {plugin_enum}"
         assert "evidence_id" in tool.inputSchema.get("required", [])
 
@@ -447,6 +454,8 @@ class TestToolSurface:
                 "windows.psscan.PsScan",
                 "windows.pstree.PsTree",
                 "windows.netscan.NetScan",
+                "windows.cmdline.CmdLine",
+                "windows.malfind.Malfind",
             }, f"{side} enum drifted: {plugin_enum}"
 
     def test_subtree_parameter_set(self, tmp_path: Path):
@@ -839,6 +848,8 @@ class TestRoundTrip:
             "vol_psscan",
             "vol_pstree",
             "vol_netscan",
+            "vol_cmdline",
+            "vol_malfind",
             "query_records",
             "group_by",
             "set_difference",

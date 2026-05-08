@@ -252,19 +252,22 @@ def load_extraction(
 def _record_list_from_result(result: BaseModel) -> list:
     """Pull the records list from a tier-1 result model.
 
-    The four memory result models name their records list differently
-    (`processes` for pslist/psscan/pstree, `connections` for netscan).
-    Centralizing the lookup here keeps `write_extraction` model-agnostic
-    so future tier-1 plugins (e.g. malfind, dlllist) can plug in by
-    matching either convention without touching the storage layer.
+    Tier-1 result models name their records list differently
+    (`processes` for pslist/psscan/pstree/cmdline, `connections` for
+    netscan, `detections` for malfind). Centralizing the lookup here
+    keeps `write_extraction` model-agnostic so future tier-1 plugins
+    can plug in by matching one of the conventions without touching
+    the storage layer.
     """
     if hasattr(result, "processes"):
         return list(getattr(result, "processes"))
     if hasattr(result, "connections"):
         return list(getattr(result, "connections"))
+    if hasattr(result, "detections"):
+        return list(getattr(result, "detections"))
     raise TypeError(
-        f"tier-1 result {type(result).__name__} has neither processes nor "
-        "connections list"
+        f"tier-1 result {type(result).__name__} has neither processes, "
+        "connections, nor detections list"
     )
 
 

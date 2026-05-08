@@ -29,8 +29,8 @@ flowchart TD
     Reg --> EvDir
 
     %% --- MCP server tools ---
-    subgraph MCP["SIFT-Guard MCP server (13 typed tools)"]
-        Tier1["Tier-1 wrappers<br/>vol_pslist · vol_psscan<br/>vol_pstree · vol_netscan<br/>persists extractions/ + extractions.jsonl"]
+    subgraph MCP["SIFT-Guard MCP server (15 typed tools)"]
+        Tier1["Tier-1 wrappers<br/>vol_pslist · vol_psscan<br/>vol_pstree · vol_netscan<br/>vol_cmdline · vol_malfind<br/>persists extractions/ + extractions.jsonl"]
         Tier2["Tier-2 analytical<br/>query_records · group_by<br/>set_difference · subtree"]
         RAG["rag_query<br/>ATT&CK + Sigma retrieval<br/>(validator-only)"]
         RecF["record_finding"]
@@ -105,7 +105,7 @@ flowchart TD
 ```
 
 See [`docs/architecture-diagram.md`](docs/architecture-diagram.md)
-for the legend, the 13-tool table by writer role, and the
+for the legend, the 15-tool table by writer role, and the
 loop-narrative writeup.
 
 ## Prerequisites
@@ -164,7 +164,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 # 6. Verify the index is on disk.
 ls rag/data/attack-enterprise.{faiss,records.json,meta.json}
 
-# 7. Run the test suite (375 tests, ~2 min — exercises the
+# 7. Run the test suite (387 tests, ~2 min — exercises the
 #    MCP tool surface, schema invariants, promotion rules,
 #    loop integration).
 .venv/bin/python -m pytest tests/ -q
@@ -425,7 +425,7 @@ full refresh after bumping `ATTACK_TAG` or `SIGMA_TAG`, delete
 
 ## Status
 
-375 unit tests + 4 deselected integration tests. 13 MCP tools.
+387 unit tests + 4 deselected integration tests. 15 MCP tools.
 RAG corpus: 2844 records (697 MITRE ATT&CK Enterprise techniques
 + 2147 SigmaHQ Windows detection rules). End-to-end runs
 validated on the SANS Standard Forensic Case (Rocba) and on the

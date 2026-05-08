@@ -8,9 +8,10 @@ arbitrary case paths. `CASE_DIR` is a module-level constant resolved
 by the server, not a parameter the agent can set — the agent can only
 name evidence by `evidence_id` registered through `register_evidence`.
 
-Tool surface as of week 7 (13 tools):
+Tool surface as of week 8 (15 tools):
   Tier-0  register_evidence (read-only catalog)
-  Tier-1  vol_pslist, vol_psscan, vol_pstree, vol_netscan
+  Tier-1  vol_pslist, vol_psscan, vol_pstree, vol_netscan,
+          vol_cmdline, vol_malfind
           — invoke Volatility, persist full output to extractions/,
             return a small Summary
   Tier-2  query_records, group_by, set_difference, subtree
@@ -30,6 +31,7 @@ from mcp.server.fastmcp import FastMCP
 from typing import Any, Literal
 
 from server.schemas import (
+    CmdLineSummary,
     ContradictionSeverity,
     ContradictsCorrelation,
     CorrelationStrength,
@@ -44,6 +46,7 @@ from server.schemas import (
     FindingUpdate,
     FollowupTargetAnalyst,
     GroupByResult,
+    MalfindSummary,
     NetscanSummary,
     PluginName,
     PromotionRule,
@@ -73,6 +76,8 @@ from server.tools.findings import (
     update_finding as _update_finding_impl,
 )
 from server.tools.memory import (
+    vol_cmdline as _vol_cmdline_impl,
+    vol_malfind as _vol_malfind_impl,
     vol_netscan as _vol_netscan_impl,
     vol_pslist as _vol_pslist_impl,
     vol_psscan as _vol_psscan_impl,
@@ -205,6 +210,64 @@ def vol_netscan(evidence_id: str) -> NetscanSummary:
     back-to-back redundantly. Cache hits are instant.
     """
     return _vol_netscan_impl(evidence_id, case_dir=CASE_DIR)
+
+
+@mcp.tool()
+def vol_cmdline(evidence_id: str) -> CmdLineSummary:
+    """Run windows.cmdline.CmdLine against a registered memory image.
+
+    Tier-1 tool. Reads the user-space command line for each process
+    out of `_RTL_USER_PROCESS_PARAMETERS.CommandLine`. Returns a
+    CmdLineSummary (≤10 KB) with `null_cmdline_count` /
+    `with_cmdline_count` (the gap signal — pslist alone reports
+    image names but not arguments; this tool tells you how much of
+    the parameters block actually paged in), `distinct_cmdlines`,
+    `top_process_names` (top 10 process names by record count), and
+    `pid_range`. The full CmdLineResult lives in the stored
+    extraction at
+    `case-data/extractions/<evidence_id>/windows.cmdline.CmdLine.json`;
+    specific command lines come from
+    `query_records(plugin_name="windows.cmdline.CmdLine", ...)`.
+
+    Same cache contract and sanitized rejection paths as vol_pslist:
+    `vol_cmdline:rejected_*`, `vol_cmdline:cached`,
+    `vol_cmdline:hash_mismatch`, `vol_cmdline:record_validation_warning`.
+
+    Cost: typically 25-60 seconds per first call against a 19 GB
+    Windows 10 image; cmdline reads the same paged structures as
+    pstree's `cmd` projection. Cache hits are instant.
+    """
+    return _vol_cmdline_impl(evidence_id, case_dir=CASE_DIR)
+
+
+@mcp.tool()
+def vol_malfind(evidence_id: str) -> MalfindSummary:
+    """Run windows.malfind.Malfind against a registered memory image.
+
+    Tier-1 tool. Walks each process's VAD tree and flags regions
+    whose page protection includes both write and execute (typically
+    PAGE_EXECUTE_READWRITE) AND whose contents look like code rather
+    than zero-fill. Returns a MalfindSummary (≤10 KB) with
+    `unique_process_names`, `detections_by_process` (top 10 process
+    names by detection count), `protection_distribution` (the
+    load-bearing field — non-zero `PAGE_EXECUTE_READWRITE` count is
+    the classic shellcode marker), `vad_tag_distribution`, and
+    `pid_range`. The full MalfindResult lives in the stored
+    extraction; specific PIDs / hex dumps / disassembly come from
+    `query_records(plugin_name="windows.malfind.Malfind", ...)`.
+
+    Result-list field is named `detections` not `processes` — a
+    single PID can produce multiple rows (one per suspicious VAD
+    region). Same cache contract and sanitized rejection paths as
+    vol_pslist: `vol_malfind:rejected_*`, `vol_malfind:cached`,
+    `vol_malfind:hash_mismatch`,
+    `vol_malfind:record_validation_warning`.
+
+    Cost: bounded by the number of injected regions, not the total
+    process count. Typically completes in seconds-to-minutes against
+    a 19 GB Windows 10 image. Cache hits are instant.
+    """
+    return _vol_malfind_impl(evidence_id, case_dir=CASE_DIR)
 
 
 @mcp.tool()

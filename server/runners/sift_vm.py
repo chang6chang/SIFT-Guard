@@ -353,6 +353,82 @@ def parse_netscan_json(stdout: str) -> list[dict]:
     return rows
 
 
+# Cmdline emits one row per process with the user-space command line
+# read out of `_RTL_USER_PROCESS_PARAMETERS`. Same source as pstree's
+# `cmd` column but exposed flat — pid + process name + cmdline only.
+# Vol's JSON renderer encodes UnreadableValue as `null` so the schema
+# stays nullable (most pages page out before acquisition).
+_CMDLINE_FIELD_MAP = {
+    "PID": "pid",
+    "Process": "process_name",
+    "Args": "cmdline",
+}
+
+
+def parse_cmdline_json(stdout: str) -> list[dict]:
+    """Parse Volatility 3 cmdline JSON output into snake_case dicts.
+
+    Drops `__children` and any unknown keys, matching the
+    forward-compat stance in `parse_volatility_json`. The Vol 3 JSON
+    renderer encodes `_RTL_USER_PROCESS_PARAMETERS` read failures as
+    JSON `null` for the `Args` field — pydantic's `cmdline: str | None`
+    accepts that directly.
+    """
+    raw = json.loads(stdout)
+    if not isinstance(raw, list):
+        raise ValueError("expected JSON array at top level")
+
+    rows: list[dict] = []
+    for row in raw:
+        mapped: dict = {}
+        for vol_key, schema_key in _CMDLINE_FIELD_MAP.items():
+            if vol_key in row:
+                mapped[schema_key] = row[vol_key]
+        rows.append(mapped)
+    return rows
+
+
+# Malfind emits one row per suspicious VAD region per process —
+# multiple rows per PID are normal. Vol 3 surfaces twelve columns
+# (PID, Process, Start VPN, End VPN, Tag, Protection, CommitCharge,
+# PrivateMemory, File output, Hexdump, Disasm, Notes); we map the
+# subset the schema cares about and drop the rest. `Hexdump` arrives
+# as a hex string from the JSON renderer's `format_hints.HexBytes`
+# encoding; `Disasm` is multi-line disassembly text or null.
+_MALFIND_FIELD_MAP = {
+    "PID": "pid",
+    "Process": "process_name",
+    "Start VPN": "vad_start",
+    "Tag": "vad_tag",
+    "Protection": "protection",
+    "Hexdump": "hex_dump",
+    "Disasm": "disassembly",
+}
+
+
+def parse_malfind_json(stdout: str) -> list[dict]:
+    """Parse Volatility 3 malfind JSON output into snake_case dicts.
+
+    Drops the four columns the schema does not carry (`End VPN`,
+    `CommitCharge`, `PrivateMemory`, `File output`, `Notes`) plus
+    `__children` — same forward-compat stance as the other parsers.
+    `Disasm` may arrive as null when Vol's disassembler bails on the
+    bytes; the schema's `disassembly: str | None` accepts that.
+    """
+    raw = json.loads(stdout)
+    if not isinstance(raw, list):
+        raise ValueError("expected JSON array at top level")
+
+    rows: list[dict] = []
+    for row in raw:
+        mapped: dict = {}
+        for vol_key, schema_key in _MALFIND_FIELD_MAP.items():
+            if vol_key in row:
+                mapped[schema_key] = row[vol_key]
+        rows.append(mapped)
+    return rows
+
+
 __all__ = [
     "SIFT_VM_USER",
     "SIFT_VM_HOST",
@@ -361,6 +437,8 @@ __all__ = [
     "SIFT_VM_VOL_PYTHON",
     "SIFT_VM_EVIDENCE_PREFIX",
     "get_vol_version",
+    "parse_cmdline_json",
+    "parse_malfind_json",
     "parse_netscan_json",
     "parse_pstree_json",
     "parse_volatility_json",

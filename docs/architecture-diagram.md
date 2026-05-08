@@ -17,8 +17,8 @@ flowchart TD
     Reg --> EvDir
 
     %% --- MCP server tools ---
-    subgraph MCP["SIFT-Guard MCP server (13 typed tools)"]
-        Tier1["Tier-1 wrappers<br/>vol_pslist · vol_psscan<br/>vol_pstree · vol_netscan<br/>persists extractions/ + extractions.jsonl"]
+    subgraph MCP["SIFT-Guard MCP server (15 typed tools)"]
+        Tier1["Tier-1 wrappers<br/>vol_pslist · vol_psscan<br/>vol_pstree · vol_netscan<br/>vol_cmdline · vol_malfind<br/>persists extractions/ + extractions.jsonl"]
         Tier2["Tier-2 analytical<br/>query_records · group_by<br/>set_difference · subtree"]
         RAG["rag_query<br/>ATT&CK + Sigma retrieval<br/>(validator-only)"]
         RecF["record_finding"]
@@ -100,7 +100,7 @@ flowchart TD
 | Blue boxes (`process_analyst`, `network_analyst`) | Analyst subagents — write `DraftFinding` entries via `record_finding`. |
 | Orange box (`validator`) | Validator subagent — writes correlation entries only; cannot mutate findings. |
 | Green box (`Orchestrator`) | Plain Python (not an LLM). Drives the 5-step loop and is the sole writer of `update_finding` (DRAFT → CONFIRMED / DISPUTED). |
-| White boxes inside the MCP-server subgraph | The 13 typed MCP tools, grouped by role. |
+| White boxes inside the MCP-server subgraph | The 15 typed MCP tools, grouped by role. |
 | Yellow cylinder | Read-only evidence storage (chmod 444 from registration). |
 | Grey dashed cylinders | The four hash-chained JSONL chains. |
 | Solid arrow `→` | A direct call or write. |
@@ -119,7 +119,7 @@ every call regardless.
 
 ## MCP tools by writer role
 
-The 13 tools the MCP server exposes, grouped by what's allowed to
+The 15 tools the MCP server exposes, grouped by what's allowed to
 call them. Every successful invocation appends one line to
 `audit.jsonl`; every rejection appends a typed `<tool>:rejected_*`
 line.
@@ -131,6 +131,8 @@ line.
 | `vol_psscan` | Tier-1 (memory) | Any subagent + the orchestrator's MCP client |
 | `vol_pstree` | Tier-1 (memory) | Any subagent + the orchestrator's MCP client |
 | `vol_netscan` | Tier-1 (memory) | Any subagent + the orchestrator's MCP client |
+| `vol_cmdline` | Tier-1 (memory) | `process_analyst` (frontmatter restriction) — fills the EPROCESS-only gap with user-space CommandLine strings |
+| `vol_malfind` | Tier-1 (memory) | `process_analyst` (frontmatter restriction) — flags VAD regions whose protection is RWX and whose contents look like code |
 | `query_records` | Tier-2 (analytical) | Any subagent + the orchestrator's MCP client |
 | `group_by` | Tier-2 (analytical) | Any subagent + the orchestrator's MCP client |
 | `set_difference` | Tier-2 (analytical) | Any subagent + the orchestrator's MCP client |
@@ -184,7 +186,7 @@ This diagram reflects what ships as of the
 - `server/schemas.py` — three-writer chain schemas + Literal
   constraints on payload values
 - `server/tools/{evidence,memory,analytical,findings,correlations,rag}.py`
-  — the 13 tool implementations
+  — the 15 tool implementations
 - `.claude/agents/{process,network,validator}_analyst.md` — the
   per-subagent tool-surface restriction (the architectural
   enforcement that makes "validator can't write findings" true at

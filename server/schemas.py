@@ -512,6 +512,144 @@ class NetscanResult(BaseModel):
         return _enforce_utc("invoked_at", v)
 
 
+class ProcessCmdLineRecord(BaseModel):
+    """One process / command-line row from `windows.cmdline.CmdLine`.
+
+    Volatility 3 reads the user-space command line out of
+    `_RTL_USER_PROCESS_PARAMETERS.CommandLine`, the same paged-out
+    structure that surfaces pstree's `cmd` field. The value is
+    populated for ~9% of processes on a typical Windows snapshot
+    (Rocba: ~91% null in pslist's pstree-like cmd projection); the
+    rest paged out before acquisition. Null is the common case, not
+    the failure case — schema-nullable.
+
+    `process_name` is stored raw from the EPROCESS ImageFileName,
+    same convention as ProcessRecord.image_file_name. `cmdline` is
+    the raw user-space string when populated. Both are
+    attacker-controlled; the tool's return boundary wraps them in
+    `<evidence>` delimiters via the `untrusted_fields` contract.
+    """
+
+    pid: int = Field(ge=0)
+    process_name: str
+    cmdline: str | None = None
+
+
+class CmdLineResult(BaseModel):
+    """Result envelope for the `windows.cmdline.CmdLine` Volatility plugin.
+
+    Same provenance shape as PslistResult — different `plugin_name`
+    Literal and a list of ProcessCmdLineRecord. Fills the gap left by
+    the EPROCESS-only plugins: pslist/psscan record image names but
+    not the user-space command line; cmdline records both.
+    """
+
+    evidence_id: str
+    plugin_name: Literal["windows.cmdline.CmdLine"]
+    volatility_version: str = Field(min_length=1)
+    processes: list[ProcessCmdLineRecord]
+    command_executed: str = Field(min_length=1)
+    runtime_seconds: float = Field(ge=0)
+    invoked_at: datetime
+
+    @field_validator("evidence_id")
+    @classmethod
+    def _validate_evidence_id(cls, v: str) -> str:
+        try:
+            parsed = UUID(v)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
+        if parsed.version != 4:
+            raise ValueError(
+                f"evidence_id must be UUID version 4, got version {parsed.version}"
+            )
+        return str(parsed)
+
+    @field_validator("invoked_at")
+    @classmethod
+    def _validate_invoked_at(cls, v: datetime) -> datetime:
+        return _enforce_utc("invoked_at", v)
+
+
+class MalfindRecord(BaseModel):
+    """One injection-detection row from `windows.malfind.Malfind`.
+
+    Malfind walks each process's VAD tree and flags regions whose
+    page protection includes both write and execute (typically
+    PAGE_EXECUTE_READWRITE) AND whose contents look like code rather
+    than zero-fill. Each row is a single suspicious VAD region in a
+    single process — a process can produce multiple rows.
+
+    `vad_start` is rendered as a hex string (e.g. `"0x7ffe0000"`) —
+    the JSON renderer's default for `format_hints.Hex`. `hex_dump`
+    is a hex-encoded string of the first bytes of the region (Vol's
+    HexBytes hint, JSON-rendered as the hex string). `disassembly`
+    is the multi-line disassembly text Vol produces alongside the
+    hex dump; can be empty / null when the region is non-x86 or
+    Vol's disassembler bails on the bytes.
+
+    All fields except `pid` carry attacker-influenceable content
+    when the region is genuine injected code. `protection` is a
+    kernel-decoded string (e.g. `"PAGE_EXECUTE_READWRITE"`) and
+    `vad_tag` is a 4-byte pool tag (e.g. `"VadS"`); both are
+    technically derived from kernel structures, but their values
+    are observable in the evidence content and we mark them
+    untrusted alongside `process_name`, `hex_dump`, and
+    `disassembly` to keep the agent treating the whole row as data.
+    """
+
+    pid: int = Field(ge=0)
+    process_name: str
+    vad_start: str = Field(min_length=1)
+    vad_tag: str
+    protection: str
+    hex_dump: str
+    disassembly: str | None = None
+
+
+class MalfindResult(BaseModel):
+    """Result envelope for the `windows.malfind.Malfind` Volatility plugin.
+
+    Same provenance shape as the other memory-tool results — different
+    `plugin_name` Literal and `detections: list[MalfindRecord]`. The
+    list field is named `detections` (not `processes`) because each
+    row is a per-VAD detection, not a unique process: a single PID
+    can carry several injected regions.
+
+    Cross-validation: malfind's PIDs feed the validator's T1055
+    (Process Injection) corroboration path. A malfind row in PID 7900
+    svchost.exe combined with a netscan row showing PID 7900 holding
+    an outbound port lets the validator emit a strong corroboration
+    grounded in named ATT&CK techniques.
+    """
+
+    evidence_id: str
+    plugin_name: Literal["windows.malfind.Malfind"]
+    volatility_version: str = Field(min_length=1)
+    detections: list[MalfindRecord]
+    command_executed: str = Field(min_length=1)
+    runtime_seconds: float = Field(ge=0)
+    invoked_at: datetime
+
+    @field_validator("evidence_id")
+    @classmethod
+    def _validate_evidence_id(cls, v: str) -> str:
+        try:
+            parsed = UUID(v)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
+        if parsed.version != 4:
+            raise ValueError(
+                f"evidence_id must be UUID version 4, got version {parsed.version}"
+            )
+        return str(parsed)
+
+    @field_validator("invoked_at")
+    @classmethod
+    def _validate_invoked_at(cls, v: datetime) -> datetime:
+        return _enforce_utc("invoked_at", v)
+
+
 # ---------------------------------------------------------------------------
 # Findings substrate
 #
@@ -558,6 +696,8 @@ EvidenceRefSourceTool = Literal[
     "vol_psscan",
     "vol_pstree",
     "vol_netscan",
+    "vol_cmdline",
+    "vol_malfind",
     "query_records",
     "group_by",
     "set_difference",
@@ -931,8 +1071,8 @@ class FindingChainEntry(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-# All four supported Volatility memory plugins. Tier-1 tools each pin one
-# of these as their plugin_name; tier-2 tools accept it as an argument.
+# Supported Volatility memory plugins. Tier-1 tools each pin one of
+# these as their plugin_name; tier-2 tools accept it as an argument.
 # Adding a plugin requires extending this Literal AND extending the
 # matching test in tests/test_mcp_protocol.py — by design.
 PluginName = Literal[
@@ -940,6 +1080,8 @@ PluginName = Literal[
     "windows.psscan.PsScan",
     "windows.pstree.PsTree",
     "windows.netscan.NetScan",
+    "windows.cmdline.CmdLine",
+    "windows.malfind.Malfind",
 ]
 
 
@@ -974,6 +1116,24 @@ PLUGIN_UNTRUSTED_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
         "foreign_addr",
         "owner",
         "state",
+    ),
+    # CmdLine: process_name comes from the EPROCESS ImageFileName,
+    # cmdline is the user-space command line read out of
+    # _RTL_USER_PROCESS_PARAMETERS — the fully attacker-controllable
+    # half of the row.
+    "windows.cmdline.CmdLine": ("process_name", "cmdline"),
+    # Malfind: process_name plus four fields whose VALUES are derived
+    # from suspect VAD memory — pool tag, page protection string,
+    # the hex dump of the first bytes of the region, and the
+    # disassembly. All four are evidence-derived; treating them as
+    # data (not instructions) is what stops a crafted shellcode
+    # blob's ASCII strings from steering the analyst.
+    "windows.malfind.Malfind": (
+        "process_name",
+        "vad_tag",
+        "protection",
+        "hex_dump",
+        "disassembly",
     ),
 }
 
@@ -1218,6 +1378,68 @@ class NetscanSummary(BaseModel):
     # only via tier-2 `query_records` against the netscan extraction;
     # that tool's `untrusted_fields` is non-empty.
     untrusted_fields: list[str] = Field(default_factory=list)
+
+
+class CmdLineSummary(BaseModel):
+    """Tier-1 return for `vol_cmdline`.
+
+    The shape signal that matters for cmdline is the gap signal:
+    how many processes Vol could read a command line for vs. how
+    many had their parameters block paged out. A near-zero
+    `with_cmdline_count` would indicate a memory acquisition with
+    most of the user-space pages missing; a high
+    `with_cmdline_count` lets the analyst pivot to tier-2
+    `query_records` calls confidently.
+
+    `top_process_names` is bounded to 10 entries to keep the
+    summary serialization under 10 KB even on images with thousands
+    of distinct process names. The field's KEYS are evidence-derived
+    image names; the synthetic name `top_process_names_keys` flags
+    that for the analyst, same convention as `PslistSummary`'s
+    `top_image_names_keys`.
+    """
+
+    extraction: ExtractionRef
+    unique_process_names: int = Field(ge=0)
+    null_cmdline_count: int = Field(ge=0)
+    with_cmdline_count: int = Field(ge=0)
+    distinct_cmdlines: int = Field(ge=0)
+    top_process_names: list[tuple[str, int]] = Field(max_length=10)
+    pid_range: tuple[int, int]
+    untrusted_fields: list[str] = Field(
+        default_factory=lambda: ["top_process_names_keys"]
+    )
+
+
+class MalfindSummary(BaseModel):
+    """Tier-1 return for `vol_malfind`.
+
+    Distribution-only summary: how many distinct processes had
+    injection-flagged VAD regions, the per-protection breakdown
+    (the load-bearing signal — `PAGE_EXECUTE_READWRITE` is the
+    classic shellcode marker), and the top processes by detection
+    count. Specific PIDs / hex dumps / disassembly come from
+    tier-2 `query_records` against the malfind extraction.
+
+    `vad_tag_distribution` is left as a free `dict[str, int]`
+    rather than capped: pool tags are 4 ASCII characters and
+    typical malfind output has a handful of tags (`VadS`,
+    `Vad `, `VadF`). Bounded by the underlying record count.
+
+    `detections_by_process` is bounded to 10 entries; KEYS are
+    evidence-derived process names and flagged via
+    `detections_by_process_keys` in `untrusted_fields`.
+    """
+
+    extraction: ExtractionRef
+    unique_process_names: int = Field(ge=0)
+    detections_by_process: list[tuple[str, int]] = Field(max_length=10)
+    protection_distribution: dict[str, int]
+    vad_tag_distribution: dict[str, int]
+    pid_range: tuple[int, int]
+    untrusted_fields: list[str] = Field(
+        default_factory=lambda: ["detections_by_process_keys"]
+    )
 
 
 class FieldFilter(BaseModel):
@@ -1789,6 +2011,8 @@ __all__ = [
     "AnalystName",
     "ArtifactClass",
     "AuditLogEntry",
+    "CmdLineResult",
+    "CmdLineSummary",
     "ContradictionSeverity",
     "ContradictsCorrelation",
     "CorroboratesCorrelation",
@@ -1813,11 +2037,15 @@ __all__ = [
     "FindingUpdate",
     "FollowupTargetAnalyst",
     "GroupByResult",
+    "MalfindRecord",
+    "MalfindResult",
+    "MalfindSummary",
     "NetscanResult",
     "NetscanSummary",
     "NetworkRecord",
     "PLUGIN_UNTRUSTED_RECORD_FIELDS",
     "PluginName",
+    "ProcessCmdLineRecord",
     "ProcessRecord",
     "ProcessScanRecord",
     "ProcessTreeRecord",

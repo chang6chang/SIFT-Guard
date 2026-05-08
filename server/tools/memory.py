@@ -1,7 +1,7 @@
-"""Tier-1 typed MCP tools for the four supported Volatility memory plugins.
+"""Tier-1 typed MCP tools for the supported Volatility memory plugins.
 
-Tier-1 tools (`vol_pslist`, `vol_psscan`, `vol_pstree`, `vol_netscan`)
-each compose the same pipeline:
+Tier-1 tools (`vol_pslist`, `vol_psscan`, `vol_pstree`, `vol_netscan`,
+`vol_cmdline`, `vol_malfind`) each compose the same pipeline:
 
   1. Resolve `evidence_id` via CASE.yaml; reject if not registered.
   2. Validate `artifact_class is memory_image`.
@@ -76,6 +76,8 @@ from server.extractions import (
 from server.runners.sift_vm import (
     SIFT_VM_EVIDENCE_PREFIX,
     get_vol_version,
+    parse_cmdline_json,
+    parse_malfind_json,
     parse_netscan_json,
     parse_pstree_json,
     parse_volatility_json,
@@ -83,12 +85,18 @@ from server.runners.sift_vm import (
 )
 from server.schemas import (
     ArtifactClass,
+    CmdLineResult,
+    CmdLineSummary,
     EvidenceRecord,
     ExtractionRef,
+    MalfindRecord,
+    MalfindResult,
+    MalfindSummary,
     NetscanResult,
     NetscanSummary,
     NetworkRecord,
     PluginName,
+    ProcessCmdLineRecord,
     ProcessRecord,
     ProcessScanRecord,
     ProcessTreeRecord,
@@ -105,11 +113,15 @@ _PSLIST_PLUGIN: PluginName = "windows.pslist.PsList"
 _PSSCAN_PLUGIN: PluginName = "windows.psscan.PsScan"
 _PSTREE_PLUGIN: PluginName = "windows.pstree.PsTree"
 _NETSCAN_PLUGIN: PluginName = "windows.netscan.NetScan"
+_CMDLINE_PLUGIN: PluginName = "windows.cmdline.CmdLine"
+_MALFIND_PLUGIN: PluginName = "windows.malfind.Malfind"
 _CASE_FILENAME = "CASE.yaml"
 _PSLIST_TOOL_NAME = "vol_pslist"
 _PSSCAN_TOOL_NAME = "vol_psscan"
 _PSTREE_TOOL_NAME = "vol_pstree"
 _NETSCAN_TOOL_NAME = "vol_netscan"
+_CMDLINE_TOOL_NAME = "vol_cmdline"
+_MALFIND_TOOL_NAME = "vol_malfind"
 
 # Pool-tag scanning walks the full memory layer rather than the active
 # EPROCESS list, so psscan is materially slower than pslist. On Rocba
@@ -418,6 +430,61 @@ def _compute_pstree_summary(
         depth_distribution=distribution,
         largest_subtree=(largest_pid, largest_count),
         orphan_count=orphan_count,
+    )
+
+
+def _compute_cmdline_summary(
+    ref: ExtractionRef, records: list[dict]
+) -> CmdLineSummary:
+    """Distribution + gap signal for cmdline records.
+
+    `null_cmdline_count` is the load-bearing field — it answers the
+    "how much of the user-space parameters block actually paged in"
+    question that pslist alone cannot answer (pslist has no cmdline
+    field; pstree's `cmd` projection gives the same gap but as a
+    side-channel of the tree).
+    """
+    pids = [r["pid"] for r in records]
+    process_names = [r["process_name"] for r in records]
+    name_counter = Counter(process_names)
+    null_count = sum(1 for r in records if r.get("cmdline") is None)
+    distinct_cmdlines = len(
+        {r["cmdline"] for r in records if r.get("cmdline") is not None}
+    )
+    return CmdLineSummary(
+        extraction=ref,
+        unique_process_names=len(set(process_names)),
+        null_cmdline_count=null_count,
+        with_cmdline_count=len(records) - null_count,
+        distinct_cmdlines=distinct_cmdlines,
+        top_process_names=list(name_counter.most_common(10)),
+        pid_range=(min(pids), max(pids)) if pids else (0, 0),
+    )
+
+
+def _compute_malfind_summary(
+    ref: ExtractionRef, records: list[dict]
+) -> MalfindSummary:
+    """Distribution-only summary for malfind detections.
+
+    Per-protection breakdown is the most diagnostic field —
+    `PAGE_EXECUTE_READWRITE` count > 0 is what surfaces shellcode
+    candidates. `vad_tag_distribution` is bounded naturally
+    (typically 1-3 tags); we keep the full dict rather than
+    truncating.
+    """
+    pids = [r["pid"] for r in records]
+    process_names = [r["process_name"] for r in records]
+    name_counter = Counter(process_names)
+    proto_counter: Counter[str] = Counter(r["protection"] for r in records)
+    tag_counter: Counter[str] = Counter(r["vad_tag"] for r in records)
+    return MalfindSummary(
+        extraction=ref,
+        unique_process_names=len(set(process_names)),
+        detections_by_process=list(name_counter.most_common(10)),
+        protection_distribution=dict(proto_counter),
+        vad_tag_distribution=dict(tag_counter),
+        pid_range=(min(pids), max(pids)) if pids else (0, 0),
     )
 
 
@@ -788,8 +855,114 @@ def vol_netscan(
     )
 
 
+def vol_cmdline(
+    evidence_id: str, case_dir: str = "case-data"
+) -> CmdLineSummary:
+    """Run windows.cmdline.CmdLine against a registered memory_image.
+
+    Same cache contract and persistence as `vol_pslist`. Surfaces the
+    user-space command line for each process — fills the gap left by
+    pslist/psscan, which expose the EPROCESS image name but not the
+    `_RTL_USER_PROCESS_PARAMETERS.CommandLine` string. Most rows
+    have null `cmdline` because the parameters block paged out
+    before acquisition; the `null_cmdline_count` summary field
+    quantifies that gap directly.
+
+    Cost: comparable to vol_pstree (the two plugins read overlapping
+    user-space pages); no override over the runner's 300 s default
+    timeout.
+    """
+    case_dir_path = Path(case_dir).resolve()
+    _, vm_path = _resolve_and_translate(
+        case_dir_path, evidence_id, _CMDLINE_TOOL_NAME
+    )
+
+    summary_fn: Callable[[ExtractionRef, list[dict]], CmdLineSummary] = (
+        _compute_cmdline_summary
+    )
+
+    if extraction_exists(case_dir_path, evidence_id, _CMDLINE_PLUGIN):
+        return _serve_cached(
+            case_dir_path,
+            evidence_id,
+            _CMDLINE_PLUGIN,
+            _CMDLINE_TOOL_NAME,
+            "processes",
+            summary_fn,
+        )
+
+    return _serve_fresh(
+        case_dir_path,
+        evidence_id,
+        vm_path,
+        _CMDLINE_PLUGIN,
+        _CMDLINE_TOOL_NAME,
+        "processes",
+        parse_cmdline_json,
+        ProcessCmdLineRecord,
+        CmdLineResult,
+        summary_fn,
+    )
+
+
+def vol_malfind(
+    evidence_id: str, case_dir: str = "case-data"
+) -> MalfindSummary:
+    """Run windows.malfind.Malfind against a registered memory_image.
+
+    Same cache contract and persistence as `vol_pslist`. Walks each
+    process's VAD tree and flags regions whose page protection
+    includes both write and execute (typically PAGE_EXECUTE_READWRITE)
+    AND whose contents look like code rather than zero-fill — the
+    classic shellcode signature.
+
+    Per-record validation note: a single PID can produce multiple
+    detections (one row per suspicious VAD region). The result
+    envelope's list field is named `detections` rather than
+    `processes` for that reason.
+
+    Cost: bounded by the number of injected regions, not the total
+    process count. Typically completes in seconds-to-minutes against
+    a 19 GB Windows 10 image; no override over the runner's 300 s
+    default.
+    """
+    case_dir_path = Path(case_dir).resolve()
+    _, vm_path = _resolve_and_translate(
+        case_dir_path, evidence_id, _MALFIND_TOOL_NAME
+    )
+
+    summary_fn: Callable[[ExtractionRef, list[dict]], MalfindSummary] = (
+        _compute_malfind_summary
+    )
+
+    if extraction_exists(case_dir_path, evidence_id, _MALFIND_PLUGIN):
+        return _serve_cached(
+            case_dir_path,
+            evidence_id,
+            _MALFIND_PLUGIN,
+            _MALFIND_TOOL_NAME,
+            "detections",
+            summary_fn,
+        )
+
+    return _serve_fresh(
+        case_dir_path,
+        evidence_id,
+        vm_path,
+        _MALFIND_PLUGIN,
+        _MALFIND_TOOL_NAME,
+        "detections",
+        parse_malfind_json,
+        MalfindRecord,
+        MalfindResult,
+        summary_fn,
+    )
+
+
 __all__ = [
     "translate_to_vm_path",
+    "vol_cmdline",
+    "vol_malfind",
     "vol_netscan",
     "vol_pslist",
     "vol_psscan",

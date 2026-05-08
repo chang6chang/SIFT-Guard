@@ -1,0 +1,47 @@
+[
+    {
+        "PID": 7900,
+        "Process": "svchost.exe",
+        "Start VPN": "0x1f0000",
+        "End VPN": "0x1f0fff",
+        "Tag": "VadS",
+        "Protection": "PAGE_EXECUTE_READWRITE",
+        "CommitCharge": 1,
+        "PrivateMemory": 1,
+        "File output": "Disabled",
+        "Hexdump": "4d5a90000300000004000000ffff0000b8000000000000004000000000000000",
+        "Disasm": "0x1f0000: dec ebp\n0x1f0001: pop edx\n0x1f0002: nop\n0x1f0003: add [ebx], al\n0x1f0005: add [eax], al",
+        "Notes": "MZ header, PE injection candidate",
+        "__children": []
+    },
+    {
+        "PID": 7900,
+        "Process": "svchost.exe",
+        "Start VPN": "0x2a0000",
+        "End VPN": "0x2a0fff",
+        "Tag": "VadS",
+        "Protection": "PAGE_EXECUTE_READWRITE",
+        "CommitCharge": 2,
+        "PrivateMemory": 1,
+        "File output": "Disabled",
+        "Hexdump": "fc4883e4f0e8c8000000415141505251564831d265488b5260488b5218",
+        "Disasm": "0x2a0000: cld\n0x2a0001: and rsp, 0xfffffffffffffff0\n0x2a0005: call 0x2a00d2",
+        "Notes": "Heuristic: shellcode prelude",
+        "__children": []
+    },
+    {
+        "PID": 1234,
+        "Process": "explorer.exe",
+        "Start VPN": "0x7ff700000000",
+        "End VPN": "0x7ff700000fff",
+        "Tag": "Vad ",
+        "Protection": "PAGE_EXECUTE_WRITECOPY",
+        "CommitCharge": 1,
+        "PrivateMemory": 0,
+        "File output": "Disabled",
+        "Hexdump": "488d0d80100000ff15820e0000",
+        "Disasm": null,
+        "Notes": "",
+        "__children": []
+    }
+]
