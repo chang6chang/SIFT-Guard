@@ -580,13 +580,19 @@ class MalfindRecord(BaseModel):
     than zero-fill. Each row is a single suspicious VAD region in a
     single process — a process can produce multiple rows.
 
-    `vad_start` is rendered as a hex string (e.g. `"0x7ffe0000"`) —
-    the JSON renderer's default for `format_hints.Hex`. `hex_dump`
-    is a hex-encoded string of the first bytes of the region (Vol's
-    HexBytes hint, JSON-rendered as the hex string). `disassembly`
-    is the multi-line disassembly text Vol produces alongside the
-    hex dump; can be empty / null when the region is non-x86 or
-    Vol's disassembler bails on the bytes.
+    `vad_start` is normalized to a hex string (e.g. `"0x7ffe0000"`).
+    Volatility 3's JSON renderer is inconsistent across builds about
+    `format_hints.Hex` fields: some renderers emit the hex string
+    `"0x..."`, others emit the raw integer (page-aligned VPN, e.g.
+    `46137344`). The pre-validator below accepts either and converts
+    to the hex form so downstream schema consumers always see the
+    same shape regardless of the SIFT VM's Vol3 build.
+
+    `hex_dump` is a hex-encoded string of the first bytes of the
+    region (Vol's HexBytes hint, JSON-rendered as the hex string).
+    `disassembly` is the multi-line disassembly text Vol produces
+    alongside the hex dump; can be empty / null when the region is
+    non-x86 or Vol's disassembler bails on the bytes.
 
     All fields except `pid` carry attacker-influenceable content
     when the region is genuine injected code. `protection` is a
@@ -605,6 +611,20 @@ class MalfindRecord(BaseModel):
     protection: str
     hex_dump: str
     disassembly: str | None = None
+
+    @field_validator("vad_start", mode="before")
+    @classmethod
+    def _coerce_vad_start(cls, v):
+        """Accept Vol3's integer-rendered Start VPN and normalize to
+        a hex string. See class docstring for the inconsistency context.
+        Strings already in the canonical `"0x..."` shape pass through
+        untouched; other strings (e.g. legacy decimal-as-string) are
+        also passed through unchanged so the downstream `min_length=1`
+        check decides their fate.
+        """
+        if isinstance(v, int):
+            return hex(v)
+        return v
 
 
 class MalfindResult(BaseModel):

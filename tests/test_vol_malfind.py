@@ -20,7 +20,7 @@ import pytest
 import yaml
 
 from server.extractions import load_extraction
-from server.schemas import ArtifactClass, EvidenceRecord
+from server.schemas import ArtifactClass, EvidenceRecord, MalfindRecord
 from server.tools.memory import vol_malfind
 
 
@@ -329,3 +329,67 @@ class TestVolMalfindRecordWarnings:
         assert lines[0]["tool_name"] == "vol_malfind:record_validation_warning"
         assert lines[1]["tool_name"] == "vol_malfind"
         assert lines[1]["prev_line_hash"] == lines[0]["this_line_hash"]
+
+
+# ---------------------------------------------------------------------------
+# Regression: Vol3's `Start VPN` field is sometimes a hex string and
+# sometimes a raw integer depending on the SIFT VM's Vol3 build. The
+# SRL-2015 first run dropped 100% of malfind rows (261/261 across four
+# hosts) because the int form failed the schema's `vad_start: str`
+# validator. The pre-validator on MalfindRecord coerces int → hex string.
+# ---------------------------------------------------------------------------
+
+
+class TestMalfindRecordVadStartCoercion:
+    _ROW_BASE = {
+        "pid": 812,
+        "process_name": "LogonUI.exe",
+        "vad_tag": "VadS",
+        "protection": "PAGE_EXECUTE_READWRITE",
+        "hex_dump": "00 " * 64,
+        "disassembly": None,
+    }
+
+    def test_int_vad_start_coerced_to_hex_string(self):
+        m = MalfindRecord(vad_start=46137344, **self._ROW_BASE)
+        assert m.vad_start == "0x2c00000"
+        assert isinstance(m.vad_start, str)
+
+    def test_hex_string_vad_start_passes_through_unchanged(self):
+        m = MalfindRecord(vad_start="0x7ff700000000", **self._ROW_BASE)
+        assert m.vad_start == "0x7ff700000000"
+
+    def test_zero_address_coerces_to_0x0(self):
+        m = MalfindRecord(vad_start=0, **self._ROW_BASE)
+        # `hex(0)` produces `"0x0"` which is min_length=1-positive. Schema OK.
+        assert m.vad_start == "0x0"
+
+
+class TestParseMalfindIntegerStartVpn:
+    """End-to-end: feed the parser a row-with-int-Start-VPN (the shape
+    Vol3 actually emits in the SRL-2015 SIFT build) and confirm the
+    record validates."""
+
+    def test_int_start_vpn_round_trips_via_parser(self):
+        from server.runners.sift_vm import parse_malfind_json
+        raw = json.dumps([{
+            "PID": 812,
+            "Process": "LogonUI.exe",
+            "Start VPN": 46137344,  # int — the failure shape
+            "End VPN": 46141439,
+            "Tag": "VadS",
+            "Protection": "PAGE_EXECUTE_READWRITE",
+            "CommitCharge": 1,
+            "PrivateMemory": 1,
+            "File output": "Disabled",
+            "Hexdump": "00 " * 64,
+            "Disasm": "0x2c00000:\tnop",
+            "Notes": None,
+            "__children": [],
+        }])
+        rows = parse_malfind_json(raw)
+        assert len(rows) == 1
+        # Parser hands int through; schema coerces it.
+        assert rows[0]["vad_start"] == 46137344
+        m = MalfindRecord(**rows[0])
+        assert m.vad_start == "0x2c00000"
