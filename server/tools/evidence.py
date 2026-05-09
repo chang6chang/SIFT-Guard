@@ -81,6 +81,18 @@ def _detect_artifact_class(
         return ArtifactClass.DISK_IMAGE
     if extension == ".raw" and size_bytes > _MEMORY_SIZE_THRESHOLD:
         return ArtifactClass.MEMORY_IMAGE
+    # FTK Imager split-image first segment (`.001`) — raw memory dumps
+    # have no distinguishing magic so the classification leans on the
+    # SRL-2015 / SANS Standard Forensic Case naming convention:
+    # memory split images carry "memory" in the filename, disk split
+    # images do not. Mirrors the heuristic in
+    # `orchestrator.inventory._detect_evidence_type_by_extension`.
+    if (
+        extension == ".001"
+        and "memory" in path.name.lower()
+        and size_bytes > _MEMORY_SIZE_THRESHOLD
+    ):
+        return ArtifactClass.MEMORY_IMAGE
 
     return ArtifactClass.UNKNOWN
 

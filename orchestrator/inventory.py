@@ -120,6 +120,15 @@ _KNOWN_NON_EVIDENCE_EXTENSIONS: frozenset[str] = frozenset(
         ".body",
         ".ioc",
         ".txt",
+        # Archive / compressed-blob extensions that commonly land
+        # next to a real evidence image (symbol packs, source-of-
+        # acquisition zips). Listed here so the skip is greppable —
+        # the membership check on _ALL_SCANNED_EXTENSIONS would
+        # silently skip them too.
+        ".zip",
+        ".xz",
+        ".gz",
+        ".tar",
     }
 )
 
