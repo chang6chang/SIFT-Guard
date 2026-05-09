@@ -53,9 +53,7 @@ def _case_yaml(case_dir: Path) -> Path:
 
 
 class TestRegisterEvidence:
-    def test_returns_valid_record_with_correct_sha256(
-        self, fixture_file: Path, case_dir: Path
-    ):
+    def test_returns_valid_record_with_correct_sha256(self, fixture_file: Path, case_dir: Path):
         expected_sha = hashlib.sha256(fixture_file.read_bytes()).hexdigest()
 
         record = register_evidence(str(fixture_file), case_dir=str(case_dir))
@@ -70,16 +68,12 @@ class TestRegisterEvidence:
         assert record.artifact_class is ArtifactClass.UNKNOWN
         assert record.file_mode_after_registration == "0o444"
 
-    def test_file_is_chmod_444_after_registration(
-        self, fixture_file: Path, case_dir: Path
-    ):
+    def test_file_is_chmod_444_after_registration(self, fixture_file: Path, case_dir: Path):
         register_evidence(str(fixture_file), case_dir=str(case_dir))
         mode = stat.S_IMODE(fixture_file.stat().st_mode)
         assert mode == 0o444, f"expected 0o444, got {oct(mode)}"
 
-    def test_case_yaml_created_with_entry(
-        self, fixture_file: Path, case_dir: Path
-    ):
+    def test_case_yaml_created_with_entry(self, fixture_file: Path, case_dir: Path):
         record = register_evidence(str(fixture_file), case_dir=str(case_dir))
 
         case_yaml = _case_yaml(case_dir)
@@ -98,9 +92,7 @@ class TestRegisterEvidence:
         assert entry["original_filename"] == "fixture.dat"
         assert entry["artifact_class"] == "unknown"
 
-    def test_audit_log_gets_hash_chained_line(
-        self, fixture_file: Path, case_dir: Path
-    ):
+    def test_audit_log_gets_hash_chained_line(self, fixture_file: Path, case_dir: Path):
         record = register_evidence(str(fixture_file), case_dir=str(case_dir))
 
         audit_path = _audit_path(case_dir)
@@ -116,9 +108,7 @@ class TestRegisterEvidence:
         assert len(entry["this_line_hash"]) == 64
         assert all(c in "0123456789abcdef" for c in entry["this_line_hash"])
         # The output_hash must be sha256 of the EvidenceRecord's JSON.
-        expected_output_hash = hashlib.sha256(
-            record.model_dump_json().encode("utf-8")
-        ).hexdigest()
+        expected_output_hash = hashlib.sha256(record.model_dump_json().encode("utf-8")).hexdigest()
         assert entry["output_hash"] == expected_output_hash
 
     def test_second_registration_appends_chained_line(self, case_dir: Path):
@@ -139,13 +129,10 @@ class TestRegisterEvidence:
         assert line1["line_number"] == 1
         assert line2["line_number"] == 2
         assert line2["prev_line_hash"] == line1["this_line_hash"], (
-            "second line's prev_line_hash must equal first line's "
-            "this_line_hash — chain is broken"
+            "second line's prev_line_hash must equal first line's this_line_hash — chain is broken"
         )
 
-    def test_case_yaml_accumulates_entries_across_registrations(
-        self, case_dir: Path
-    ):
+    def test_case_yaml_accumulates_entries_across_registrations(self, case_dir: Path):
         evidence_dir = case_dir / "evidence"
         fix1 = evidence_dir / "first.dat"
         fix2 = evidence_dir / "second.dat"
@@ -201,9 +188,7 @@ class TestPathConfinement:
     is sanitized — the offending path is never echoed back. Backs the
     decisions-log 2026-05-05 MCP error-message sanitization rule."""
 
-    def test_path_outside_evidence_root_is_rejected(
-        self, tmp_path: Path, case_dir: Path
-    ):
+    def test_path_outside_evidence_root_is_rejected(self, tmp_path: Path, case_dir: Path):
         outside = tmp_path / "outside.dat"
         outside.write_bytes(b"x" * 64)
 

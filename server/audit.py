@@ -83,9 +83,7 @@ def append_audit_entry(
 
     canonical_input = json.dumps(input_args, sort_keys=True, default=str)
     input_hash = hashlib.sha256(canonical_input.encode("utf-8")).hexdigest()
-    output_hash = hashlib.sha256(
-        output.model_dump_json().encode("utf-8")
-    ).hexdigest()
+    output_hash = hashlib.sha256(output.model_dump_json().encode("utf-8")).hexdigest()
 
     chained_fields = dict(
         line_number=line_number,

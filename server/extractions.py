@@ -72,9 +72,7 @@ def _json_path(case_dir: Path, evidence_id: str, plugin_name: str) -> Path:
     return _extraction_dir(case_dir, evidence_id) / f"{plugin_name}.json"
 
 
-def _sha256_sidecar_path(
-    case_dir: Path, evidence_id: str, plugin_name: str
-) -> Path:
+def _sha256_sidecar_path(case_dir: Path, evidence_id: str, plugin_name: str) -> Path:
     return _extraction_dir(case_dir, evidence_id) / f"{plugin_name}.sha256"
 
 
@@ -136,9 +134,7 @@ def write_extraction(
     sidecar_path = _sha256_sidecar_path(case_dir_path, evidence_id, plugin_name)
 
     if json_path.exists() or sidecar_path.exists():
-        raise FileExistsError(
-            f"extraction already exists for ({evidence_id}, {plugin_name})"
-        )
+        raise FileExistsError(f"extraction already exists for ({evidence_id}, {plugin_name})")
 
     extraction_dir.mkdir(parents=True, exist_ok=True)
 
@@ -205,20 +201,15 @@ def load_extraction(
     when the sha256 already proves the bytes are intact.
     """
     case_dir_path = Path(case_dir).resolve()
-    chain_entry = find_extraction_entry(
-        case_dir_path, evidence_id, plugin_name
-    )
+    chain_entry = find_extraction_entry(case_dir_path, evidence_id, plugin_name)
     if chain_entry is None:
-        raise ExtractionNotFoundError(
-            f"no chain entry for ({evidence_id}, {plugin_name})"
-        )
+        raise ExtractionNotFoundError(f"no chain entry for ({evidence_id}, {plugin_name})")
 
     json_path = _json_path(case_dir_path, evidence_id, plugin_name)
     sidecar_path = _sha256_sidecar_path(case_dir_path, evidence_id, plugin_name)
     if not json_path.exists() or not sidecar_path.exists():
         raise ExtractionNotFoundError(
-            f"chain entry present but artifacts missing for "
-            f"({evidence_id}, {plugin_name})"
+            f"chain entry present but artifacts missing for ({evidence_id}, {plugin_name})"
         )
 
     payload = json_path.read_bytes()
@@ -229,9 +220,7 @@ def load_extraction(
         computed_sha256 != chain_entry.extraction_sha256
         or sidecar_sha256 != chain_entry.extraction_sha256
     ):
-        raise HashMismatchError(
-            f"extraction hash mismatch for ({evidence_id}, {plugin_name})"
-        )
+        raise HashMismatchError(f"extraction hash mismatch for ({evidence_id}, {plugin_name})")
 
     parsed = json.loads(payload.decode("utf-8"))
 
@@ -267,8 +256,7 @@ def _record_list_from_result(result: BaseModel) -> list:
     one of the conventions (or by adding a new branch here) without
     touching the storage layer.
     """
-    for field_name in ("processes", "connections", "detections",
-                       "entries", "events", "keys"):
+    for field_name in ("processes", "connections", "detections", "entries", "events", "keys"):
         if hasattr(result, field_name):
             return list(getattr(result, field_name))
     raise TypeError(

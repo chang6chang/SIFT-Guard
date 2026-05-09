@@ -187,9 +187,7 @@ class _RejectionRecord(BaseModel):
     evidence_id: str
 
 
-def translate_to_vm_path(
-    host_path: str, host_prefix: str, vm_prefix: str
-) -> str:
+def translate_to_vm_path(host_path: str, host_prefix: str, vm_prefix: str) -> str:
     """Translate a host-side absolute path to its VM-side equivalent.
 
     Replaces ``host_prefix`` with ``vm_prefix`` and enforces a
@@ -206,12 +204,10 @@ def translate_to_vm_path(
         return vm_prefix
     if not host_path.startswith(host_prefix + "/"):
         raise ValueError("evidence path is not under the expected host prefix")
-    return vm_prefix + host_path[len(host_prefix):]
+    return vm_prefix + host_path[len(host_prefix) :]
 
 
-def _resolve_evidence(
-    evidence_id: str, case_dir: Path
-) -> EvidenceRecord | None:
+def _resolve_evidence(evidence_id: str, case_dir: Path) -> EvidenceRecord | None:
     """Look up an evidence_id in CASE.yaml.
 
     Returns ``None`` instead of raising so the caller can audit-log
@@ -269,9 +265,7 @@ def _log_hash_mismatch(
     cache itself is corrupted. The audit suffix difference is what an
     operator greps to find tampering events vs. agent-side probes.
     """
-    rejection = _RejectionRecord(
-        reason=_RejectionReason.HASH_MISMATCH, evidence_id=evidence_id
-    )
+    rejection = _RejectionRecord(reason=_RejectionReason.HASH_MISMATCH, evidence_id=evidence_id)
     append_audit_entry(
         case_dir=case_dir,
         tool_name=f"{tool_name}:hash_mismatch",
@@ -313,9 +307,7 @@ def _resolve_and_translate(
 
     host_prefix = str(case_dir_path / "evidence")
     try:
-        vm_path = translate_to_vm_path(
-            record.absolute_path, host_prefix, SIFT_VM_EVIDENCE_PREFIX
-        )
+        vm_path = translate_to_vm_path(record.absolute_path, host_prefix, SIFT_VM_EVIDENCE_PREFIX)
     except ValueError:
         # Triggered only if CASE.yaml's absolute_path is outside
         # case_dir/evidence/ — should be impossible under normal
@@ -358,21 +350,15 @@ def _compute_process_summary(
     return summary_cls(
         extraction=ref,
         unique_image_names=len(set(image_names)),
-        null_create_time_count=sum(
-            1 for r in records if r.get("create_time") is None
-        ),
-        with_exit_time_count=sum(
-            1 for r in records if r.get("exit_time") is not None
-        ),
+        null_create_time_count=sum(1 for r in records if r.get("create_time") is None),
+        with_exit_time_count=sum(1 for r in records if r.get("exit_time") is not None),
         distinct_ppids=len({r["ppid"] for r in records}),
         top_image_names=list(name_counter.most_common(10)),
         pid_range=(min(pids), max(pids)) if pids else (0, 0),
     )
 
 
-def _compute_pstree_summary(
-    ref: ExtractionRef, records: list[dict]
-) -> PstreeSummary:
+def _compute_pstree_summary(ref: ExtractionRef, records: list[dict]) -> PstreeSummary:
     """Walk the recursive pstree to derive shape signal.
 
     Computes max_depth, depth_distribution, largest_subtree, and
@@ -417,11 +403,7 @@ def _compute_pstree_summary(
 
     # Orphan: top-level whose ppid is not anywhere in the tree, AND
     # ppid != 0 (PID 4 / System has PPID 0 by convention; not an orphan).
-    orphan_count = sum(
-        1
-        for r in records
-        if r["ppid"] != 0 and r["ppid"] not in all_pids
-    )
+    orphan_count = sum(1 for r in records if r["ppid"] != 0 and r["ppid"] not in all_pids)
 
     return PstreeSummary(
         extraction=ref,
@@ -433,9 +415,7 @@ def _compute_pstree_summary(
     )
 
 
-def _compute_cmdline_summary(
-    ref: ExtractionRef, records: list[dict]
-) -> CmdLineSummary:
+def _compute_cmdline_summary(ref: ExtractionRef, records: list[dict]) -> CmdLineSummary:
     """Distribution + gap signal for cmdline records.
 
     `null_cmdline_count` is the load-bearing field — it answers the
@@ -448,9 +428,7 @@ def _compute_cmdline_summary(
     process_names = [r["process_name"] for r in records]
     name_counter = Counter(process_names)
     null_count = sum(1 for r in records if r.get("cmdline") is None)
-    distinct_cmdlines = len(
-        {r["cmdline"] for r in records if r.get("cmdline") is not None}
-    )
+    distinct_cmdlines = len({r["cmdline"] for r in records if r.get("cmdline") is not None})
     return CmdLineSummary(
         extraction=ref,
         unique_process_names=len(set(process_names)),
@@ -462,9 +440,7 @@ def _compute_cmdline_summary(
     )
 
 
-def _compute_malfind_summary(
-    ref: ExtractionRef, records: list[dict]
-) -> MalfindSummary:
+def _compute_malfind_summary(ref: ExtractionRef, records: list[dict]) -> MalfindSummary:
     """Distribution-only summary for malfind detections.
 
     Per-protection breakdown is the most diagnostic field —
@@ -488,27 +464,17 @@ def _compute_malfind_summary(
     )
 
 
-def _compute_netscan_summary(
-    ref: ExtractionRef, records: list[dict]
-) -> NetscanSummary:
+def _compute_netscan_summary(ref: ExtractionRef, records: list[dict]) -> NetscanSummary:
     """Distribution-only summary for netscan records."""
     proto_counter: Counter[str] = Counter(r["proto"] for r in records)
     tcp_state_counter: Counter[str] = Counter(
-        r.get("state", "")
-        for r in records
-        if str(r.get("proto", "")).startswith("TCP")
+        r.get("state", "") for r in records if str(r.get("proto", "")).startswith("TCP")
     )
     null_owner_count = sum(1 for r in records if r.get("owner") is None)
     listening_count = sum(1 for r in records if r.get("state") == "LISTENING")
-    established_count = sum(
-        1 for r in records if r.get("state") == "ESTABLISHED"
-    )
+    established_count = sum(1 for r in records if r.get("state") == "ESTABLISHED")
     distinct_foreign = len(
-        {
-            r.get("foreign_addr")
-            for r in records
-            if r.get("foreign_addr") not in (None, "*", "")
-        }
+        {r.get("foreign_addr") for r in records if r.get("foreign_addr") not in (None, "*", "")}
     )
     return NetscanSummary(
         extraction=ref,
@@ -583,9 +549,7 @@ def _serve_fresh(
     volatility_version = get_vol_version()
     invoked_at = datetime.now(tz=timezone.utc)
     if timeout_seconds is None:
-        stdout, command_string, runtime_seconds = run_vol_plugin(
-            plugin_name, vm_path
-        )
+        stdout, command_string, runtime_seconds = run_vol_plugin(plugin_name, vm_path)
     else:
         stdout, command_string, runtime_seconds = run_vol_plugin(
             plugin_name, vm_path, timeout_seconds=timeout_seconds
@@ -660,9 +624,7 @@ def _serve_fresh(
 # ---------------------------------------------------------------------------
 
 
-def vol_pslist(
-    evidence_id: str, case_dir: str = "case-data"
-) -> PslistSummary:
+def vol_pslist(evidence_id: str, case_dir: str = "case-data") -> PslistSummary:
     """Run windows.pslist.PsList against a registered memory_image.
 
     On cache hit: re-derives PslistSummary from the stored extraction
@@ -673,15 +635,10 @@ def vol_pslist(
     line to ``extractions.jsonl``.
     """
     case_dir_path = Path(case_dir).resolve()
-    _, vm_path = _resolve_and_translate(
-        case_dir_path, evidence_id, _PSLIST_TOOL_NAME
-    )
+    _, vm_path = _resolve_and_translate(case_dir_path, evidence_id, _PSLIST_TOOL_NAME)
 
-    summary_fn: Callable[[ExtractionRef, list[dict]], PslistSummary] = (
-        lambda ref, records: _compute_process_summary(
-            ref, records, PslistSummary
-        )
-    )
+    def summary_fn(ref: ExtractionRef, records: list[dict]) -> PslistSummary:
+        return _compute_process_summary(ref, records, PslistSummary)
 
     if extraction_exists(case_dir_path, evidence_id, _PSLIST_PLUGIN):
         return _serve_cached(
@@ -707,9 +664,7 @@ def vol_pslist(
     )
 
 
-def vol_psscan(
-    evidence_id: str, case_dir: str = "case-data"
-) -> PsscanSummary:
+def vol_psscan(evidence_id: str, case_dir: str = "case-data") -> PsscanSummary:
     """Run windows.psscan.PsScan against a registered memory_image.
 
     Same cache contract and persistence as `vol_pslist`. Pool-tag
@@ -722,15 +677,10 @@ def vol_psscan(
     (Rocba: 6m36s observed). Runner timeout bumped to 900 s.
     """
     case_dir_path = Path(case_dir).resolve()
-    _, vm_path = _resolve_and_translate(
-        case_dir_path, evidence_id, _PSSCAN_TOOL_NAME
-    )
+    _, vm_path = _resolve_and_translate(case_dir_path, evidence_id, _PSSCAN_TOOL_NAME)
 
-    summary_fn: Callable[[ExtractionRef, list[dict]], PsscanSummary] = (
-        lambda ref, records: _compute_process_summary(
-            ref, records, PsscanSummary
-        )
-    )
+    def summary_fn(ref: ExtractionRef, records: list[dict]) -> PsscanSummary:
+        return _compute_process_summary(ref, records, PsscanSummary)
 
     if extraction_exists(case_dir_path, evidence_id, _PSSCAN_PLUGIN):
         return _serve_cached(
@@ -757,9 +707,7 @@ def vol_psscan(
     )
 
 
-def vol_pstree(
-    evidence_id: str, case_dir: str = "case-data"
-) -> PstreeSummary:
+def vol_pstree(evidence_id: str, case_dir: str = "case-data") -> PstreeSummary:
     """Run windows.pstree.PsTree against a registered memory_image.
 
     Same cache contract and persistence as `vol_pslist`. Returns a
@@ -776,13 +724,9 @@ def vol_pstree(
     (Rocba: 29.5 s observed). Runner default timeout (300 s) is sufficient.
     """
     case_dir_path = Path(case_dir).resolve()
-    _, vm_path = _resolve_and_translate(
-        case_dir_path, evidence_id, _PSTREE_TOOL_NAME
-    )
+    _, vm_path = _resolve_and_translate(case_dir_path, evidence_id, _PSTREE_TOOL_NAME)
 
-    summary_fn: Callable[[ExtractionRef, list[dict]], PstreeSummary] = (
-        _compute_pstree_summary
-    )
+    summary_fn: Callable[[ExtractionRef, list[dict]], PstreeSummary] = _compute_pstree_summary
 
     if extraction_exists(case_dir_path, evidence_id, _PSTREE_PLUGIN):
         return _serve_cached(
@@ -808,9 +752,7 @@ def vol_pstree(
     )
 
 
-def vol_netscan(
-    evidence_id: str, case_dir: str = "case-data"
-) -> NetscanSummary:
+def vol_netscan(evidence_id: str, case_dir: str = "case-data") -> NetscanSummary:
     """Run windows.netscan.NetScan against a registered memory_image.
 
     Same cache contract and persistence as `vol_pslist`. Returns a
@@ -822,13 +764,9 @@ def vol_netscan(
     (Rocba: 8m57s observed). Runner timeout bumped to 1200 s.
     """
     case_dir_path = Path(case_dir).resolve()
-    _, vm_path = _resolve_and_translate(
-        case_dir_path, evidence_id, _NETSCAN_TOOL_NAME
-    )
+    _, vm_path = _resolve_and_translate(case_dir_path, evidence_id, _NETSCAN_TOOL_NAME)
 
-    summary_fn: Callable[[ExtractionRef, list[dict]], NetscanSummary] = (
-        _compute_netscan_summary
-    )
+    summary_fn: Callable[[ExtractionRef, list[dict]], NetscanSummary] = _compute_netscan_summary
 
     if extraction_exists(case_dir_path, evidence_id, _NETSCAN_PLUGIN):
         return _serve_cached(
@@ -855,9 +793,7 @@ def vol_netscan(
     )
 
 
-def vol_cmdline(
-    evidence_id: str, case_dir: str = "case-data"
-) -> CmdLineSummary:
+def vol_cmdline(evidence_id: str, case_dir: str = "case-data") -> CmdLineSummary:
     """Run windows.cmdline.CmdLine against a registered memory_image.
 
     Same cache contract and persistence as `vol_pslist`. Surfaces the
@@ -873,13 +809,9 @@ def vol_cmdline(
     timeout.
     """
     case_dir_path = Path(case_dir).resolve()
-    _, vm_path = _resolve_and_translate(
-        case_dir_path, evidence_id, _CMDLINE_TOOL_NAME
-    )
+    _, vm_path = _resolve_and_translate(case_dir_path, evidence_id, _CMDLINE_TOOL_NAME)
 
-    summary_fn: Callable[[ExtractionRef, list[dict]], CmdLineSummary] = (
-        _compute_cmdline_summary
-    )
+    summary_fn: Callable[[ExtractionRef, list[dict]], CmdLineSummary] = _compute_cmdline_summary
 
     if extraction_exists(case_dir_path, evidence_id, _CMDLINE_PLUGIN):
         return _serve_cached(
@@ -905,9 +837,7 @@ def vol_cmdline(
     )
 
 
-def vol_malfind(
-    evidence_id: str, case_dir: str = "case-data"
-) -> MalfindSummary:
+def vol_malfind(evidence_id: str, case_dir: str = "case-data") -> MalfindSummary:
     """Run windows.malfind.Malfind against a registered memory_image.
 
     Same cache contract and persistence as `vol_pslist`. Walks each
@@ -927,13 +857,9 @@ def vol_malfind(
     default.
     """
     case_dir_path = Path(case_dir).resolve()
-    _, vm_path = _resolve_and_translate(
-        case_dir_path, evidence_id, _MALFIND_TOOL_NAME
-    )
+    _, vm_path = _resolve_and_translate(case_dir_path, evidence_id, _MALFIND_TOOL_NAME)
 
-    summary_fn: Callable[[ExtractionRef, list[dict]], MalfindSummary] = (
-        _compute_malfind_summary
-    )
+    summary_fn: Callable[[ExtractionRef, list[dict]], MalfindSummary] = _compute_malfind_summary
 
     if extraction_exists(case_dir_path, evidence_id, _MALFIND_PLUGIN):
         return _serve_cached(

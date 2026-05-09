@@ -66,7 +66,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from orchestrator.manifest import EvidenceFile, EvidenceType, HostEvidence
+from orchestrator.manifest import EvidenceType, HostEvidence
 
 
 logger = logging.getLogger(__name__)
@@ -74,12 +74,8 @@ logger = logging.getLogger(__name__)
 
 # Extension → preliminary evidence-type guess. Magic bytes refine
 # this, but a lot of files are extension-only by convention.
-_MEMORY_EXTENSIONS: frozenset[str] = frozenset(
-    {".raw", ".mem", ".lime", ".vmem"}
-)
-_DISK_EXTENSIONS: frozenset[str] = frozenset(
-    {".e01", ".dd", ".vhdx", ".img"}
-)
+_MEMORY_EXTENSIONS: frozenset[str] = frozenset({".raw", ".mem", ".lime", ".vmem"})
+_DISK_EXTENSIONS: frozenset[str] = frozenset({".e01", ".dd", ".vhdx", ".img"})
 # .aff4 can be either memory or disk (it's a container format).
 # Treat as unknown so the operator must annotate post-scan, OR the
 # magic-byte detector resolves it to one of the two.
@@ -93,10 +89,7 @@ _MIXED_EXTENSIONS: frozenset[str] = frozenset({".aff4"})
 _SPLIT_IMAGE_EXTENSIONS: frozenset[str] = frozenset({".001"})
 
 _ALL_SCANNED_EXTENSIONS: frozenset[str] = (
-    _MEMORY_EXTENSIONS
-    | _DISK_EXTENSIONS
-    | _MIXED_EXTENSIONS
-    | _SPLIT_IMAGE_EXTENSIONS
+    _MEMORY_EXTENSIONS | _DISK_EXTENSIONS | _MIXED_EXTENSIONS | _SPLIT_IMAGE_EXTENSIONS
 )
 
 # Known non-evidence file extensions. These are explicitly skipped
@@ -136,9 +129,7 @@ _KNOWN_NON_EVIDENCE_EXTENSIONS: frozenset[str] = frozenset(
 # evidence — DFIR cases place reference timelines, parsed CSVs,
 # and pristine baseline OS images here. The scanner skips any
 # file whose path includes one of these components.
-_NON_EVIDENCE_DIR_NAMES: frozenset[str] = frozenset(
-    {"baseline", "precooked"}
-)
+_NON_EVIDENCE_DIR_NAMES: frozenset[str] = frozenset({"baseline", "precooked"})
 
 
 # Magic-byte signatures (read from the first 16 bytes of the file).
@@ -171,10 +162,26 @@ _MAGIC_PROBE_BYTES = 16
 
 _ROLE_TOKENS: frozenset[str] = frozenset(
     {
-        "memory", "memdump", "memimage", "mem", "ram", "image",
-        "disk", "drive", "hdd", "system", "cdrive", "pf",
-        "prefetch", "registry", "reg", "evtx", "security",
-        "application", "ntuser", "usrhive",
+        "memory",
+        "memdump",
+        "memimage",
+        "mem",
+        "ram",
+        "image",
+        "disk",
+        "drive",
+        "hdd",
+        "system",
+        "cdrive",
+        "pf",
+        "prefetch",
+        "registry",
+        "reg",
+        "evtx",
+        "security",
+        "application",
+        "ntuser",
+        "usrhive",
     }
 )
 
@@ -193,9 +200,7 @@ _LEADING_PLATFORM_RE = re.compile(
     r"32-?bit|64-?bit|32|64)\b",
     re.IGNORECASE,
 )
-_TRAILING_IP_RE = re.compile(
-    r"[-_.](\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$"
-)
+_TRAILING_IP_RE = re.compile(r"[-_.](\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$")
 
 
 @dataclass
@@ -247,14 +252,10 @@ def _is_under_non_evidence_dir(path: Path, evidence_root: Path) -> bool:
         # Outside the scan root — let the caller handle it; this
         # check is not the path-confinement guard.
         return False
-    return any(
-        seg.lower() in _NON_EVIDENCE_DIR_NAMES for seg in rel.parts
-    )
+    return any(seg.lower() in _NON_EVIDENCE_DIR_NAMES for seg in rel.parts)
 
 
-def _refine_evidence_type_by_magic(
-    path: Path, ext_guess: EvidenceType
-) -> EvidenceType:
+def _refine_evidence_type_by_magic(path: Path, ext_guess: EvidenceType) -> EvidenceType:
     """Read the first 16 bytes; bump the guess to a stronger
     classification when a magic-byte signature matches.
 
@@ -302,7 +303,7 @@ def _extract_host_token(stem: str) -> str | None:
         match = _LEADING_PLATFORM_RE.match(candidate)
         if not match:
             break
-        candidate = candidate[match.end():].lstrip("-_. ")
+        candidate = candidate[match.end() :].lstrip("-_. ")
     candidate = candidate.strip(" -_.")
     if not candidate:
         return None
@@ -359,9 +360,7 @@ def _scan_directory(
         try:
             size = path.stat().st_size
         except OSError:
-            logger.warning(
-                "could not stat %s; skipping", path.name
-            )
+            logger.warning("could not stat %s; skipping", path.name)
             continue
         results.append((path, refined, size))
     return results
@@ -412,13 +411,9 @@ def scan_evidence_directory(
     """
     evidence_dir = Path(evidence_dir).resolve()
     if not evidence_dir.exists():
-        raise FileNotFoundError(
-            f"evidence directory does not exist: {evidence_dir}"
-        )
+        raise FileNotFoundError(f"evidence directory does not exist: {evidence_dir}")
     if not evidence_dir.is_dir():
-        raise NotADirectoryError(
-            f"evidence path is not a directory: {evidence_dir}"
-        )
+        raise NotADirectoryError(f"evidence path is not a directory: {evidence_dir}")
 
     raw = _scan_directory(evidence_dir)
     buckets = _group_candidates(raw)
@@ -427,10 +422,7 @@ def scan_evidence_directory(
     for host_id in sorted(buckets):
         candidates = buckets[host_id]
         host_label = candidates[0].host_label
-        files = [
-            (c.path, c.evidence_type, c.file_size_bytes)
-            for c in candidates
-        ]
+        files = [(c.path, c.evidence_type, c.file_size_bytes) for c in candidates]
         out.append((host_id, host_label, files))
     return out
 
@@ -447,18 +439,18 @@ def format_inventory_table(
     rows.append(("Host", "Evidence", "Type", "Size", "OS Guess"))
     for host in hosts:
         for ef in host.evidence_files:
-            rows.append((
-                host.host_label,
-                Path(ef.file_path).name,
-                ef.evidence_type,
-                _format_size(ef.file_size_bytes),
-                ef.os_guess or "—",
-            ))
+            rows.append(
+                (
+                    host.host_label,
+                    Path(ef.file_path).name,
+                    ef.evidence_type,
+                    _format_size(ef.file_size_bytes),
+                    ef.os_guess or "—",
+                )
+            )
     if len(rows) == 1:
         return ""
-    widths = [
-        max(len(row[i]) for row in rows) for i in range(len(rows[0]))
-    ]
+    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
     lines = []
     for i, row in enumerate(rows):
         line = " | ".join(cell.ljust(widths[c]) for c, cell in enumerate(row))

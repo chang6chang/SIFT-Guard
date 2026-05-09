@@ -110,7 +110,9 @@ def build_records(
             # Should not happen for a well-formed enterprise bundle;
             # skip the row rather than fabricate an ID.
             continue
-        url = _citation_url_of(obj) or f"https://attack.mitre.org/techniques/{tid.replace('.', '/')}/"
+        url = (
+            _citation_url_of(obj) or f"https://attack.mitre.org/techniques/{tid.replace('.', '/')}/"
+        )
         raw.append(
             RagRecord(
                 technique_id=tid,
@@ -169,9 +171,7 @@ def build_index_files(
         show_progress_bar=False,
         batch_size=64,
     ).astype(np.float32)
-    assert embeddings.shape == (len(records), dim), (
-        f"unexpected embedding shape {embeddings.shape}"
-    )
+    assert embeddings.shape == (len(records), dim), f"unexpected embedding shape {embeddings.shape}"
 
     # IndexFlatIP over normalized vectors == cosine similarity.
     # No HNSW / IVF — the corpus is ~1k records, brute force fits in
@@ -187,9 +187,7 @@ def build_index_files(
     records_path.write_text(
         # `mode="json"` so pydantic emits ISO timestamps / enum strings
         # rather than Python objects.
-        json.dumps(
-            [r.model_dump(mode="json") for r in records], indent=2
-        ),
+        json.dumps([r.model_dump(mode="json") for r in records], indent=2),
         encoding="utf-8",
     )
 
@@ -211,9 +209,7 @@ def fetch_attack_bundle() -> dict[str, Any]:
     url = attack_url()
     with urllib.request.urlopen(url, timeout=60) as resp:
         if resp.status != 200:
-            raise RuntimeError(
-                f"fetch failed: HTTP {resp.status} for {url}"
-            )
+            raise RuntimeError(f"fetch failed: HTTP {resp.status} for {url}")
         return json.loads(resp.read().decode("utf-8"))
 
 

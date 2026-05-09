@@ -81,8 +81,7 @@ def test_vol_pslist_against_live_rocba(monkeypatch):
     # problem rather than the plugin itself.
     try:
         sift_vm.get_vol_version()
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
-            OSError) as exc:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
         pytest.skip(f"SSH/vol unavailable on SIFT VM at {real_host}: {exc}")
 
     # ---- Step 3: find the registered Rocba entry. ----
@@ -91,7 +90,8 @@ def test_vol_pslist_against_live_rocba(monkeypatch):
     doc = yaml.safe_load(ON_DISK_CASE_YAML.read_text(encoding="utf-8")) or {}
     rocba = next(
         (
-            entry for entry in doc.get("evidence", [])
+            entry
+            for entry in doc.get("evidence", [])
             if entry.get("original_filename") == "Rocba-Memory.raw"
             and entry.get("artifact_class") == "memory_image"
         ),
@@ -103,21 +103,16 @@ def test_vol_pslist_against_live_rocba(monkeypatch):
 
     # ---- Step 4: snapshot the audit log before the call. ----
     if ON_DISK_AUDIT_LOG.exists():
-        before_lines = ON_DISK_AUDIT_LOG.read_text(
-            encoding="utf-8"
-        ).splitlines()
+        before_lines = ON_DISK_AUDIT_LOG.read_text(encoding="utf-8").splitlines()
     else:
         before_lines = []
     before_count = len(before_lines)
     expected_prev_hash = (
-        json.loads(before_lines[-1])["this_line_hash"]
-        if before_lines else "0" * 64
+        json.loads(before_lines[-1])["this_line_hash"] if before_lines else "0" * 64
     )
 
     # ---- Step 5: the real call. SSH → vol3 → 19 GB Rocba image. ----
-    result = vol_pslist(
-        rocba_evidence_id, case_dir=str(PROJECT_ROOT / "case-data")
-    )
+    result = vol_pslist(rocba_evidence_id, case_dir=str(PROJECT_ROOT / "case-data"))
 
     # ---- Step 6: result assertions. ----
     assert isinstance(result, PslistResult)
@@ -128,8 +123,7 @@ def test_vol_pslist_against_live_rocba(monkeypatch):
     # signals a structural failure (parser, SSH truncation, incomplete
     # plugin run) — not a real "small" image.
     assert len(result.processes) >= 50, (
-        f"too few processes: {len(result.processes)} "
-        "— Windows usually has 80+"
+        f"too few processes: {len(result.processes)} — Windows usually has 80+"
     )
 
     # Sanity bound; the user's earlier hand-run measured ~4.9 s.
@@ -140,17 +134,14 @@ def test_vol_pslist_against_live_rocba(monkeypatch):
     # PID 4 is always "System" on Windows. If the parser dropped the
     # field or mis-mapped the key, this catches it.
     pid_4_names = [p.image_file_name for p in result.processes if p.pid == 4]
-    assert "System" in pid_4_names, (
-        f"PID 4 should be 'System' on Windows; got {pid_4_names!r}"
-    )
+    assert "System" in pid_4_names, f"PID 4 should be 'System' on Windows; got {pid_4_names!r}"
 
     # Reproducibility metadata captured. Vol3's bare PACKAGE_VERSION
     # is a dotted version string ("2.27.0" on the SIFT 2026.1 build);
     # we assert version-shape rather than a specific prefix to stay
     # forward-compatible with future Volatility releases.
     assert re.match(r"^\d+\.\d+", result.volatility_version), (
-        f"volatility_version should look like a dotted version; "
-        f"got {result.volatility_version!r}"
+        f"volatility_version should look like a dotted version; got {result.volatility_version!r}"
     )
 
     # ---- Step 7: audit chain assertions on the live chain. ----

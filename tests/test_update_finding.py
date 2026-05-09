@@ -53,7 +53,9 @@ CID = "33333333-3333-4333-8333-333333333333"
 
 
 def _seed_case_dir(
-    tmp_path: Path, *, draft_confidence: str = "MEDIUM",
+    tmp_path: Path,
+    *,
+    draft_confidence: str = "MEDIUM",
     draft_state: str = "DRAFT",
 ) -> Path:
     """Set up a case dir with one DraftFinding (FID), one
@@ -166,11 +168,7 @@ def _good_args(**overrides):
 def _read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    return [
-        json.loads(l)
-        for l in path.read_text().splitlines()
-        if l.strip()
-    ]
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -182,9 +180,7 @@ class TestUpdateFindingHappyPaths:
     @pytest.mark.parametrize("rule", ["R1", "R2", "R3", "R4", "R5", "R6"])
     def test_each_promotion_rule_succeeds(self, tmp_path: Path, rule: str):
         case_dir = _seed_case_dir(tmp_path)
-        result = update_finding(
-            **_good_args(promotion_rule=rule), case_dir=str(case_dir)
-        )
+        result = update_finding(**_good_args(promotion_rule=rule), case_dir=str(case_dir))
         assert result.promotion_rule == rule
         assert result.previous_state == "DRAFT"
         assert result.previous_confidence == "MEDIUM"
@@ -212,9 +208,7 @@ class TestUpdateFindingHappyPaths:
 class TestServerDerivedPrevious:
     def test_previous_fields_from_chain_not_args(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path, draft_confidence="LOW")
-        result = update_finding(
-            **_good_args(new_confidence="MEDIUM"), case_dir=str(case_dir)
-        )
+        result = update_finding(**_good_args(new_confidence="MEDIUM"), case_dir=str(case_dir))
         # previous_confidence is read from the seeded DRAFT (LOW),
         # not anything the caller supplied.
         assert result.previous_confidence == "LOW"
@@ -264,9 +258,7 @@ class TestRejectUnknownFinding:
                 case_dir=str(case_dir),
             )
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit[-1]["tool_name"] == (
-            "update_finding:rejected_unknown_finding"
-        )
+        assert audit[-1]["tool_name"] == ("update_finding:rejected_unknown_finding")
         # findings.jsonl unchanged: still 1 entry (the seeded DRAFT).
         rows = _read_jsonl(case_dir / "findings.jsonl")
         assert len(rows) == 1
@@ -287,9 +279,7 @@ class TestRejectUnknownCorrelation:
                 case_dir=str(case_dir),
             )
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit[-1]["tool_name"] == (
-            "update_finding:rejected_unknown_correlation"
-        )
+        assert audit[-1]["tool_name"] == ("update_finding:rejected_unknown_correlation")
 
 
 # ---------------------------------------------------------------------------
@@ -306,9 +296,7 @@ class TestRejectUnknownRule:
                 case_dir=str(case_dir),
             )
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit[-1]["tool_name"] == (
-            "update_finding:rejected_unknown_rule"
-        )
+        assert audit[-1]["tool_name"] == ("update_finding:rejected_unknown_rule")
 
 
 # ---------------------------------------------------------------------------
@@ -331,9 +319,7 @@ class TestRejectInvalidStateTransition:
                 case_dir=str(case_dir),
             )
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit[-1]["tool_name"] == (
-            "update_finding:rejected_invalid_state_transition"
-        )
+        assert audit[-1]["tool_name"] == ("update_finding:rejected_invalid_state_transition")
         # Chain didn't grow on the rejection (still has DRAFT + 1 UPDATE).
         rows = _read_jsonl(case_dir / "findings.jsonl")
         assert len(rows) == 2
@@ -348,13 +334,11 @@ class TestChainContinuity:
     def test_draft_plus_two_updates_link_correctly(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
         update_finding(
-            **_good_args(new_state="DRAFT", new_confidence="HIGH",
-                         promotion_rule="R1"),
+            **_good_args(new_state="DRAFT", new_confidence="HIGH", promotion_rule="R1"),
             case_dir=str(case_dir),
         )
         update_finding(
-            **_good_args(new_state="CONFIRMED", new_confidence="HIGH",
-                         promotion_rule="R3"),
+            **_good_args(new_state="CONFIRMED", new_confidence="HIGH", promotion_rule="R3"),
             case_dir=str(case_dir),
         )
         rows = _read_jsonl(case_dir / "findings.jsonl")
@@ -381,9 +365,7 @@ class TestChainContinuity:
 
 
 class TestR5EmptyDrivingCorrelationsAccepted:
-    def test_r5_with_empty_list_writes_chain_and_audits_success(
-        self, tmp_path: Path
-    ):
+    def test_r5_with_empty_list_writes_chain_and_audits_success(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
         # R5's defining precondition is "no correlations across two
         # iterations of silence" — the empty list reflects that.
@@ -414,9 +396,7 @@ class TestR5EmptyDrivingCorrelationsAccepted:
 
 class TestNonR5EmptyDrivingCorrelationsRejected:
     @pytest.mark.parametrize("rule", ["R1", "R2", "R3", "R4", "R6"])
-    def test_empty_list_rejected_for_each_non_R5_rule(
-        self, tmp_path: Path, rule: str
-    ):
+    def test_empty_list_rejected_for_each_non_R5_rule(self, tmp_path: Path, rule: str):
         case_dir = _seed_case_dir(tmp_path)
         with pytest.raises(ValueError):
             update_finding(
@@ -429,9 +409,7 @@ class TestNonR5EmptyDrivingCorrelationsRejected:
         # so an operator can tell this rejection apart from
         # SCHEMA_VALIDATION_FAILED.
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit[-1]["tool_name"] == (
-            "update_finding:rejected_empty_correlations_for_non_R5"
-        )
+        assert audit[-1]["tool_name"] == ("update_finding:rejected_empty_correlations_for_non_R5")
 
         # findings.jsonl unchanged (still just the seeded DRAFT).
         rows = _read_jsonl(case_dir / "findings.jsonl")
@@ -455,9 +433,7 @@ class TestR5RejectionAuditChainShape:
         # distinguish "non-R5 empty list" from
         # "schema_validation_failed" (which a bare model_validator
         # error on FindingUpdate construction would produce).
-        assert last["tool_name"] == (
-            "update_finding:rejected_empty_correlations_for_non_R5"
-        )
+        assert last["tool_name"] == ("update_finding:rejected_empty_correlations_for_non_R5")
         assert last["evidence_id"] is None  # promotion events not bound to evidence
         # Hash chain extends from the prior line.
         assert len(last["this_line_hash"]) == 64
@@ -474,12 +450,8 @@ class TestOnDiskIsolation:
             assert ON_DISK_CORRELATIONS.read_bytes() == _ON_DISK_CORRELATIONS_BEFORE
 
 
-_ON_DISK_AUDIT_BEFORE = (
-    ON_DISK_AUDIT_LOG.read_bytes() if ON_DISK_AUDIT_LOG.exists() else b""
-)
-_ON_DISK_FINDINGS_BEFORE = (
-    ON_DISK_FINDINGS.read_bytes() if ON_DISK_FINDINGS.exists() else b""
-)
+_ON_DISK_AUDIT_BEFORE = ON_DISK_AUDIT_LOG.read_bytes() if ON_DISK_AUDIT_LOG.exists() else b""
+_ON_DISK_FINDINGS_BEFORE = ON_DISK_FINDINGS.read_bytes() if ON_DISK_FINDINGS.exists() else b""
 _ON_DISK_CORRELATIONS_BEFORE = (
     ON_DISK_CORRELATIONS.read_bytes() if ON_DISK_CORRELATIONS.exists() else b""
 )

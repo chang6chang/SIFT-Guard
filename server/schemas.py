@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Annotated, Any, Literal, Union
 from uuid import UUID
@@ -86,9 +86,7 @@ class EvidenceRecord(BaseModel):
         except (ValueError, AttributeError, TypeError) as exc:
             raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
         if parsed.version != 4:
-            raise ValueError(
-                f"evidence_id must be UUID version 4, got version {parsed.version}"
-            )
+            raise ValueError(f"evidence_id must be UUID version 4, got version {parsed.version}")
         return str(parsed)
 
     @field_validator("registered_at")
@@ -103,10 +101,7 @@ class EvidenceRecord(BaseModel):
                     "evidence_id": "550e8400-e29b-41d4-a716-446655440000",
                     "original_filename": "Rocba-Memory.raw",
                     "absolute_path": "/mnt/rocba/Rocba-Memory.raw",
-                    "sha256": (
-                        "eb33bdf63730858a805463d171245b233335dd6d"
-                        "89ed458bc681f7d282e10563"
-                    ),
+                    "sha256": ("eb33bdf63730858a805463d171245b233335dd6d89ed458bc681f7d282e10563"),
                     "size_bytes": 19_050_528_768,
                     "artifact_class": "memory_image",
                     "registered_at": "2026-05-05T00:00:00+00:00",
@@ -258,9 +253,7 @@ class PslistResult(BaseModel):
         except (ValueError, AttributeError, TypeError) as exc:
             raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
         if parsed.version != 4:
-            raise ValueError(
-                f"evidence_id must be UUID version 4, got version {parsed.version}"
-            )
+            raise ValueError(f"evidence_id must be UUID version 4, got version {parsed.version}")
         return str(parsed)
 
     @field_validator("invoked_at")
@@ -309,9 +302,7 @@ class PsscanResult(BaseModel):
         except (ValueError, AttributeError, TypeError) as exc:
             raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
         if parsed.version != 4:
-            raise ValueError(
-                f"evidence_id must be UUID version 4, got version {parsed.version}"
-            )
+            raise ValueError(f"evidence_id must be UUID version 4, got version {parsed.version}")
         return str(parsed)
 
     @field_validator("invoked_at")
@@ -414,9 +405,7 @@ class PstreeResult(BaseModel):
         except (ValueError, AttributeError, TypeError) as exc:
             raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
         if parsed.version != 4:
-            raise ValueError(
-                f"evidence_id must be UUID version 4, got version {parsed.version}"
-            )
+            raise ValueError(f"evidence_id must be UUID version 4, got version {parsed.version}")
         return str(parsed)
 
     @field_validator("invoked_at")
@@ -501,9 +490,7 @@ class NetscanResult(BaseModel):
         except (ValueError, AttributeError, TypeError) as exc:
             raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
         if parsed.version != 4:
-            raise ValueError(
-                f"evidence_id must be UUID version 4, got version {parsed.version}"
-            )
+            raise ValueError(f"evidence_id must be UUID version 4, got version {parsed.version}")
         return str(parsed)
 
     @field_validator("invoked_at")
@@ -560,9 +547,7 @@ class CmdLineResult(BaseModel):
         except (ValueError, AttributeError, TypeError) as exc:
             raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
         if parsed.version != 4:
-            raise ValueError(
-                f"evidence_id must be UUID version 4, got version {parsed.version}"
-            )
+            raise ValueError(f"evidence_id must be UUID version 4, got version {parsed.version}")
         return str(parsed)
 
     @field_validator("invoked_at")
@@ -659,9 +644,7 @@ class MalfindResult(BaseModel):
         except (ValueError, AttributeError, TypeError) as exc:
             raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
         if parsed.version != 4:
-            raise ValueError(
-                f"evidence_id must be UUID version 4, got version {parsed.version}"
-            )
+            raise ValueError(f"evidence_id must be UUID version 4, got version {parsed.version}")
         return str(parsed)
 
     @field_validator("invoked_at")
@@ -881,13 +864,10 @@ class DraftFinding(BaseModel):
         try:
             parsed = UUID(v)
         except (ValueError, AttributeError, TypeError) as exc:
-            raise ValueError(
-                f"{info.field_name} must be a UUID string, got {v!r}"
-            ) from exc
+            raise ValueError(f"{info.field_name} must be a UUID string, got {v!r}") from exc
         if parsed.version != 4:
             raise ValueError(
-                f"{info.field_name} must be UUID version 4, got version "
-                f"{parsed.version}"
+                f"{info.field_name} must be UUID version 4, got version {parsed.version}"
             )
         return str(parsed)
 
@@ -973,13 +953,10 @@ class FindingUpdate(BaseModel):
         try:
             parsed = UUID(v)
         except (ValueError, AttributeError, TypeError) as exc:
-            raise ValueError(
-                f"{info.field_name} must be a UUID string, got {v!r}"
-            ) from exc
+            raise ValueError(f"{info.field_name} must be a UUID string, got {v!r}") from exc
         if parsed.version != 4:
             raise ValueError(
-                f"{info.field_name} must be UUID version 4, got version "
-                f"{parsed.version}"
+                f"{info.field_name} must be UUID version 4, got version {parsed.version}"
             )
         return str(parsed)
 
@@ -991,13 +968,11 @@ class FindingUpdate(BaseModel):
                 parsed = UUID(cid)
             except (ValueError, AttributeError, TypeError) as exc:
                 raise ValueError(
-                    f"driving_correlation_ids entries must be UUID strings, "
-                    f"got {cid!r}"
+                    f"driving_correlation_ids entries must be UUID strings, got {cid!r}"
                 ) from exc
             if parsed.version != 4:
                 raise ValueError(
-                    f"driving_correlation_ids entries must be UUID v4, "
-                    f"got version {parsed.version}"
+                    f"driving_correlation_ids entries must be UUID v4, got version {parsed.version}"
                 )
         return v
 
@@ -1218,9 +1193,7 @@ PLUGIN_UNTRUSTED_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
-def untrusted_fields_for(
-    plugin_name: str, projection: list[str] | None = None
-) -> list[str]:
+def untrusted_fields_for(plugin_name: str, projection: list[str] | None = None) -> list[str]:
     """Compute the `untrusted_fields` list for a tier-2 result.
 
     `plugin_name` is the source plugin whose records back the result
@@ -1290,13 +1263,10 @@ class ExtractionRef(BaseModel):
         try:
             parsed = UUID(v)
         except (ValueError, AttributeError, TypeError) as exc:
-            raise ValueError(
-                f"{info.field_name} must be a UUID string, got {v!r}"
-            ) from exc
+            raise ValueError(f"{info.field_name} must be a UUID string, got {v!r}") from exc
         if parsed.version != 4:
             raise ValueError(
-                f"{info.field_name} must be UUID version 4, got version "
-                f"{parsed.version}"
+                f"{info.field_name} must be UUID version 4, got version {parsed.version}"
             )
         return str(parsed)
 
@@ -1342,9 +1312,7 @@ class ExtractionChainEntry(BaseModel):
         `this_extraction_hash` is a no-op so the helper accepts a full
         `model_dump()` without filtering.
         """
-        payload = {
-            k: v for k, v in fields.items() if k != "this_extraction_hash"
-        }
+        payload = {k: v for k, v in fields.items() if k != "this_extraction_hash"}
         canonical = json.dumps(payload, sort_keys=True, default=_json_default)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -1383,9 +1351,7 @@ class PslistSummary(BaseModel):
     # evidence. Synthetic name `top_image_names_keys` because the
     # untrusted axis is the tuples' first element, not the field as a
     # whole. See `untrusted_fields_for` and PLUGIN_UNTRUSTED_RECORD_FIELDS.
-    untrusted_fields: list[str] = Field(
-        default_factory=lambda: ["top_image_names_keys"]
-    )
+    untrusted_fields: list[str] = Field(default_factory=lambda: ["top_image_names_keys"])
 
 
 class PsscanSummary(PslistSummary):
@@ -1486,9 +1452,7 @@ class CmdLineSummary(BaseModel):
     distinct_cmdlines: int = Field(ge=0)
     top_process_names: list[tuple[str, int]] = Field(max_length=10)
     pid_range: tuple[int, int]
-    untrusted_fields: list[str] = Field(
-        default_factory=lambda: ["top_process_names_keys"]
-    )
+    untrusted_fields: list[str] = Field(default_factory=lambda: ["top_process_names_keys"])
 
 
 class MftTimelineSummary(BaseModel):
@@ -1511,15 +1475,11 @@ class MftTimelineSummary(BaseModel):
     latest_timestamp: datetime | None = None
     top_paths: list[tuple[str, int]] = Field(max_length=10)
     distinct_paths: int = Field(ge=0)
-    untrusted_fields: list[str] = Field(
-        default_factory=lambda: ["top_paths_keys"]
-    )
+    untrusted_fields: list[str] = Field(default_factory=lambda: ["top_paths_keys"])
 
     @field_validator("earliest_timestamp", "latest_timestamp")
     @classmethod
-    def _validate_optional_utc(
-        cls, v: datetime | None, info
-    ) -> datetime | None:
+    def _validate_optional_utc(cls, v: datetime | None, info) -> datetime | None:
         if v is None:
             return v
         return _enforce_utc(info.field_name, v)
@@ -1542,15 +1502,11 @@ class PrefetchSummary(BaseModel):
     top_executables: list[tuple[str, int]] = Field(max_length=10)
     earliest_run_time: datetime | None = None
     latest_run_time: datetime | None = None
-    untrusted_fields: list[str] = Field(
-        default_factory=lambda: ["top_executables_keys"]
-    )
+    untrusted_fields: list[str] = Field(default_factory=lambda: ["top_executables_keys"])
 
     @field_validator("earliest_run_time", "latest_run_time")
     @classmethod
-    def _validate_optional_utc(
-        cls, v: datetime | None, info
-    ) -> datetime | None:
+    def _validate_optional_utc(cls, v: datetime | None, info) -> datetime | None:
         if v is None:
             return v
         return _enforce_utc(info.field_name, v)
@@ -1577,9 +1533,7 @@ class EvtxSummary(BaseModel):
 
     @field_validator("earliest_timestamp", "latest_timestamp")
     @classmethod
-    def _validate_optional_utc(
-        cls, v: datetime | None, info
-    ) -> datetime | None:
+    def _validate_optional_utc(cls, v: datetime | None, info) -> datetime | None:
         if v is None:
             return v
         return _enforce_utc(info.field_name, v)
@@ -1604,9 +1558,7 @@ class RegistrySummary(BaseModel):
     interesting_paths_distribution: dict[str, int]
     distinct_key_paths: int = Field(ge=0)
     top_key_paths: list[tuple[str, int]] = Field(max_length=10)
-    untrusted_fields: list[str] = Field(
-        default_factory=lambda: ["top_key_paths_keys"]
-    )
+    untrusted_fields: list[str] = Field(default_factory=lambda: ["top_key_paths_keys"])
 
 
 class MalfindSummary(BaseModel):
@@ -1635,9 +1587,7 @@ class MalfindSummary(BaseModel):
     protection_distribution: dict[str, int]
     vad_tag_distribution: dict[str, int]
     pid_range: tuple[int, int]
-    untrusted_fields: list[str] = Field(
-        default_factory=lambda: ["detections_by_process_keys"]
-    )
+    untrusted_fields: list[str] = Field(default_factory=lambda: ["detections_by_process_keys"])
 
 
 # ---------------------------------------------------------------------------
@@ -1715,9 +1665,7 @@ class MftTimelineResult(BaseModel):
         except (ValueError, AttributeError, TypeError) as exc:
             raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
         if parsed.version != 4:
-            raise ValueError(
-                f"evidence_id must be UUID version 4, got version {parsed.version}"
-            )
+            raise ValueError(f"evidence_id must be UUID version 4, got version {parsed.version}")
         return str(parsed)
 
     @field_validator("invoked_at")
@@ -1774,9 +1722,7 @@ class PrefetchResult(BaseModel):
         except (ValueError, AttributeError, TypeError) as exc:
             raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
         if parsed.version != 4:
-            raise ValueError(
-                f"evidence_id must be UUID version 4, got version {parsed.version}"
-            )
+            raise ValueError(f"evidence_id must be UUID version 4, got version {parsed.version}")
         return str(parsed)
 
     @field_validator("invoked_at")
@@ -1846,9 +1792,7 @@ class EvtxResult(BaseModel):
         except (ValueError, AttributeError, TypeError) as exc:
             raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
         if parsed.version != 4:
-            raise ValueError(
-                f"evidence_id must be UUID version 4, got version {parsed.version}"
-            )
+            raise ValueError(f"evidence_id must be UUID version 4, got version {parsed.version}")
         return str(parsed)
 
     @field_validator("invoked_at")
@@ -1923,9 +1867,7 @@ class RegistryResult(BaseModel):
         except (ValueError, AttributeError, TypeError) as exc:
             raise ValueError(f"evidence_id must be a UUID string, got {v!r}") from exc
         if parsed.version != 4:
-            raise ValueError(
-                f"evidence_id must be UUID version 4, got version {parsed.version}"
-            )
+            raise ValueError(f"evidence_id must be UUID version 4, got version {parsed.version}")
         return str(parsed)
 
     @field_validator("invoked_at")
@@ -2209,14 +2151,9 @@ class _BaseCorrelation(BaseModel):
         try:
             parsed = UUID(v)
         except (ValueError, AttributeError, TypeError) as exc:
-            raise ValueError(
-                f"correlation_id must be a UUID string, got {v!r}"
-            ) from exc
+            raise ValueError(f"correlation_id must be a UUID string, got {v!r}") from exc
         if parsed.version != 4:
-            raise ValueError(
-                f"correlation_id must be UUID version 4, got version "
-                f"{parsed.version}"
-            )
+            raise ValueError(f"correlation_id must be UUID version 4, got version {parsed.version}")
         return str(parsed)
 
     @field_validator("created_at")
@@ -2230,14 +2167,9 @@ def _validate_uuid4_list(v: list[str], field_name: str) -> list[str]:
         try:
             parsed = UUID(item)
         except (ValueError, AttributeError, TypeError) as exc:
-            raise ValueError(
-                f"{field_name} entries must be UUID strings, got {item!r}"
-            ) from exc
+            raise ValueError(f"{field_name} entries must be UUID strings, got {item!r}") from exc
         if parsed.version != 4:
-            raise ValueError(
-                f"{field_name} entries must be UUID v4, got version "
-                f"{parsed.version}"
-            )
+            raise ValueError(f"{field_name} entries must be UUID v4, got version {parsed.version}")
     return v
 
 
@@ -2249,9 +2181,7 @@ class CorroboratesCorrelation(_BaseCorrelation):
     earned via different evidence patterns.
     """
 
-    correlation_type: Literal[CorrelationType.CORROBORATES] = (
-        CorrelationType.CORROBORATES
-    )
+    correlation_type: Literal[CorrelationType.CORROBORATES] = CorrelationType.CORROBORATES
     target_finding_ids: list[str] = Field(min_length=1)
     strength: CorrelationStrength
 
@@ -2271,9 +2201,7 @@ class ContradictsCorrelation(_BaseCorrelation):
     intervention.
     """
 
-    correlation_type: Literal[CorrelationType.CONTRADICTS] = (
-        CorrelationType.CONTRADICTS
-    )
+    correlation_type: Literal[CorrelationType.CONTRADICTS] = CorrelationType.CONTRADICTS
     finding_a_id: str
     finding_b_id: str
     severity: ContradictionSeverity
@@ -2285,14 +2213,9 @@ class ContradictsCorrelation(_BaseCorrelation):
         try:
             parsed = UUID(v)
         except (ValueError, AttributeError, TypeError) as exc:
-            raise ValueError(
-                f"{info.field_name} must be a UUID string, got {v!r}"
-            ) from exc
+            raise ValueError(f"{info.field_name} must be a UUID string, got {v!r}") from exc
         if parsed.version != 4:
-            raise ValueError(
-                f"{info.field_name} must be UUID v4, got version "
-                f"{parsed.version}"
-            )
+            raise ValueError(f"{info.field_name} must be UUID v4, got version {parsed.version}")
         return str(parsed)
 
 
@@ -2301,9 +2224,7 @@ class StrengthensCorrelation(_BaseCorrelation):
     without rising to the structural bar of `corroborates` (which
     requires multiple agreeing findings)."""
 
-    correlation_type: Literal[CorrelationType.STRENGTHENS] = (
-        CorrelationType.STRENGTHENS
-    )
+    correlation_type: Literal[CorrelationType.STRENGTHENS] = CorrelationType.STRENGTHENS
     target_finding_id: str
 
     @field_validator("target_finding_id")
@@ -2312,14 +2233,9 @@ class StrengthensCorrelation(_BaseCorrelation):
         try:
             parsed = UUID(v)
         except (ValueError, AttributeError, TypeError) as exc:
-            raise ValueError(
-                f"target_finding_id must be a UUID string, got {v!r}"
-            ) from exc
+            raise ValueError(f"target_finding_id must be a UUID string, got {v!r}") from exc
         if parsed.version != 4:
-            raise ValueError(
-                f"target_finding_id must be UUID v4, got version "
-                f"{parsed.version}"
-            )
+            raise ValueError(f"target_finding_id must be UUID v4, got version {parsed.version}")
         return str(parsed)
 
 
@@ -2328,9 +2244,7 @@ class WeakensCorrelation(_BaseCorrelation):
     rising to the structural bar of `contradicts` (which requires a
     second finding making an incompatible claim)."""
 
-    correlation_type: Literal[CorrelationType.WEAKENS] = (
-        CorrelationType.WEAKENS
-    )
+    correlation_type: Literal[CorrelationType.WEAKENS] = CorrelationType.WEAKENS
     target_finding_id: str
 
     @field_validator("target_finding_id")
@@ -2339,14 +2253,9 @@ class WeakensCorrelation(_BaseCorrelation):
         try:
             parsed = UUID(v)
         except (ValueError, AttributeError, TypeError) as exc:
-            raise ValueError(
-                f"target_finding_id must be a UUID string, got {v!r}"
-            ) from exc
+            raise ValueError(f"target_finding_id must be a UUID string, got {v!r}") from exc
         if parsed.version != 4:
-            raise ValueError(
-                f"target_finding_id must be UUID v4, got version "
-                f"{parsed.version}"
-            )
+            raise ValueError(f"target_finding_id must be UUID v4, got version {parsed.version}")
         return str(parsed)
 
 
@@ -2359,9 +2268,7 @@ class RequestFollowupCorrelation(_BaseCorrelation):
     the analyst as typed input rather than having to parse a
     paragraph."""
 
-    correlation_type: Literal[CorrelationType.REQUEST_FOLLOWUP] = (
-        CorrelationType.REQUEST_FOLLOWUP
-    )
+    correlation_type: Literal[CorrelationType.REQUEST_FOLLOWUP] = CorrelationType.REQUEST_FOLLOWUP
     target_analyst: FollowupTargetAnalyst
     related_finding_ids: list[str] = Field(min_length=1)
     focus_context: dict[str, Any] = Field(default_factory=dict)
@@ -2392,9 +2299,7 @@ class CrossHostCorrelation(_BaseCorrelation):
     the promotion engine can apply the same threshold rules.
     """
 
-    correlation_type: Literal[CorrelationType.CROSS_HOST] = (
-        CorrelationType.CROSS_HOST
-    )
+    correlation_type: Literal[CorrelationType.CROSS_HOST] = CorrelationType.CROSS_HOST
     target_finding_ids: list[str] = Field(min_length=2)
     host_ids: list[str] = Field(min_length=2)
     shared_indicator: dict[str, Any] = Field(default_factory=dict)
@@ -2413,8 +2318,7 @@ class CrossHostCorrelation(_BaseCorrelation):
         # enforcement so the agent cannot drift away from the contract.
         if len(set(v)) < 2:
             raise ValueError(
-                "cross_host requires ≥2 distinct host_ids; got "
-                f"{len(set(v))} distinct value(s)"
+                f"cross_host requires ≥2 distinct host_ids; got {len(set(v))} distinct value(s)"
             )
         return v
 
@@ -2468,9 +2372,7 @@ class CorrelationChainEntry(BaseModel):
         `AuditLogEntry.compute_this_line_hash`: sorted JSON keys, ISO
         timestamps, enum values rendered as strings.
         """
-        payload = {
-            k: v for k, v in fields.items() if k != "this_correlation_hash"
-        }
+        payload = {k: v for k, v in fields.items() if k != "this_correlation_hash"}
         canonical = json.dumps(payload, sort_keys=True, default=_json_default)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

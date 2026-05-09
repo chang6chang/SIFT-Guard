@@ -86,7 +86,7 @@ def _pr(
         pid=pid,
         ppid=ppid,
         image_file_name=image_name,
-        offset_v=0xfffff80012340000 + pid,
+        offset_v=0xFFFFF80012340000 + pid,
         threads=2,
         handles=64,
         session_id=0,
@@ -110,7 +110,7 @@ def _ptr(
         pid=pid,
         ppid=ppid,
         image_file_name=image_name,
-        offset_v=0xfffff80012340000 + pid,
+        offset_v=0xFFFFF80012340000 + pid,
         threads=2,
         handles=64,
         session_id=0,
@@ -144,7 +144,7 @@ def _nr(
         state=state,
         pid=pid,
         owner=owner,
-        offset=0xfffff80056780000 + pid,
+        offset=0xFFFFF80056780000 + pid,
         created=NOW,
     )
 
@@ -166,22 +166,27 @@ def seed(evidence_id: str) -> None:
     ]
     pstree_processes = [
         _ptr(
-            4, 0, "System",
+            4,
+            0,
+            "System",
             children=[
                 _ptr(
-                    300, 4, "smss.exe",
+                    300,
+                    4,
+                    "smss.exe",
                     children=[
                         _ptr(400, 300, "csrss.exe"),
                         _ptr(
-                            500, 300, "winlogon.exe",
+                            500,
+                            300,
+                            "winlogon.exe",
                             children=[
                                 _ptr(
-                                    9999, 500, INJECTION_IMAGE_NAME,
+                                    9999,
+                                    500,
+                                    INJECTION_IMAGE_NAME,
                                     cmd=INJECTION_CMDLINE,
-                                    path=(
-                                        "C:\\\\Windows\\\\Temp\\\\"
-                                        + INJECTION_IMAGE_NAME[:40]
-                                    ),
+                                    path=("C:\\\\Windows\\\\Temp\\\\" + INJECTION_IMAGE_NAME[:40]),
                                 ),
                             ],
                         ),
@@ -193,21 +198,30 @@ def seed(evidence_id: str) -> None:
     netscan_records = [
         _nr(4),  # System listener
         _nr(
-            500, proto="TCPv4", local_addr="192.168.1.10",
-            local_port=51000, foreign_addr="10.0.0.1",
-            foreign_port=443, state="ESTABLISHED",
+            500,
+            proto="TCPv4",
+            local_addr="192.168.1.10",
+            local_port=51000,
+            foreign_addr="10.0.0.1",
+            foreign_port=443,
+            state="ESTABLISHED",
             owner="winlogon.exe",
         ),
         _nr(
-            9999, proto="TCPv4", local_addr="192.168.1.10",
-            local_port=52000, foreign_addr="10.0.0.99",
-            foreign_port=4444, state="ESTABLISHED",
+            9999,
+            proto="TCPv4",
+            local_addr="192.168.1.10",
+            local_port=52000,
+            foreign_addr="10.0.0.99",
+            foreign_port=4444,
+            state="ESTABLISHED",
             owner=INJECTION_OWNER,
         ),
     ]
 
     write_extraction(
-        case_dir=CASE_DIR, evidence_id=evidence_id,
+        case_dir=CASE_DIR,
+        evidence_id=evidence_id,
         plugin_name="windows.pslist.PsList",
         result=PslistResult(
             evidence_id=evidence_id,
@@ -215,8 +229,7 @@ def seed(evidence_id: str) -> None:
             volatility_version="2.27.0",
             processes=pslist_processes,
             command_executed=(
-                "vol -f /mnt/synthetic/synthetic-injected.raw "
-                "-r json windows.pslist.PsList"
+                "vol -f /mnt/synthetic/synthetic-injected.raw -r json windows.pslist.PsList"
             ),
             runtime_seconds=0.001,
             invoked_at=NOW,
@@ -226,7 +239,8 @@ def seed(evidence_id: str) -> None:
     )
 
     write_extraction(
-        case_dir=CASE_DIR, evidence_id=evidence_id,
+        case_dir=CASE_DIR,
+        evidence_id=evidence_id,
         plugin_name="windows.psscan.PsScan",
         result=PsscanResult(
             evidence_id=evidence_id,
@@ -234,8 +248,7 @@ def seed(evidence_id: str) -> None:
             volatility_version="2.27.0",
             processes=psscan_processes,
             command_executed=(
-                "vol -f /mnt/synthetic/synthetic-injected.raw "
-                "-r json windows.psscan.PsScan"
+                "vol -f /mnt/synthetic/synthetic-injected.raw -r json windows.psscan.PsScan"
             ),
             runtime_seconds=0.002,
             invoked_at=NOW,
@@ -245,7 +258,8 @@ def seed(evidence_id: str) -> None:
     )
 
     write_extraction(
-        case_dir=CASE_DIR, evidence_id=evidence_id,
+        case_dir=CASE_DIR,
+        evidence_id=evidence_id,
         plugin_name="windows.pstree.PsTree",
         result=PstreeResult(
             evidence_id=evidence_id,
@@ -253,8 +267,7 @@ def seed(evidence_id: str) -> None:
             volatility_version="2.27.0",
             processes=pstree_processes,
             command_executed=(
-                "vol -f /mnt/synthetic/synthetic-injected.raw "
-                "-r json windows.pstree.PsTree"
+                "vol -f /mnt/synthetic/synthetic-injected.raw -r json windows.pstree.PsTree"
             ),
             runtime_seconds=0.001,
             invoked_at=NOW,
@@ -264,7 +277,8 @@ def seed(evidence_id: str) -> None:
     )
 
     write_extraction(
-        case_dir=CASE_DIR, evidence_id=evidence_id,
+        case_dir=CASE_DIR,
+        evidence_id=evidence_id,
         plugin_name="windows.netscan.NetScan",
         result=NetscanResult(
             evidence_id=evidence_id,
@@ -272,8 +286,7 @@ def seed(evidence_id: str) -> None:
             volatility_version="2.27.0",
             connections=netscan_records,
             command_executed=(
-                "vol -f /mnt/synthetic/synthetic-injected.raw "
-                "-r json windows.netscan.NetScan"
+                "vol -f /mnt/synthetic/synthetic-injected.raw -r json windows.netscan.NetScan"
             ),
             runtime_seconds=0.002,
             invoked_at=NOW,

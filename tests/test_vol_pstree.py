@@ -31,7 +31,7 @@ import yaml
 
 from server.extractions import load_extraction
 from server.schemas import ArtifactClass, EvidenceRecord
-from server.tools.memory import translate_to_vm_path, vol_pstree
+from server.tools.memory import vol_pstree
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -95,17 +95,32 @@ def _bad_subtree_json() -> str:
     return json.dumps(
         [
             {
-                "PID": 828, "PPID": 752, "ImageFileName": "services.exe",
-                "Offset(V)": 0, "Threads": 5, "Handles": None,
-                "SessionId": 0, "Wow64": False, "Audit": None, "Cmd": None,
-                "CreateTime": "2024-01-01T00:00:00+00:00", "ExitTime": None,
+                "PID": 828,
+                "PPID": 752,
+                "ImageFileName": "services.exe",
+                "Offset(V)": 0,
+                "Threads": 5,
+                "Handles": None,
+                "SessionId": 0,
+                "Wow64": False,
+                "Audit": None,
+                "Cmd": None,
+                "CreateTime": "2024-01-01T00:00:00+00:00",
+                "ExitTime": None,
                 "Path": None,
                 "__children": [
                     {
-                        "PID": -1, "PPID": 828, "ImageFileName": "Bad",
-                        "Offset(V)": 0, "Threads": 1, "Handles": None,
-                        "SessionId": 0, "Wow64": False, "Audit": None,
-                        "Cmd": None, "Path": None,
+                        "PID": -1,
+                        "PPID": 828,
+                        "ImageFileName": "Bad",
+                        "Offset(V)": 0,
+                        "Threads": 1,
+                        "Handles": None,
+                        "SessionId": 0,
+                        "Wow64": False,
+                        "Audit": None,
+                        "Cmd": None,
+                        "Path": None,
                         "CreateTime": "2024-01-01T00:00:00+00:00",
                         "ExitTime": None,
                         "__children": [],
@@ -113,12 +128,20 @@ def _bad_subtree_json() -> str:
                 ],
             },
             {
-                "PID": 4, "PPID": 0, "ImageFileName": "System",
-                "Offset(V)": 0, "Threads": 197, "Handles": None,
-                "SessionId": None, "Wow64": False, "Audit": None,
-                "Cmd": None, "Path": None,
+                "PID": 4,
+                "PPID": 0,
+                "ImageFileName": "System",
+                "Offset(V)": 0,
+                "Threads": 197,
+                "Handles": None,
+                "SessionId": None,
+                "Wow64": False,
+                "Audit": None,
+                "Cmd": None,
+                "Path": None,
                 "CreateTime": "2024-01-01T00:00:00+00:00",
-                "ExitTime": None, "__children": [],
+                "ExitTime": None,
+                "__children": [],
             },
         ]
     )
@@ -130,9 +153,7 @@ def _bad_subtree_json() -> str:
 
 
 class TestVolPstreeResolution:
-    def test_evidence_id_not_in_case_yaml_raises_sanitized_value_error(
-        self, tmp_path: Path
-    ):
+    def test_evidence_id_not_in_case_yaml_raises_sanitized_value_error(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         bogus_id = "00000000-0000-4000-8000-000000000000"
         with pytest.raises(ValueError) as exc_info:
@@ -140,9 +161,7 @@ class TestVolPstreeResolution:
         assert str(exc_info.value) == "evidence_id not found in CASE.yaml"
         assert bogus_id not in str(exc_info.value)
 
-    def test_artifact_class_unknown_rejected_with_sanitized_message(
-        self, tmp_path: Path
-    ):
+    def test_artifact_class_unknown_rejected_with_sanitized_message(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path, artifact_class=ArtifactClass.UNKNOWN)
         with pytest.raises(ValueError) as exc_info:
             vol_pstree(VALID_EVIDENCE_ID, case_dir=str(case_dir))
@@ -162,9 +181,7 @@ _GENESIS_PREV_HASH = "0" * 64
 
 
 class TestVolPstreeRejectionAudit:
-    def test_evidence_not_found_writes_rejection_chain_line(
-        self, tmp_path: Path
-    ):
+    def test_evidence_not_found_writes_rejection_chain_line(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         bogus_id = "00000000-0000-4000-8000-000000000000"
 
@@ -173,11 +190,7 @@ class TestVolPstreeRejectionAudit:
 
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
         assert audit_path.exists(), "rejection must extend the chain"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
         entry = lines[0]
         assert entry["tool_name"] == "vol_pstree:rejected_evidence_not_found"
@@ -186,46 +199,27 @@ class TestVolPstreeRejectionAudit:
         assert entry["prev_line_hash"] == _GENESIS_PREV_HASH
         assert len(entry["this_line_hash"]) == 64
 
-    def test_wrong_artifact_class_writes_rejection_chain_line(
-        self, tmp_path: Path
-    ):
-        case_dir = _make_case_dir(
-            tmp_path, artifact_class=ArtifactClass.UNKNOWN
-        )
+    def test_wrong_artifact_class_writes_rejection_chain_line(self, tmp_path: Path):
+        case_dir = _make_case_dir(tmp_path, artifact_class=ArtifactClass.UNKNOWN)
         with pytest.raises(ValueError):
             vol_pstree(VALID_EVIDENCE_ID, case_dir=str(case_dir))
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
         entry = lines[0]
-        assert (
-            entry["tool_name"] == "vol_pstree:rejected_wrong_artifact_class"
-        )
+        assert entry["tool_name"] == "vol_pstree:rejected_wrong_artifact_class"
 
-    def test_path_translation_failed_writes_rejection_chain_line(
-        self, tmp_path: Path
-    ):
+    def test_path_translation_failed_writes_rejection_chain_line(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path, absolute_path="/tmp/Foo.raw")
         with pytest.raises(ValueError) as exc_info:
             vol_pstree(VALID_EVIDENCE_ID, case_dir=str(case_dir))
         assert "/tmp/Foo.raw" not in str(exc_info.value)
         assert "expected host prefix" in str(exc_info.value)
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
         entry = lines[0]
-        assert (
-            entry["tool_name"]
-            == "vol_pstree:rejected_path_translation_failed"
-        )
+        assert entry["tool_name"] == "vol_pstree:rejected_path_translation_failed"
 
 
 # ---------------------------------------------------------------------------
@@ -235,9 +229,7 @@ class TestVolPstreeRejectionAudit:
 
 
 class TestVolPstreeHappyPath:
-    def test_returns_pstree_result_with_recursive_structure(
-        self, tmp_path: Path
-    ):
+    def test_returns_pstree_result_with_recursive_structure(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         fixture_stdout = PSTREE_FIXTURE.read_text(encoding="utf-8")
         fake_command = (
@@ -245,12 +237,13 @@ class TestVolPstreeHappyPath:
             "-f /mnt/rocba/Rocba-Memory.raw -r json windows.pstree.PsTree"
         )
 
-        with patch(
-            "server.tools.memory.get_vol_version", return_value="2.27.0"
-        ), patch(
-            "server.tools.memory.run_vol_plugin",
-            return_value=(fixture_stdout, fake_command, 29.5),
-        ) as mock_run:
+        with (
+            patch("server.tools.memory.get_vol_version", return_value="2.27.0"),
+            patch(
+                "server.tools.memory.run_vol_plugin",
+                return_value=(fixture_stdout, fake_command, 29.5),
+            ) as mock_run,
+        ):
             summary = vol_pstree(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
         # Tier-1 contract: PstreeSummary returned, full tree on disk.
@@ -285,9 +278,7 @@ class TestVolPstreeHappyPath:
 
         # Stored extraction has the full recursive tree with the same
         # provenance metadata we never expose in the summary.
-        _, parsed = load_extraction(
-            case_dir, VALID_EVIDENCE_ID, "windows.pstree.PsTree"
-        )
+        _, parsed = load_extraction(case_dir, VALID_EVIDENCE_ID, "windows.pstree.PsTree")
         assert parsed["plugin_name"] == "windows.pstree.PsTree"
         assert parsed["volatility_version"] == "2.27.0"
         assert parsed["runtime_seconds"] == 29.5
@@ -310,9 +301,7 @@ class TestVolPstreeHappyPath:
         assert system["children"][0]["path"] is not None
 
         # (b) Deep-nested chain — services.exe → svchost.exe → consent.exe
-        services = next(
-            p for p in records if p["image_file_name"] == "services.exe"
-        )
+        services = next(p for p in records if p["image_file_name"] == "services.exe")
         assert len(services["children"]) == 1
         svchost = services["children"][0]
         assert svchost["image_file_name"] == "svchost.exe"
@@ -325,9 +314,7 @@ class TestVolPstreeHappyPath:
 
         # (c) Orphan — chrome.exe has PPID=99999, which is not any
         # process's PID anywhere in the tree.
-        chrome = next(
-            p for p in records if p["image_file_name"] == "chrome.exe"
-        )
+        chrome = next(p for p in records if p["image_file_name"] == "chrome.exe")
         assert chrome["ppid"] == 99999, (
             "orphaned chrome.exe must keep its raw PPID — the "
             "validator will need it to detect that the parent is gone"
@@ -347,24 +334,21 @@ class TestVolPstreeHappyPath:
 
 
 class TestVolPstreeRecordWarnings:
-    def test_bad_descendant_skips_whole_subtree_others_preserved(
-        self, tmp_path: Path
-    ):
+    def test_bad_descendant_skips_whole_subtree_others_preserved(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
-        with patch(
-            "server.tools.memory.get_vol_version", return_value="2.27.0"
-        ), patch(
-            "server.tools.memory.run_vol_plugin",
-            return_value=(_bad_subtree_json(), "ssh ... vol ...", 30.0),
+        with (
+            patch("server.tools.memory.get_vol_version", return_value="2.27.0"),
+            patch(
+                "server.tools.memory.run_vol_plugin",
+                return_value=(_bad_subtree_json(), "ssh ... vol ...", 30.0),
+            ),
         ):
             summary = vol_pstree(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
         # First top-level (services.exe with bad descendant) was
         # skipped; second (System, well-formed) survived.
         assert summary.extraction.record_count == 1
-        _, parsed = load_extraction(
-            case_dir, VALID_EVIDENCE_ID, "windows.pstree.PsTree"
-        )
+        _, parsed = load_extraction(case_dir, VALID_EVIDENCE_ID, "windows.pstree.PsTree")
         assert len(parsed["processes"]) == 1
         assert parsed["processes"][0]["image_file_name"] == "System"
 
@@ -372,11 +356,7 @@ class TestVolPstreeRecordWarnings:
         # Warning's tool_name marks it as a pstree warning so a
         # chain reader can grep distinctly from pslist/psscan warnings.
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 2
         assert lines[0]["tool_name"] == "vol_pstree:record_validation_warning"
         assert lines[0]["evidence_id"] == VALID_EVIDENCE_ID
@@ -391,24 +371,19 @@ class TestVolPstreeRecordWarnings:
 
 
 class TestAuditChain:
-    def test_audit_chain_extends_from_existing_on_disk_chain(
-        self, tmp_path: Path
-    ):
+    def test_audit_chain_extends_from_existing_on_disk_chain(self, tmp_path: Path):
         on_disk_audit_before = ON_DISK_AUDIT_LOG.read_bytes()
 
         case_dir = tmp_path / "case-data"
         (case_dir / "audit").mkdir(parents=True)
         (case_dir / "evidence").mkdir(parents=True)
         shutil.copy(ON_DISK_CASE_YAML, case_dir / "CASE.yaml")
-        shutil.copy(
-            ON_DISK_AUDIT_LOG, case_dir / "audit" / "sift-guard-mcp.jsonl"
-        )
+        shutil.copy(ON_DISK_AUDIT_LOG, case_dir / "audit" / "sift-guard-mcp.jsonl")
 
         case_yaml_path = case_dir / "CASE.yaml"
         doc = yaml.safe_load(case_yaml_path.read_text())
         rocba_entry = next(
-            e for e in doc["evidence"]
-            if e["original_filename"] == "Rocba-Memory.raw"
+            e for e in doc["evidence"] if e["original_filename"] == "Rocba-Memory.raw"
         )
         rocba_evidence_id = rocba_entry["evidence_id"]
         fake_rocba = case_dir / "evidence" / "Rocba-Memory.raw"
@@ -416,40 +391,31 @@ class TestAuditChain:
         rocba_entry["absolute_path"] = str(fake_rocba)
         case_yaml_path.write_text(yaml.safe_dump(doc, sort_keys=False))
 
-        seeded_lines = (
-            (case_dir / "audit" / "sift-guard-mcp.jsonl")
-            .read_text()
-            .splitlines()
-        )
+        seeded_lines = (case_dir / "audit" / "sift-guard-mcp.jsonl").read_text().splitlines()
         seeded_count = len(seeded_lines)
         last_seeded = json.loads(seeded_lines[-1])
         expected_prev = last_seeded["this_line_hash"]
 
         fixture_stdout = PSTREE_FIXTURE.read_text(encoding="utf-8")
-        with patch(
-            "server.tools.memory.get_vol_version", return_value="2.27.0"
-        ), patch(
-            "server.tools.memory.run_vol_plugin",
-            return_value=(fixture_stdout, "ssh ... vol ...", 29.5),
+        with (
+            patch("server.tools.memory.get_vol_version", return_value="2.27.0"),
+            patch(
+                "server.tools.memory.run_vol_plugin",
+                return_value=(fixture_stdout, "ssh ... vol ...", 29.5),
+            ),
         ):
             vol_pstree(rocba_evidence_id, case_dir=str(case_dir))
 
-        new_lines = (
-            (case_dir / "audit" / "sift-guard-mcp.jsonl")
-            .read_text()
-            .splitlines()
-        )
+        new_lines = (case_dir / "audit" / "sift-guard-mcp.jsonl").read_text().splitlines()
         assert len(new_lines) == seeded_count + 1
         new_entry = json.loads(new_lines[-1])
         assert new_entry["tool_name"] == "vol_pstree"
         assert new_entry["evidence_id"] == rocba_evidence_id
         assert new_entry["prev_line_hash"] == expected_prev, (
-            "vol_pstree's audit line failed to link to the prior "
-            "chain — chain is broken"
+            "vol_pstree's audit line failed to link to the prior chain — chain is broken"
         )
         assert new_entry["line_number"] == seeded_count + 1
 
         assert ON_DISK_AUDIT_LOG.read_bytes() == on_disk_audit_before, (
-            "on-disk audit log was modified by the test — isolation "
-            "is broken"
+            "on-disk audit log was modified by the test — isolation is broken"
         )

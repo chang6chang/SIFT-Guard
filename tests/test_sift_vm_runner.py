@@ -65,9 +65,7 @@ class TestPluginNameRegex:
         # confirm the regex let the call through to subprocess.
         with patch("server.runners.sift_vm.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stdout="[]", returncode=0)
-            stdout, command_string, runtime_seconds = run_vol_plugin(
-                name, VALID_IMAGE_PATH
-            )
+            stdout, command_string, runtime_seconds = run_vol_plugin(name, VALID_IMAGE_PATH)
         assert stdout == "[]"
         assert name in command_string
         assert runtime_seconds >= 0
@@ -145,8 +143,16 @@ class TestParseVolatilityJson:
 
         # Every expected snake_case key is present in row 0 (System).
         expected_keys = {
-            "pid", "ppid", "image_file_name", "offset_v", "threads",
-            "handles", "session_id", "wow64", "create_time", "exit_time",
+            "pid",
+            "ppid",
+            "image_file_name",
+            "offset_v",
+            "threads",
+            "handles",
+            "session_id",
+            "wow64",
+            "create_time",
+            "exit_time",
         }
         assert set(rows[0].keys()) == expected_keys
 

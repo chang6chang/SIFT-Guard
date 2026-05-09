@@ -56,14 +56,13 @@ from orchestrator.iterations_log import (
     TerminationCheck,
     append_iteration_entry,
 )
-from orchestrator.manifest import CaseManifest, HostEvidence
-from orchestrator.promotion import PromotionDecision, promote
+from orchestrator.manifest import CaseManifest
+from orchestrator.promotion import promote
 from server.findings_log import read_finding_state
 from server.schemas import (
     ContradictsCorrelation,
     CorrelationChainEntry,
     CorroboratesCorrelation,
-    CrossHostCorrelation,
     DraftFinding,
     FindingChainEntry,
     FindingUpdate,
@@ -195,9 +194,7 @@ def _draft_by_finding(
     return drafts
 
 
-def _correlations_for_finding(
-    correlations: list[CorrelationChainEntry], finding_id: str
-):
+def _correlations_for_finding(correlations: list[CorrelationChainEntry], finding_id: str):
     """Return correlations from the chain that reference finding_id
     in any role (target, finding_a/b, related)."""
     out = []
@@ -286,9 +283,7 @@ def _unresolved_set(case_dir: Path) -> frozenset[str]:
     return frozenset(out)
 
 
-async def _call_update_finding_async(
-    case_cwd: Path, args: dict[str, Any]
-) -> dict[str, Any]:
+async def _call_update_finding_async(case_cwd: Path, args: dict[str, Any]) -> dict[str, Any]:
     """Spawn a fresh MCP server stdio session and call update_finding."""
     python_exe = str(PROJECT_ROOT / ".venv" / "bin" / "python")
     env = {**os.environ, "PYTHONPATH": str(PROJECT_ROOT)}
@@ -359,9 +354,7 @@ def _step_analyze(
             )
     findings_after_chain = _read_findings_chain(case_dir)
     findings_after = {
-        e.finding.finding_id
-        for e in findings_after_chain
-        if isinstance(e.finding, DraftFinding)
+        e.finding.finding_id for e in findings_after_chain if isinstance(e.finding, DraftFinding)
     }
     state.analyst_finding_ids_added = sorted(findings_after - findings_before)
 
@@ -377,9 +370,7 @@ def _step_correlate(
 ) -> list[CorrelationChainEntry]:
     """Build findings_summary, dispatch validator, return new
     correlations from the chain."""
-    correlations_before = {
-        e.correlation.correlation_id for e in _read_correlations_chain(case_dir)
-    }
+    correlations_before = {e.correlation.correlation_id for e in _read_correlations_chain(case_dir)}
     findings_summary = _build_findings_summary(case_dir)
     if not findings_summary:
         logger.info("step_correlate: no DRAFT findings; skipping validator")
@@ -401,14 +392,10 @@ def _step_correlate(
         )
 
     correlations_chain = _read_correlations_chain(case_dir)
-    correlations_after = {
-        e.correlation.correlation_id for e in correlations_chain
-    }
+    correlations_after = {e.correlation.correlation_id for e in correlations_chain}
     new_ids = correlations_after - correlations_before
     state.validator_correlation_ids_added = sorted(new_ids)
-    return [
-        e for e in correlations_chain if e.correlation.correlation_id in new_ids
-    ]
+    return [e for e in correlations_chain if e.correlation.correlation_id in new_ids]
 
 
 def _step_promote(
@@ -579,9 +566,7 @@ def run_loop(
     artifact_class = _read_artifact_class(case_dir, evidence_id)
     initial_analysts = ARTIFACT_TO_ANALYSTS.get(artifact_class, [])
     if not initial_analysts:
-        raise ValueError(
-            f"no analysts mapped for artifact_class={artifact_class!r}"
-        )
+        raise ValueError(f"no analysts mapped for artifact_class={artifact_class!r}")
 
     iteration_records: list[IterationChainEntry] = []
     cumulative_tokens = 0
@@ -592,9 +577,7 @@ def run_loop(
 
     for iteration_number in range(1, max_iterations + 1):
         if not pending_analysts:
-            logger.info(
-                "iter %d: no analysts pending; terminating", iteration_number
-            )
+            logger.info("iter %d: no analysts pending; terminating", iteration_number)
             termination_reason = "no_followup_pending"
             break
 
@@ -641,9 +624,7 @@ def run_loop(
             max_iterations=max_iterations,
         )
 
-        next_analysts, next_focus, consumed = _next_iter_dispatch_plan(
-            state, new_correlations
-        )
+        next_analysts, next_focus, consumed = _next_iter_dispatch_plan(state, new_correlations)
         state.followup_consumed = consumed
 
         completed_at = datetime.now(tz=timezone.utc)
@@ -720,9 +701,7 @@ def _build_findings_summary_grouped_by_host(
 
     for fid, draft in drafts.items():
         latest_state = read_finding_state(case_dir, fid)
-        state, conf = (
-            latest_state if latest_state else (draft.state, draft.confidence)
-        )
+        state, conf = latest_state if latest_state else (draft.state, draft.confidence)
         if state != "DRAFT":
             continue
         finding_dict = {
@@ -743,24 +722,26 @@ def _build_findings_summary_grouped_by_host(
                 for ref in draft.evidence_refs
             ],
         }
-        bucket_key = (
-            draft.host_id if draft.host_id in by_host else "_unattributed"
-        )
+        bucket_key = draft.host_id if draft.host_id in by_host else "_unattributed"
         by_host[bucket_key].append(finding_dict)
 
     out: list[dict[str, Any]] = []
     for host in manifest.hosts:
-        out.append({
-            "host_id": host.host_id,
-            "host_label": host.host_label,
-            "findings": by_host[host.host_id],
-        })
+        out.append(
+            {
+                "host_id": host.host_id,
+                "host_label": host.host_label,
+                "findings": by_host[host.host_id],
+            }
+        )
     if by_host["_unattributed"]:
-        out.append({
-            "host_id": "_unattributed",
-            "host_label": "(no host_id)",
-            "findings": by_host["_unattributed"],
-        })
+        out.append(
+            {
+                "host_id": "_unattributed",
+                "host_label": "(no host_id)",
+                "findings": by_host["_unattributed"],
+            }
+        )
     return out
 
 
@@ -806,8 +787,7 @@ def _step_analyze_multi_host(
             analysts = MANIFEST_TYPE_TO_ANALYSTS.get(ef.evidence_type)
             if analysts is None:
                 logger.warning(
-                    "skipping unknown evidence_type %s on host %s "
-                    "(evidence_id %s)",
+                    "skipping unknown evidence_type %s on host %s (evidence_id %s)",
                     ef.evidence_type,
                     host.host_id,
                     ef.evidence_id,
@@ -826,14 +806,11 @@ def _step_analyze_multi_host(
                     host_label=host.host_label,
                 )
                 state.dispatch_results.append(result)
-                state.analysts_dispatched.append(
-                    f"{agent}@{host.host_id}"
-                )
+                state.analysts_dispatched.append(f"{agent}@{host.host_id}")
                 state.tokens_uncached += result.tokens_uncached
                 if not result.succeeded:
                     logger.warning(
-                        "analyst %s on host %s did not complete cleanly "
-                        "(stop_reason=%s)",
+                        "analyst %s on host %s did not complete cleanly (stop_reason=%s)",
                         agent,
                         host.host_id,
                         result.stop_reason,
@@ -841,9 +818,7 @@ def _step_analyze_multi_host(
         dispatched_host_ids.append(host.host_id)
     findings_after_chain = _read_findings_chain(case_dir)
     findings_after = {
-        e.finding.finding_id
-        for e in findings_after_chain
-        if isinstance(e.finding, DraftFinding)
+        e.finding.finding_id for e in findings_after_chain if isinstance(e.finding, DraftFinding)
     }
     state.analyst_finding_ids_added = sorted(findings_after - findings_before)
     return dispatched_host_ids
@@ -871,15 +846,11 @@ def _step_correlate_multi_host(
     exists in the manifest, falls back to the first host's first
     evidence_file regardless of type.
     """
-    correlations_before = {
-        e.correlation.correlation_id for e in _read_correlations_chain(case_dir)
-    }
+    correlations_before = {e.correlation.correlation_id for e in _read_correlations_chain(case_dir)}
     host_grouped = _build_findings_summary_grouped_by_host(case_dir, manifest)
     total_drafts = sum(len(b["findings"]) for b in host_grouped)
     if total_drafts == 0:
-        logger.info(
-            "step_correlate (multi-host): no DRAFT findings; skipping validator"
-        )
+        logger.info("step_correlate (multi-host): no DRAFT findings; skipping validator")
         return []
 
     # Choose a representative evidence_id for the validator's
@@ -913,14 +884,10 @@ def _step_correlate_multi_host(
         )
 
     correlations_chain = _read_correlations_chain(case_dir)
-    correlations_after = {
-        e.correlation.correlation_id for e in correlations_chain
-    }
+    correlations_after = {e.correlation.correlation_id for e in correlations_chain}
     new_ids = correlations_after - correlations_before
     state.validator_correlation_ids_added = sorted(new_ids)
-    return [
-        e for e in correlations_chain if e.correlation.correlation_id in new_ids
-    ]
+    return [e for e in correlations_chain if e.correlation.correlation_id in new_ids]
 
 
 def _next_iter_multi_host_plan(
@@ -960,9 +927,7 @@ def _manifest_summary_for_log(
     """Compact dict for IterationPayload.manifest_summary."""
     return {
         "host_count": len(manifest.hosts),
-        "evidence_counts_by_host": {
-            h.host_id: h.evidence_count for h in manifest.hosts
-        },
+        "evidence_counts_by_host": {h.host_id: h.evidence_count for h in manifest.hosts},
         "dispatched_host_ids": dispatched_host_ids,
     }
 
@@ -1021,9 +986,7 @@ def run_loop_multi_host(
 
     for iteration_number in range(1, max_iterations + 1):
         if pending_host_ids is not None and not pending_host_ids:
-            logger.info(
-                "iter %d: no host pending; terminating", iteration_number
-            )
+            logger.info("iter %d: no host pending; terminating", iteration_number)
             termination_reason = "no_followup_pending"
             break
 
@@ -1073,9 +1036,7 @@ def run_loop_multi_host(
         )
         R_c = cumulative_tokens >= token_budget
         max_reached = iteration_number >= max_iterations
-        decision = (
-            "terminate" if (R_a or R_b or R_c or max_reached) else "continue"
-        )
+        decision = "terminate" if (R_a or R_b or R_c or max_reached) else "continue"
         termination = TerminationCheck(
             R_a_zero_unresolved=R_a,
             R_b_disputed_set_unchanged=bool(R_b),
@@ -1084,9 +1045,7 @@ def run_loop_multi_host(
             decision=decision,
         )
 
-        next_host_ids, next_focus, consumed = _next_iter_multi_host_plan(
-            new_correlations, manifest
-        )
+        next_host_ids, next_focus, consumed = _next_iter_multi_host_plan(new_correlations, manifest)
         state.followup_consumed = consumed
 
         completed_at = datetime.now(tz=timezone.utc)
@@ -1102,9 +1061,7 @@ def run_loop_multi_host(
             tokens_used_uncached=state.tokens_uncached,
             cumulative_tokens_uncached=cumulative_tokens,
             termination_check=termination,
-            manifest_summary=_manifest_summary_for_log(
-                manifest, dispatched_host_ids
-            ),
+            manifest_summary=_manifest_summary_for_log(manifest, dispatched_host_ids),
         )
         entry = append_iteration_entry(case_dir, payload)
         iteration_records.append(entry)

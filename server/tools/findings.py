@@ -39,17 +39,14 @@ from server.findings_log import (
     read_finding_state,
 )
 from server.schemas import (
-    AnalystName,
     DraftFinding,
     EvidenceRecord,
     EvidenceRef,
-    EvidenceRefSourceTool,
     FindingCategory,
     FindingChainEntry,
     FindingConfidence,
     FindingSeverity,
     FindingUpdate,
-    PromotionRule,
 )
 
 
@@ -122,9 +119,7 @@ class _RejectionRecord(BaseModel):
     evidence_id: str | None  # may be None if the input that failed was the id itself
 
 
-def _resolve_evidence(
-    evidence_id: str, case_dir: Path
-) -> EvidenceRecord | None:
+def _resolve_evidence(evidence_id: str, case_dir: Path) -> EvidenceRecord | None:
     """Look up an evidence_id in CASE.yaml. Same shape as the memory
     tools' helper. Duplicated here rather than imported to keep
     server.tools.findings and server.tools.memory loose-coupled —
@@ -171,9 +166,7 @@ def _read_audit_index(audit_path: Path) -> dict[int, str]:
     return index
 
 
-def _log_rejection(
-    case_dir: Path, reason: _RejectionReason, evidence_id: str | None
-) -> None:
+def _log_rejection(case_dir: Path, reason: _RejectionReason, evidence_id: str | None) -> None:
     """Append one rejection line to the audit chain. Tool name is
     `record_finding:rejected_<reason>` for greppability."""
     rejection = _RejectionRecord(reason=reason, evidence_id=evidence_id)
@@ -186,9 +179,7 @@ def _log_rejection(
     )
 
 
-def _success_input_args(
-    evidence_id: str, analyst: str, refs: list[EvidenceRef]
-) -> dict:
+def _success_input_args(evidence_id: str, analyst: str, refs: list[EvidenceRef]) -> dict:
     """Build the audit `input_args` dict for a successful record_finding.
 
     Captures what the agent supplied: the evidence_id, the claimed
@@ -201,10 +192,7 @@ def _success_input_args(
     return {
         "evidence_id": evidence_id,
         "analyst": analyst,
-        "evidence_refs": [
-            {"source_tool": r.source_tool, "audit_line": r.audit_line}
-            for r in refs
-        ],
+        "evidence_refs": [{"source_tool": r.source_tool, "audit_line": r.audit_line} for r in refs],
     }
 
 
@@ -273,9 +261,7 @@ def record_finding(
             _RejectionReason.DISPUTED_SELF_MARKED,
             evidence_id,
         )
-        raise ValueError(
-            "DISPUTED confidence is reserved for the validator"
-        )
+        raise ValueError("DISPUTED confidence is reserved for the validator")
 
     # 4. Audit-line provenance. Each EvidenceRef must point at a real
     #    line in sift-guard-mcp.jsonl, AND the audit entry's tool_name
@@ -314,9 +300,7 @@ def record_finding(
             hypothesis=hypothesis,
             host_id=host_id,
             created_at=datetime.now(tz=timezone.utc),
-            tool_invocations=sorted(
-                {f"{r.source_tool}:{r.audit_line}" for r in evidence_refs}
-            ),
+            tool_invocations=sorted({f"{r.source_tool}:{r.audit_line}" for r in evidence_refs}),
         )
     except ValidationError:
         _log_rejection(
@@ -331,9 +315,7 @@ def record_finding(
 
     # 6. Append to the findings chain. Returns the wrapper entry for
     #    the audit-chain output_hash.
-    chain_entry: FindingChainEntry = append_finding_entry(
-        case_dir_path, finding
-    )
+    chain_entry: FindingChainEntry = append_finding_entry(case_dir_path, finding)
 
     # 7. Audit success. The output_hash of this audit line is the
     #    digest of the FindingChainEntry — so audit-replay tooling
@@ -351,9 +333,7 @@ def record_finding(
 
 
 _UPDATE_TOOL_NAME = "update_finding"
-_VALID_PROMOTION_RULES: frozenset[str] = frozenset(
-    {"R1", "R2", "R3", "R4", "R5", "R6"}
-)
+_VALID_PROMOTION_RULES: frozenset[str] = frozenset({"R1", "R2", "R3", "R4", "R5", "R6"})
 
 
 class _UpdateRejectionReason(StrEnum):
@@ -485,9 +465,7 @@ def update_finding(
             finding_id,
             promotion_rule,
         )
-        raise ValueError(
-            "driving_correlation_ids must be non-empty for non-R5 promotions"
-        )
+        raise ValueError("driving_correlation_ids must be non-empty for non-R5 promotions")
 
     # 2. Look up the existing finding by id. Read the chain to find
     #    the latest state/confidence for this finding_id. Missing
@@ -515,9 +493,7 @@ def update_finding(
 
     # 4. driving_correlation_ids existence.
     known_correlations = read_correlation_ids(case_dir_path)
-    missing = [
-        cid for cid in driving_correlation_ids if cid not in known_correlations
-    ]
+    missing = [cid for cid in driving_correlation_ids if cid not in known_correlations]
     if missing:
         _log_update_rejection(
             case_dir_path,
@@ -525,9 +501,7 @@ def update_finding(
             finding_id,
             promotion_rule,
         )
-        raise ValueError(
-            "driving_correlation_id not in correlations.jsonl"
-        )
+        raise ValueError("driving_correlation_id not in correlations.jsonl")
 
     # 5. Construct the FindingUpdate. pydantic enforces the Literal
     #    constraints we couldn't pre-check (new_state ∈ {DRAFT,
@@ -561,9 +535,7 @@ def update_finding(
         raise ValueError("update failed schema validation")
 
     # 6. Append to the findings chain (same chain as DRAFT entries).
-    chain_entry: FindingChainEntry = append_finding_entry(
-        case_dir_path, update
-    )
+    chain_entry: FindingChainEntry = append_finding_entry(case_dir_path, update)
 
     # 7. Audit success. The output_hash is the digest of the
     #    FindingChainEntry just written.

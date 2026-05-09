@@ -94,9 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     case_dir = args.case_dir.resolve()
     if not (case_dir / "CASE.yaml").exists():
-        print(
-            f"error: CASE.yaml not found under {case_dir}", file=sys.stderr
-        )
+        print(f"error: CASE.yaml not found under {case_dir}", file=sys.stderr)
         return 2
 
     kwargs = dict(

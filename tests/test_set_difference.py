@@ -56,9 +56,16 @@ def _seed_case_dir(tmp_path: Path) -> Path:
 
 def _pr(pid: int, ppid: int = 4, name: str = "x.exe") -> ProcessRecord:
     return ProcessRecord(
-        pid=pid, ppid=ppid, image_file_name=name, offset_v=0, threads=1,
-        handles=None, session_id=None, wow64=False,
-        create_time=NOW_UTC, exit_time=None,
+        pid=pid,
+        ppid=ppid,
+        image_file_name=name,
+        offset_v=0,
+        threads=1,
+        handles=None,
+        session_id=None,
+        wow64=False,
+        create_time=NOW_UTC,
+        exit_time=None,
     )
 
 
@@ -103,9 +110,7 @@ def _seed_pair(case_dir: Path, pslist_pids: list[int], psscan_pids: list[int]) -
 
 
 class TestSetDifferenceFlagshipCase:
-    def test_psscan_minus_pslist_on_pid_returns_hidden_candidates(
-        self, tmp_path: Path
-    ):
+    def test_psscan_minus_pslist_on_pid_returns_hidden_candidates(self, tmp_path: Path):
         """psscan extension {pids} - pslist {pids} = the
         DKOM/terminated-process candidate set. With pslist={4,100,200}
         and psscan={4,100,200,300,400}, a_minus_b yields {300,400}."""
@@ -204,9 +209,7 @@ class TestSetDifferenceFlagshipCase:
 
 
 class TestSetDifferenceAuditLinePlumbing:
-    def test_result_audit_line_and_extraction_refs_audit_lines(
-        self, tmp_path: Path
-    ):
+    def test_result_audit_line_and_extraction_refs_audit_lines(self, tmp_path: Path):
         """SetDifferenceResult.audit_line is THIS call's chain line.
         The two ExtractionRefs carry the two source extractions'
         audit_lines (independent of THIS call). All three values must
@@ -215,6 +218,7 @@ class TestSetDifferenceAuditLinePlumbing:
         # Pre-write each side with a known audit_line so we can pin
         # the assertion.
         from server.extractions import write_extraction
+
         write_extraction(
             case_dir,
             EVIDENCE_ID,
@@ -261,10 +265,8 @@ class TestSetDifferenceAuditLinePlumbing:
         assert result.extraction_b.audit_line == 10
         # Result's own audit_line is the chain entry for THIS call.
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
-        lines = [
-            json.loads(l) for l in audit_path.read_text().splitlines() if l.strip()
-        ]
-        success_lines = [l for l in lines if l["tool_name"] == "set_difference"]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
+        success_lines = [entry for entry in lines if entry["tool_name"] == "set_difference"]
         assert len(success_lines) == 1
         assert result.audit_line == success_lines[0]["line_number"]
         # All three audit lines distinct.
@@ -272,9 +274,7 @@ class TestSetDifferenceAuditLinePlumbing:
 
 
 class TestSetDifferenceDuplicateKeys:
-    def test_a_only_returns_all_records_for_duplicated_key(
-        self, tmp_path: Path
-    ):
+    def test_a_only_returns_all_records_for_duplicated_key(self, tmp_path: Path):
         """When a key in plugin_a's a_only set has multiple records
         (pool-tag aliasing in psscan), all those records come back —
         per-record semantics, not per-key dedup. The 7900 case on
@@ -371,9 +371,7 @@ class TestSetDifferenceProjection:
             fields=["pid", "image_file_name"],
             case_dir=str(case_dir),
         )
-        assert result.returned_records == [
-            {"pid": 9999, "image_file_name": "x.exe"}
-        ]
+        assert result.returned_records == [{"pid": 9999, "image_file_name": "x.exe"}]
 
 
 # ---------------------------------------------------------------------------

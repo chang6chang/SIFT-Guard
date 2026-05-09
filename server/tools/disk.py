@@ -142,9 +142,7 @@ class _RejectionRecord(BaseModel):
     evidence_id: str
 
 
-def _resolve_evidence(
-    evidence_id: str, case_dir: Path
-) -> EvidenceRecord | None:
+def _resolve_evidence(evidence_id: str, case_dir: Path) -> EvidenceRecord | None:
     """Look up an evidence_id in CASE.yaml.
 
     Returns ``None`` instead of raising so the caller can audit-log
@@ -189,9 +187,7 @@ def _log_hash_mismatch(
     evidence_id: str,
 ) -> None:
     """Append a hash-mismatch line to the audit chain."""
-    rejection = _RejectionRecord(
-        reason=_RejectionReason.HASH_MISMATCH, evidence_id=evidence_id
-    )
+    rejection = _RejectionRecord(reason=_RejectionReason.HASH_MISMATCH, evidence_id=evidence_id)
     append_audit_entry(
         case_dir=case_dir,
         tool_name=f"{tool_name}:hash_mismatch",
@@ -250,9 +246,7 @@ def _resolve_and_mount(
 # ---------------------------------------------------------------------------
 
 
-def _compute_mft_summary(
-    ref: ExtractionRef, records: list[dict]
-) -> MftTimelineSummary:
+def _compute_mft_summary(ref: ExtractionRef, records: list[dict]) -> MftTimelineSummary:
     """Distribution + recency signal for MFT timeline rows."""
     type_counter: Counter[str] = Counter(r["entry_type"] for r in records)
     path_counter: Counter[str] = Counter(r["full_path"] for r in records)
@@ -284,13 +278,9 @@ def _compute_mft_summary(
     )
 
 
-def _compute_prefetch_summary(
-    ref: ExtractionRef, records: list[dict]
-) -> PrefetchSummary:
+def _compute_prefetch_summary(ref: ExtractionRef, records: list[dict]) -> PrefetchSummary:
     """Distribution + recency signal for prefetch entries."""
-    name_counter: Counter[str] = Counter(
-        r["executable_name"] for r in records
-    )
+    name_counter: Counter[str] = Counter(r["executable_name"] for r in records)
     run_count_by_name: dict[str, int] = {}
     earliest: datetime | None = None
     latest: datetime | None = None
@@ -306,9 +296,7 @@ def _compute_prefetch_summary(
                 if isinstance(raw_t, datetime):
                     parsed = raw_t
                 else:
-                    parsed = datetime.fromisoformat(
-                        str(raw_t).replace("Z", "+00:00")
-                    )
+                    parsed = datetime.fromisoformat(str(raw_t).replace("Z", "+00:00"))
                     if parsed.tzinfo is None:
                         parsed = parsed.replace(tzinfo=timezone.utc)
             except (ValueError, TypeError):
@@ -317,9 +305,7 @@ def _compute_prefetch_summary(
                 earliest = parsed
             if latest is None or parsed > latest:
                 latest = parsed
-    top = sorted(
-        run_count_by_name.items(), key=lambda kv: kv[1], reverse=True
-    )[:10]
+    top = sorted(run_count_by_name.items(), key=lambda kv: kv[1], reverse=True)[:10]
     return PrefetchSummary(
         extraction=ref,
         distinct_executables=len(name_counter),
@@ -330,9 +316,7 @@ def _compute_prefetch_summary(
     )
 
 
-def _compute_evtx_summary(
-    ref: ExtractionRef, records: list[dict]
-) -> EvtxSummary:
+def _compute_evtx_summary(ref: ExtractionRef, records: list[dict]) -> EvtxSummary:
     """Distribution-only summary for Windows event records."""
     eid_counter: Counter[int] = Counter(r["event_id"] for r in records)
     channel_counter: Counter[str] = Counter(r["channel"] for r in records)
@@ -343,9 +327,7 @@ def _compute_evtx_summary(
             parsed_ts.append(t)
             continue
         try:
-            parsed = datetime.fromisoformat(
-                str(t).replace("Z", "+00:00")
-            )
+            parsed = datetime.fromisoformat(str(t).replace("Z", "+00:00"))
             if parsed.tzinfo is None:
                 parsed = parsed.replace(tzinfo=timezone.utc)
             parsed_ts.append(parsed)
@@ -379,9 +361,7 @@ def _interesting_bucket_for(key_path: str) -> str:
     return "other"
 
 
-def _compute_registry_summary(
-    ref: ExtractionRef, records: list[dict]
-) -> RegistrySummary:
+def _compute_registry_summary(ref: ExtractionRef, records: list[dict]) -> RegistrySummary:
     """Distribution summary for registry entries."""
     hive_counter: Counter[str] = Counter(r["hive_name"] for r in records)
     interesting_counter: Counter[str] = Counter(
@@ -517,9 +497,7 @@ def _serve_fresh(
 # ---------------------------------------------------------------------------
 
 
-def disk_mft_timeline(
-    evidence_id: str, case_dir: str = "case-data"
-) -> MftTimelineSummary:
+def disk_mft_timeline(evidence_id: str, case_dir: str = "case-data") -> MftTimelineSummary:
     """Run plaso's MFT-only timeline against a registered disk_image.
 
     Two-step pipeline (log2timeline.py + psort.py); see
@@ -530,13 +508,9 @@ def disk_mft_timeline(
     `query_records(plugin_name="disk.mft.MftTimeline", ...)`.
     """
     case_dir_path = Path(case_dir).resolve()
-    _, mount_path = _resolve_and_mount(
-        case_dir_path, evidence_id, _MFT_TOOL_NAME
-    )
+    _, mount_path = _resolve_and_mount(case_dir_path, evidence_id, _MFT_TOOL_NAME)
 
-    summary_fn: Callable[[ExtractionRef, list[dict]], MftTimelineSummary] = (
-        _compute_mft_summary
-    )
+    summary_fn: Callable[[ExtractionRef, list[dict]], MftTimelineSummary] = _compute_mft_summary
 
     if extraction_exists(case_dir_path, evidence_id, _MFT_PLUGIN):
         return _serve_cached(
@@ -563,9 +537,7 @@ def disk_mft_timeline(
     )
 
 
-def disk_prefetch(
-    evidence_id: str, case_dir: str = "case-data"
-) -> PrefetchSummary:
+def disk_prefetch(evidence_id: str, case_dir: str = "case-data") -> PrefetchSummary:
     """Run a prefetch parser against `Windows/Prefetch/*.pf` on the
     registered disk_image. Returns a `PrefetchSummary` with
     distinct-executable count, total-run-count, top-N executables by
@@ -574,13 +546,9 @@ def disk_prefetch(
     `query_records(plugin_name="disk.prefetch.Prefetch", ...)`.
     """
     case_dir_path = Path(case_dir).resolve()
-    _, mount_path = _resolve_and_mount(
-        case_dir_path, evidence_id, _PREFETCH_TOOL_NAME
-    )
+    _, mount_path = _resolve_and_mount(case_dir_path, evidence_id, _PREFETCH_TOOL_NAME)
 
-    summary_fn: Callable[[ExtractionRef, list[dict]], PrefetchSummary] = (
-        _compute_prefetch_summary
-    )
+    summary_fn: Callable[[ExtractionRef, list[dict]], PrefetchSummary] = _compute_prefetch_summary
 
     if extraction_exists(case_dir_path, evidence_id, _PREFETCH_PLUGIN):
         return _serve_cached(
@@ -607,9 +575,7 @@ def disk_prefetch(
     )
 
 
-def disk_evtx(
-    evidence_id: str, case_dir: str = "case-data"
-) -> EvtxSummary:
+def disk_evtx(evidence_id: str, case_dir: str = "case-data") -> EvtxSummary:
     """Run python-evtx against Security + System logs on the
     registered disk_image. Returns an `EvtxSummary` with event-id
     distribution (top 10), channel distribution, timestamp range,
@@ -621,13 +587,9 @@ def disk_evtx(
     summary to 500 characters before validation.
     """
     case_dir_path = Path(case_dir).resolve()
-    _, mount_path = _resolve_and_mount(
-        case_dir_path, evidence_id, _EVTX_TOOL_NAME
-    )
+    _, mount_path = _resolve_and_mount(case_dir_path, evidence_id, _EVTX_TOOL_NAME)
 
-    summary_fn: Callable[[ExtractionRef, list[dict]], EvtxSummary] = (
-        _compute_evtx_summary
-    )
+    summary_fn: Callable[[ExtractionRef, list[dict]], EvtxSummary] = _compute_evtx_summary
 
     if extraction_exists(case_dir_path, evidence_id, _EVTX_PLUGIN):
         return _serve_cached(
@@ -654,9 +616,7 @@ def disk_evtx(
     )
 
 
-def disk_registry(
-    evidence_id: str, case_dir: str = "case-data"
-) -> RegistrySummary:
+def disk_registry(evidence_id: str, case_dir: str = "case-data") -> RegistrySummary:
     """Run RegRipper across SYSTEM / SOFTWARE / SAM / NTUSER.DAT
     hives on the registered disk_image. Returns a `RegistrySummary`
     with per-hive count, persistence-key bucket distribution
@@ -670,13 +630,9 @@ def disk_registry(
     value to 500 characters before validation.
     """
     case_dir_path = Path(case_dir).resolve()
-    _, mount_path = _resolve_and_mount(
-        case_dir_path, evidence_id, _REGISTRY_TOOL_NAME
-    )
+    _, mount_path = _resolve_and_mount(case_dir_path, evidence_id, _REGISTRY_TOOL_NAME)
 
-    summary_fn: Callable[[ExtractionRef, list[dict]], RegistrySummary] = (
-        _compute_registry_summary
-    )
+    summary_fn: Callable[[ExtractionRef, list[dict]], RegistrySummary] = _compute_registry_summary
 
     if extraction_exists(case_dir_path, evidence_id, _REGISTRY_PLUGIN):
         return _serve_cached(

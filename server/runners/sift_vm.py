@@ -39,9 +39,7 @@ SIFT_VM_EVIDENCE_PREFIX = os.environ.get("SIFT_VM_EVIDENCE_PREFIX", "/mnt/rocba"
 # read by running the vol venv's Python interpreter directly. Default
 # matches the SIFT layout where `/usr/local/bin/vol` is a symlink to
 # `/opt/volatility3/bin/vol`. Override via env if your install differs.
-SIFT_VM_VOL_PYTHON = os.environ.get(
-    "SIFT_VM_VOL_PYTHON", "/opt/volatility3/bin/python3"
-)
+SIFT_VM_VOL_PYTHON = os.environ.get("SIFT_VM_VOL_PYTHON", "/opt/volatility3/bin/python3")
 
 
 def _detect_default_gateway() -> str:
@@ -59,17 +57,19 @@ def _detect_default_gateway() -> str:
             check=True,
             timeout=5,
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
-            FileNotFoundError, OSError) as exc:
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+        OSError,
+    ) as exc:
         raise RuntimeError(
-            "Could not detect SIFT_VM_HOST: set the SIFT_VM_HOST env var "
-            "or fix your default route"
+            "Could not detect SIFT_VM_HOST: set the SIFT_VM_HOST env var or fix your default route"
         ) from exc
     host = result.stdout.strip()
     if not host:
         raise RuntimeError(
-            "Could not detect SIFT_VM_HOST: set the SIFT_VM_HOST env var "
-            "or fix your default route"
+            "Could not detect SIFT_VM_HOST: set the SIFT_VM_HOST env var or fix your default route"
         )
     return host
 
@@ -83,14 +83,11 @@ SIFT_VM_HOST = os.environ.get("SIFT_VM_HOST") or _detect_default_gateway()
 # This shape rejects shell metacharacters (`;`, `&`, `|`, `$`, `` ` ``,
 # spaces, slashes) by construction — the regex's character classes
 # never admit them.
-_PLUGIN_NAME_RE = re.compile(
-    r'^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\.[A-Z][A-Za-z0-9]*$'
-)
+_PLUGIN_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\.[A-Z][A-Za-z0-9]*$")
 
 
 _VERSION_PROBE_SCRIPT = (
-    "from volatility3.framework import constants; "
-    "print(constants.PACKAGE_VERSION)"
+    "from volatility3.framework import constants; print(constants.PACKAGE_VERSION)"
 )
 
 
@@ -115,13 +112,11 @@ def get_vol_version(timeout_seconds: int = 10) -> str:
     quoting keeps the failure mode local if a future env override
     introduces a metacharacter.
     """
-    remote_cmd = (
-        f"{shlex.quote(SIFT_VM_VOL_PYTHON)} "
-        f"-c {shlex.quote(_VERSION_PROBE_SCRIPT)}"
-    )
+    remote_cmd = f"{shlex.quote(SIFT_VM_VOL_PYTHON)} -c {shlex.quote(_VERSION_PROBE_SCRIPT)}"
     argv = [
         "ssh",
-        "-p", SIFT_VM_SSH_PORT,
+        "-p",
+        SIFT_VM_SSH_PORT,
         f"{SIFT_VM_USER}@{SIFT_VM_HOST}",
         remote_cmd,
     ]
@@ -181,18 +176,19 @@ def run_vol_plugin(
         raise ValueError("plugin_name failed validation")
 
     prefix = SIFT_VM_EVIDENCE_PREFIX.rstrip("/")
-    if image_path_in_vm != prefix and not image_path_in_vm.startswith(
-        prefix + "/"
-    ):
+    if image_path_in_vm != prefix and not image_path_in_vm.startswith(prefix + "/"):
         raise ValueError("image_path_in_vm is outside SIFT_VM_EVIDENCE_PREFIX")
 
     argv = [
         "ssh",
-        "-p", SIFT_VM_SSH_PORT,
+        "-p",
+        SIFT_VM_SSH_PORT,
         f"{SIFT_VM_USER}@{SIFT_VM_HOST}",
         SIFT_VM_VOL_BIN,
-        "-f", image_path_in_vm,
-        "-r", "json",
+        "-f",
+        image_path_in_vm,
+        "-r",
+        "json",
         plugin_name,
     ]
 

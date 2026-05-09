@@ -29,12 +29,10 @@ default_factory.
 
 from __future__ import annotations
 
-import inspect
 import typing
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
 import yaml
 
 from server.extractions import write_extraction
@@ -106,18 +104,34 @@ def _seed_case_dir(tmp_path: Path) -> Path:
 
 def _pr(pid: int, ppid: int = 4, name: str = "x.exe") -> ProcessRecord:
     return ProcessRecord(
-        pid=pid, ppid=ppid, image_file_name=name, offset_v=0, threads=1,
-        handles=None, session_id=None, wow64=False,
-        create_time=NOW_UTC, exit_time=None,
+        pid=pid,
+        ppid=ppid,
+        image_file_name=name,
+        offset_v=0,
+        threads=1,
+        handles=None,
+        session_id=None,
+        wow64=False,
+        create_time=NOW_UTC,
+        exit_time=None,
     )
 
 
 def _ptr(pid: int, ppid: int, name: str, children: list | None = None) -> ProcessTreeRecord:
     return ProcessTreeRecord(
-        pid=pid, ppid=ppid, image_file_name=name, offset_v=0, threads=1,
-        handles=None, session_id=None, wow64=False,
-        create_time=NOW_UTC, exit_time=None,
-        audit=None, cmd=None, path=None,
+        pid=pid,
+        ppid=ppid,
+        image_file_name=name,
+        offset_v=0,
+        threads=1,
+        handles=None,
+        session_id=None,
+        wow64=False,
+        create_time=NOW_UTC,
+        exit_time=None,
+        audit=None,
+        cmd=None,
+        path=None,
         children=children or [],
     )
 
@@ -139,7 +153,9 @@ def _nr(pid: int, foreign: str = "10.0.0.1", owner: str = "svc.exe") -> NetworkR
 
 def _seed_pslist(case_dir: Path, processes: list[ProcessRecord]) -> None:
     write_extraction(
-        case_dir, EVIDENCE_ID, "windows.pslist.PsList",
+        case_dir,
+        EVIDENCE_ID,
+        "windows.pslist.PsList",
         PslistResult(
             evidence_id=EVIDENCE_ID,
             plugin_name="windows.pslist.PsList",
@@ -155,7 +171,9 @@ def _seed_pslist(case_dir: Path, processes: list[ProcessRecord]) -> None:
 
 def _seed_psscan(case_dir: Path, processes: list[ProcessRecord]) -> None:
     write_extraction(
-        case_dir, EVIDENCE_ID, "windows.psscan.PsScan",
+        case_dir,
+        EVIDENCE_ID,
+        "windows.psscan.PsScan",
         PsscanResult(
             evidence_id=EVIDENCE_ID,
             plugin_name="windows.psscan.PsScan",
@@ -171,7 +189,9 @@ def _seed_psscan(case_dir: Path, processes: list[ProcessRecord]) -> None:
 
 def _seed_pstree(case_dir: Path, processes: list[ProcessTreeRecord]) -> None:
     write_extraction(
-        case_dir, EVIDENCE_ID, "windows.pstree.PsTree",
+        case_dir,
+        EVIDENCE_ID,
+        "windows.pstree.PsTree",
         PstreeResult(
             evidence_id=EVIDENCE_ID,
             plugin_name="windows.pstree.PsTree",
@@ -187,7 +207,9 @@ def _seed_pstree(case_dir: Path, processes: list[ProcessTreeRecord]) -> None:
 
 def _seed_netscan(case_dir: Path, records: list[NetworkRecord]) -> None:
     write_extraction(
-        case_dir, EVIDENCE_ID, "windows.netscan.NetScan",
+        case_dir,
+        EVIDENCE_ID,
+        "windows.netscan.NetScan",
         NetscanResult(
             evidence_id=EVIDENCE_ID,
             plugin_name="windows.netscan.NetScan",
@@ -229,18 +251,17 @@ class TestPluginUntrustedRecordFieldsMap:
         # exactly one evidence-derived string field: image_file_name.
         # Other fields are integer / bool / datetime — kernel-structural,
         # not free-form attacker-controllable strings.
-        assert PLUGIN_UNTRUSTED_RECORD_FIELDS["windows.pslist.PsList"] == (
-            "image_file_name",
-        )
-        assert PLUGIN_UNTRUSTED_RECORD_FIELDS["windows.psscan.PsScan"] == (
-            "image_file_name",
-        )
+        assert PLUGIN_UNTRUSTED_RECORD_FIELDS["windows.pslist.PsList"] == ("image_file_name",)
+        assert PLUGIN_UNTRUSTED_RECORD_FIELDS["windows.psscan.PsScan"] == ("image_file_name",)
 
     def test_pstree_carries_the_user_process_parameters_strings(self):
         # ProcessTreeRecord adds audit / cmd / path from
         # `_RTL_USER_PROCESS_PARAMETERS` on top of image_file_name.
         assert PLUGIN_UNTRUSTED_RECORD_FIELDS["windows.pstree.PsTree"] == (
-            "image_file_name", "audit", "cmd", "path",
+            "image_file_name",
+            "audit",
+            "cmd",
+            "path",
         )
 
     def test_netscan_carries_address_owner_state_strings(self):
@@ -248,7 +269,10 @@ class TestPluginUntrustedRecordFieldsMap:
         # and TCP state are all evidence-derived. proto is a closed
         # Literal so its values are schema-controlled.
         assert PLUGIN_UNTRUSTED_RECORD_FIELDS["windows.netscan.NetScan"] == (
-            "local_addr", "foreign_addr", "owner", "state",
+            "local_addr",
+            "foreign_addr",
+            "owner",
+            "state",
         )
 
     def test_cmdline_carries_process_name_and_cmdline_strings(self):
@@ -257,7 +281,8 @@ class TestPluginUntrustedRecordFieldsMap:
         # _RTL_USER_PROCESS_PARAMETERS. The cmdline value is the
         # half an attacker most directly controls.
         assert PLUGIN_UNTRUSTED_RECORD_FIELDS["windows.cmdline.CmdLine"] == (
-            "process_name", "cmdline",
+            "process_name",
+            "cmdline",
         )
 
     def test_malfind_carries_vad_and_memory_content_strings(self):
@@ -267,7 +292,11 @@ class TestPluginUntrustedRecordFieldsMap:
         # Treating all four as data is what stops crafted shellcode
         # ASCII strings from steering the analyst.
         assert PLUGIN_UNTRUSTED_RECORD_FIELDS["windows.malfind.Malfind"] == (
-            "process_name", "vad_tag", "protection", "hex_dump", "disassembly",
+            "process_name",
+            "vad_tag",
+            "protection",
+            "hex_dump",
+            "disassembly",
         )
 
     def test_disk_mft_carries_full_path_string(self):
@@ -275,9 +304,7 @@ class TestPluginUntrustedRecordFieldsMap:
         # which an attacker who placed the binary controls.
         # entry_type is a closed Literal; timestamp / file_size are
         # kernel-structural.
-        assert PLUGIN_UNTRUSTED_RECORD_FIELDS["disk.mft.MftTimeline"] == (
-            "full_path",
-        )
+        assert PLUGIN_UNTRUSTED_RECORD_FIELDS["disk.mft.MftTimeline"] == ("full_path",)
 
     def test_disk_prefetch_carries_executable_and_path_strings(self):
         # PrefetchRecord — executable_name + volume_path +
@@ -285,7 +312,9 @@ class TestPluginUntrustedRecordFieldsMap:
         # influences. run_count and last_run_times are
         # OS-recorded.
         assert PLUGIN_UNTRUSTED_RECORD_FIELDS["disk.prefetch.Prefetch"] == (
-            "executable_name", "volume_path", "referenced_files",
+            "executable_name",
+            "volume_path",
+            "referenced_files",
         )
 
     def test_disk_evtx_carries_provider_channel_and_message_summary(self):
@@ -294,7 +323,9 @@ class TestPluginUntrustedRecordFieldsMap:
         # controlled strings; message_summary is the rendered
         # EventData and is the most directly attacker-controllable.
         assert PLUGIN_UNTRUSTED_RECORD_FIELDS["disk.evtx.EventLog"] == (
-            "source", "channel", "message_summary",
+            "source",
+            "channel",
+            "message_summary",
         )
 
     def test_disk_registry_carries_hive_key_path_and_value(self):
@@ -303,7 +334,10 @@ class TestPluginUntrustedRecordFieldsMap:
         # value_data are evidence-derived strings the attacker
         # populates when adding persistence keys.
         assert PLUGIN_UNTRUSTED_RECORD_FIELDS["disk.registry.Registry"] == (
-            "hive_name", "key_path", "value_name", "value_data",
+            "hive_name",
+            "key_path",
+            "value_name",
+            "value_data",
         )
 
 
@@ -390,14 +424,20 @@ class TestTier1SummaryDefaults:
 class TestUntrustedFieldsHelper:
     def test_no_projection_returns_full_plugin_set_in_canonical_order(self):
         assert untrusted_fields_for("windows.pstree.PsTree") == [
-            "image_file_name", "audit", "cmd", "path",
+            "image_file_name",
+            "audit",
+            "cmd",
+            "path",
         ]
 
     def test_empty_projection_treated_as_no_projection(self):
         # Empty list != "drop everything"; the tool layer's contract
         # is "fields=[] means no projection, every field present".
         assert untrusted_fields_for("windows.netscan.NetScan", []) == [
-            "local_addr", "foreign_addr", "owner", "state",
+            "local_addr",
+            "foreign_addr",
+            "owner",
+            "state",
         ]
 
     def test_projection_intersects_with_plugin_set(self):
@@ -406,9 +446,7 @@ class TestUntrustedFieldsHelper:
         ) == ["foreign_addr", "state"]
 
     def test_projection_dropping_all_untrusted_yields_empty(self):
-        assert untrusted_fields_for(
-            "windows.pslist.PsList", ["pid", "ppid", "threads"]
-        ) == []
+        assert untrusted_fields_for("windows.pslist.PsList", ["pid", "ppid", "threads"]) == []
 
     def test_unknown_plugin_returns_empty(self):
         # Defensive: if an unknown plugin name slips through (it
@@ -448,9 +486,7 @@ class TestQueryRecordsUntrustedFields:
         assert isinstance(result, QueryRecordsResult)
         assert result.untrusted_fields == ["image_file_name"]
 
-    def test_pslist_projection_excluding_image_file_name_yields_empty(
-        self, tmp_path: Path
-    ):
+    def test_pslist_projection_excluding_image_file_name_yields_empty(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
         _seed_pslist(case_dir, [_pr(4, 0, "System")])
         result = query_records(
@@ -461,9 +497,7 @@ class TestQueryRecordsUntrustedFields:
         )
         assert result.untrusted_fields == []
 
-    def test_netscan_partial_projection_keeps_only_projected_untrusted(
-        self, tmp_path: Path
-    ):
+    def test_netscan_partial_projection_keeps_only_projected_untrusted(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
         _seed_netscan(case_dir, [_nr(4)])
         result = query_records(
@@ -513,8 +547,9 @@ class TestSetDifferenceUntrustedFields:
         # untrusted_fields reflects psscan's set.
         case_dir = _seed_case_dir(tmp_path)
         _seed_pslist(case_dir, [_pr(4, 0, "System"), _pr(100, 4, "smss.exe")])
-        _seed_psscan(case_dir, [_pr(4, 0, "System"), _pr(100, 4, "smss.exe"),
-                                _pr(7900, 100, "evil.exe")])
+        _seed_psscan(
+            case_dir, [_pr(4, 0, "System"), _pr(100, 4, "smss.exe"), _pr(7900, 100, "evil.exe")]
+        )
         result = set_difference(
             evidence_id=EVIDENCE_ID,
             plugin_a="windows.psscan.PsScan",
@@ -526,9 +561,7 @@ class TestSetDifferenceUntrustedFields:
         assert isinstance(result, SetDifferenceResult)
         assert result.untrusted_fields == ["image_file_name"]
 
-    def test_set_difference_with_pid_only_projection_yields_empty(
-        self, tmp_path: Path
-    ):
+    def test_set_difference_with_pid_only_projection_yields_empty(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
         _seed_pslist(case_dir, [_pr(4, 0, "System")])
         _seed_psscan(case_dir, [_pr(4, 0, "System"), _pr(7900, 100, "evil.exe")])
@@ -546,9 +579,7 @@ class TestSetDifferenceUntrustedFields:
 
 
 class TestSubtreeUntrustedFields:
-    def test_subtree_no_projection_marks_all_pstree_untrusted(
-        self, tmp_path: Path
-    ):
+    def test_subtree_no_projection_marks_all_pstree_untrusted(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
         _seed_pstree(case_dir, [_ptr(4, 0, "System", [_ptr(100, 4, "smss.exe")])])
         result = subtree(
@@ -559,7 +590,10 @@ class TestSubtreeUntrustedFields:
         )
         assert isinstance(result, SubtreeResult)
         assert result.untrusted_fields == [
-            "image_file_name", "audit", "cmd", "path",
+            "image_file_name",
+            "audit",
+            "cmd",
+            "path",
         ]
 
     def test_subtree_pid_only_projection_yields_empty(self, tmp_path: Path):
@@ -581,9 +615,7 @@ class TestSubtreeUntrustedFields:
 
 
 class TestUntrustedFieldsIsAStableSchemaProperty:
-    def test_two_query_records_calls_with_same_args_yield_same_list(
-        self, tmp_path: Path
-    ):
+    def test_two_query_records_calls_with_same_args_yield_same_list(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
         _seed_netscan(case_dir, [_nr(4)])
         a = query_records(
@@ -600,7 +632,10 @@ class TestUntrustedFieldsIsAStableSchemaProperty:
         # data being queried — same call shape, same untrusted_fields.
         assert a.untrusted_fields == b.untrusted_fields
         assert a.untrusted_fields == [
-            "local_addr", "foreign_addr", "owner", "state",
+            "local_addr",
+            "foreign_addr",
+            "owner",
+            "state",
         ]
 
 
@@ -654,11 +689,7 @@ class TestSchemaIntrospectionGuard:
             f"modules, got {len(return_types)}: "
             f"{sorted(t.__name__ for t in return_types)}"
         )
-        missing = [
-            t.__name__
-            for t in return_types
-            if "untrusted_fields" not in t.model_fields
-        ]
+        missing = [t.__name__ for t in return_types if "untrusted_fields" not in t.model_fields]
         assert not missing, (
             "every record-bearing tool return type must declare "
             f"`untrusted_fields: list[str]`; missing on: {missing}"
@@ -683,6 +714,5 @@ class TestSchemaIntrospectionGuard:
             )
             field = cls.model_fields["untrusted_fields"]
             assert field.annotation == list[str], (
-                f"{cls.__name__}.untrusted_fields must be list[str], "
-                f"got {field.annotation}"
+                f"{cls.__name__}.untrusted_fields must be list[str], got {field.annotation}"
             )

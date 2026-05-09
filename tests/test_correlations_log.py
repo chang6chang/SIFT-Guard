@@ -147,9 +147,9 @@ class TestMixedTypesInOneChain:
 
         # On-disk discriminator labels survive.
         rows = [
-            json.loads(l)
-            for l in (tmp_path / "correlations.jsonl").read_text().splitlines()
-            if l.strip()
+            json.loads(line)
+            for line in (tmp_path / "correlations.jsonl").read_text().splitlines()
+            if line.strip()
         ]
         assert [r["correlation"]["correlation_type"] for r in rows] == [
             "corroborates",
@@ -163,17 +163,13 @@ class TestReadCorrelationIds:
         assert read_correlation_ids(tmp_path) == set()
 
     def test_returns_all_committed_ids(self, tmp_path: Path):
-        append_correlation_entry(
-            tmp_path, _corroborates(correlation_id=CID_A)
-        )
+        append_correlation_entry(tmp_path, _corroborates(correlation_id=CID_A))
         append_correlation_entry(tmp_path, _contradicts())
         ids = read_correlation_ids(tmp_path)
         assert ids == {CID_A, CID_B}
 
     def test_skips_malformed_lines(self, tmp_path: Path):
-        append_correlation_entry(
-            tmp_path, _corroborates(correlation_id=CID_A)
-        )
+        append_correlation_entry(tmp_path, _corroborates(correlation_id=CID_A))
         # Tamper: append a malformed line. Reader must skip silently
         # — chain integrity is verified by a separate code path; the
         # id collector's job is provenance lookup.

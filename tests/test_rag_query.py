@@ -24,7 +24,6 @@ import json
 from pathlib import Path
 
 import pytest
-import yaml
 
 from server.schemas import RagQueryResult
 from server.tools.rag import rag_query
@@ -45,7 +44,7 @@ def _seed_case_dir(tmp_path: Path) -> Path:
 def _read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    return [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -54,13 +53,9 @@ def _read_jsonl(path: Path) -> list[dict]:
 
 
 class TestRagQueryHappyPaths:
-    def test_exact_technique_id_returns_t1055_at_rank1_score_one(
-        self, tmp_path: Path
-    ):
+    def test_exact_technique_id_returns_t1055_at_rank1_score_one(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
-        result = rag_query(
-            technique_id="T1055", case_dir=str(case_dir), top_k=5
-        )
+        result = rag_query(technique_id="T1055", case_dir=str(case_dir), top_k=5)
         assert isinstance(result, RagQueryResult)
         assert result.query_kind == "technique_id"
         assert result.query_value == "T1055"
@@ -73,9 +68,7 @@ class TestRagQueryHappyPaths:
 
     def test_exact_subtechnique_id_returns_t1055_001(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
-        result = rag_query(
-            technique_id="T1055.001", case_dir=str(case_dir), top_k=3
-        )
+        result = rag_query(technique_id="T1055.001", case_dir=str(case_dir), top_k=3)
         assert result.hits[0].technique_id == "T1055.001"
         assert result.hits[0].similarity_score == 1.0
 
@@ -111,9 +104,7 @@ class TestRagQueryHappyPaths:
 
 
 class TestTechniqueIdNotInCorpus:
-    def test_regex_matching_id_not_in_corpus_returns_empty_hits(
-        self, tmp_path: Path
-    ):
+    def test_regex_matching_id_not_in_corpus_returns_empty_hits(self, tmp_path: Path):
         # T9999 matches the regex but is not in the ATT&CK enterprise
         # corpus. The retriever's default behavior would fall through
         # to vector search; the tool's contract returns empty hits
@@ -157,18 +148,14 @@ class TestRagQueryRejections:
     def test_top_k_above_cap_rejected(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
         with pytest.raises(ValueError):
-            rag_query(
-                technique_id="T1055", top_k=21, case_dir=str(case_dir)
-            )
+            rag_query(technique_id="T1055", top_k=21, case_dir=str(case_dir))
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
         assert audit[-1]["tool_name"] == "rag_query:rejected_top_k_too_large"
 
     def test_query_too_long_rejected(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
         with pytest.raises(ValueError):
-            rag_query(
-                semantic_query="x" * 501, case_dir=str(case_dir)
-            )
+            rag_query(semantic_query="x" * 501, case_dir=str(case_dir))
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
         assert audit[-1]["tool_name"] == "rag_query:rejected_query_too_long"
 
@@ -181,9 +168,7 @@ class TestRagQueryRejections:
         with pytest.raises(ValueError):
             rag_query(technique_id="BAD-ID", case_dir=str(case_dir))
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit[-1]["tool_name"] == (
-            "rag_query:rejected_technique_id_bad_shape"
-        )
+        assert audit[-1]["tool_name"] == ("rag_query:rejected_technique_id_bad_shape")
 
 
 # ---------------------------------------------------------------------------
@@ -192,22 +177,16 @@ class TestRagQueryRejections:
 
 
 class TestRagQueryResultEnvelope:
-    def test_audit_line_matches_chain_position_after_call(
-        self, tmp_path: Path
-    ):
+    def test_audit_line_matches_chain_position_after_call(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
-        result = rag_query(
-            technique_id="T1055", case_dir=str(case_dir)
-        )
+        result = rag_query(technique_id="T1055", case_dir=str(case_dir))
         # The result's audit_line is the line number where THIS
         # call's success entry was written.
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
         assert result.audit_line == audit[-1]["line_number"]
         assert audit[-1]["tool_name"] == "rag_query"
 
-    def test_embedding_model_version_matches_meta_sidecar(
-        self, tmp_path: Path
-    ):
+    def test_embedding_model_version_matches_meta_sidecar(self, tmp_path: Path):
         # The version on the result must match the meta.json sidecar
         # that the retriever loads at construction (`Retriever.__init__`
         # already enforces meta.embedding_model_version against the
@@ -215,16 +194,9 @@ class TestRagQueryResultEnvelope:
         # result so a future audit-replay can verify scores were
         # computed against the expected model without re-loading).
         case_dir = _seed_case_dir(tmp_path)
-        result = rag_query(
-            technique_id="T1055", case_dir=str(case_dir)
-        )
-        meta = json.loads(
-            (Path("rag/data/attack-enterprise.meta.json")).read_text()
-        )
-        assert (
-            result.embedding_model_version
-            == meta["embedding_model_version"]
-        )
+        result = rag_query(technique_id="T1055", case_dir=str(case_dir))
+        meta = json.loads((Path("rag/data/attack-enterprise.meta.json")).read_text())
+        assert result.embedding_model_version == meta["embedding_model_version"]
 
     def test_untrusted_fields_is_always_empty(self, tmp_path: Path):
         # MITRE ATT&CK content is vendor-curated, not evidence-derived.
@@ -233,9 +205,7 @@ class TestRagQueryResultEnvelope:
         # both query shapes.
         case_dir = _seed_case_dir(tmp_path)
         r1 = rag_query(technique_id="T1055", case_dir=str(case_dir))
-        r2 = rag_query(
-            semantic_query="masquerading", case_dir=str(case_dir)
-        )
+        r2 = rag_query(semantic_query="masquerading", case_dir=str(case_dir))
         r3 = rag_query(technique_id="T9999", case_dir=str(case_dir))
         assert r1.untrusted_fields == []
         assert r2.untrusted_fields == []

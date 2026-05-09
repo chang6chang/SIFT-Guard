@@ -192,11 +192,7 @@ def _good_corroborates(**overrides):
 def _read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    return [
-        json.loads(l)
-        for l in path.read_text().splitlines()
-        if l.strip()
-    ]
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -207,9 +203,7 @@ def _read_jsonl(path: Path) -> list[dict]:
 class TestRecordCorrelationHappyPaths:
     def test_corroborates_writes_chain_and_audit(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
-        result = record_correlation(
-            **_good_corroborates(), case_dir=str(case_dir)
-        )
+        result = record_correlation(**_good_corroborates(), case_dir=str(case_dir))
 
         # Chain
         rows = _read_jsonl(case_dir / "correlations.jsonl")
@@ -302,9 +296,7 @@ class TestRecordCorrelationHappyPaths:
             "image_names": ["svchost.exe"],
         }
 
-    def test_evidence_ref_with_rag_query_source_tool_accepted(
-        self, tmp_path: Path
-    ):
+    def test_evidence_ref_with_rag_query_source_tool_accepted(self, tmp_path: Path):
         """Week 7 G-2 regression: a correlation citing a rag_query
         audit line in evidence_refs must validate. The validator
         runs rag_query to ground a hypothesis in a named MITRE
@@ -348,10 +340,7 @@ class TestRecordCorrelationHappyPaths:
                 EvidenceRef(
                     source_tool="rag_query",
                     audit_line=rag_audit_line,
-                    detail=(
-                        "T1055 (Process Injection) retrieved at "
-                        "rank 1, similarity_score=1.0"
-                    ),
+                    detail=("T1055 (Process Injection) retrieved at rank 1, similarity_score=1.0"),
                 ),
             ],
             hypothesis=(
@@ -381,14 +370,10 @@ class TestRecordCorrelationHappyPaths:
 
 
 class TestServerControlledFields:
-    def test_correlation_id_created_at_audit_line_set_by_server(
-        self, tmp_path: Path
-    ):
+    def test_correlation_id_created_at_audit_line_set_by_server(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
         before = datetime.now(tz=timezone.utc)
-        result = record_correlation(
-            **_good_corroborates(), case_dir=str(case_dir)
-        )
+        result = record_correlation(**_good_corroborates(), case_dir=str(case_dir))
         after = datetime.now(tz=timezone.utc)
 
         # UUIDv4 shape (version nibble == "4")
@@ -424,9 +409,7 @@ class TestRejectUnknownType:
         assert "bogus" not in str(exc.value)
 
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit[-1]["tool_name"] == (
-            "record_correlation:rejected_unknown_type"
-        )
+        assert audit[-1]["tool_name"] == ("record_correlation:rejected_unknown_type")
         assert not (case_dir / "correlations.jsonl").exists()
 
 
@@ -445,9 +428,7 @@ class TestRejectUnknownCaseId:
             )
 
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit[-1]["tool_name"] == (
-            "record_correlation:rejected_unknown_case_id"
-        )
+        assert audit[-1]["tool_name"] == ("record_correlation:rejected_unknown_case_id")
         assert not (case_dir / "correlations.jsonl").exists()
 
 
@@ -461,7 +442,8 @@ class TestRejectInvalidAuditRef:
         case_dir = _seed_case_dir(tmp_path)
         bad = [
             EvidenceRef(
-                source_tool="vol_pslist", audit_line=999,
+                source_tool="vol_pslist",
+                audit_line=999,
                 detail="line 999 doesn't exist",
             )
         ]
@@ -471,9 +453,7 @@ class TestRejectInvalidAuditRef:
                 case_dir=str(case_dir),
             )
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit[-1]["tool_name"] == (
-            "record_correlation:rejected_invalid_audit_ref"
-        )
+        assert audit[-1]["tool_name"] == ("record_correlation:rejected_invalid_audit_ref")
 
     def test_source_tool_does_not_match_audit_entry(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
@@ -481,7 +461,8 @@ class TestRejectInvalidAuditRef:
         # at line 1 must reject.
         bad = [
             EvidenceRef(
-                source_tool="vol_netscan", audit_line=1,
+                source_tool="vol_netscan",
+                audit_line=1,
                 detail="line 1 is actually vol_pslist",
             )
         ]
@@ -491,9 +472,7 @@ class TestRejectInvalidAuditRef:
                 case_dir=str(case_dir),
             )
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit[-1]["tool_name"] == (
-            "record_correlation:rejected_invalid_audit_ref"
-        )
+        assert audit[-1]["tool_name"] == ("record_correlation:rejected_invalid_audit_ref")
 
 
 # ---------------------------------------------------------------------------
@@ -510,13 +489,9 @@ class TestRejectInvalidPayload:
                 case_dir=str(case_dir),
             )
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit[-1]["tool_name"] == (
-            "record_correlation:rejected_invalid_payload"
-        )
+        assert audit[-1]["tool_name"] == ("record_correlation:rejected_invalid_payload")
 
-    def test_contradicts_with_corroborates_field_rejected(
-        self, tmp_path: Path
-    ):
+    def test_contradicts_with_corroborates_field_rejected(self, tmp_path: Path):
         # Cross-type field overflow: contradicts must not accept
         # target_finding_ids (corroborates' field).
         case_dir = _seed_case_dir(tmp_path)
@@ -536,9 +511,7 @@ class TestRejectInvalidPayload:
                 case_dir=str(case_dir),
             )
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit[-1]["tool_name"] == (
-            "record_correlation:rejected_invalid_payload"
-        )
+        assert audit[-1]["tool_name"] == ("record_correlation:rejected_invalid_payload")
 
     def test_request_followup_without_rationale_rejected(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
@@ -556,9 +529,7 @@ class TestRejectInvalidPayload:
                 case_dir=str(case_dir),
             )
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit[-1]["tool_name"] == (
-            "record_correlation:rejected_invalid_payload"
-        )
+        assert audit[-1]["tool_name"] == ("record_correlation:rejected_invalid_payload")
 
     def test_short_hypothesis_rejected(self, tmp_path: Path):
         # min_length on hypothesis is 50; pydantic ValidationError
@@ -570,9 +541,7 @@ class TestRejectInvalidPayload:
                 case_dir=str(case_dir),
             )
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit[-1]["tool_name"] == (
-            "record_correlation:rejected_invalid_payload"
-        )
+        assert audit[-1]["tool_name"] == ("record_correlation:rejected_invalid_payload")
 
 
 # ---------------------------------------------------------------------------
@@ -590,9 +559,7 @@ class TestRejectUnknownFinding:
                 case_dir=str(case_dir),
             )
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit[-1]["tool_name"] == (
-            "record_correlation:rejected_unknown_finding"
-        )
+        assert audit[-1]["tool_name"] == ("record_correlation:rejected_unknown_finding")
         # Chain unchanged.
         assert not (case_dir / "correlations.jsonl").exists()
 
@@ -605,12 +572,8 @@ class TestRejectUnknownFinding:
 class TestChainContinuity:
     def test_two_consecutive_correlations_link(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
-        record_correlation(
-            **_good_corroborates(), case_dir=str(case_dir)
-        )
-        record_correlation(
-            **_good_corroborates(strength="moderate"), case_dir=str(case_dir)
-        )
+        record_correlation(**_good_corroborates(), case_dir=str(case_dir))
+        record_correlation(**_good_corroborates(strength="moderate"), case_dir=str(case_dir))
         rows = _read_jsonl(case_dir / "correlations.jsonl")
         assert len(rows) == 2
         assert rows[1]["prev_correlation_hash"] == rows[0]["this_correlation_hash"]
@@ -631,12 +594,8 @@ class TestOnDiskIsolation:
             assert ON_DISK_CORRELATIONS.read_bytes() == _ON_DISK_CORRELATIONS_BEFORE
 
 
-_ON_DISK_AUDIT_BEFORE = (
-    ON_DISK_AUDIT_LOG.read_bytes() if ON_DISK_AUDIT_LOG.exists() else b""
-)
-_ON_DISK_FINDINGS_BEFORE = (
-    ON_DISK_FINDINGS.read_bytes() if ON_DISK_FINDINGS.exists() else b""
-)
+_ON_DISK_AUDIT_BEFORE = ON_DISK_AUDIT_LOG.read_bytes() if ON_DISK_AUDIT_LOG.exists() else b""
+_ON_DISK_FINDINGS_BEFORE = ON_DISK_FINDINGS.read_bytes() if ON_DISK_FINDINGS.exists() else b""
 _ON_DISK_CORRELATIONS_BEFORE = (
     ON_DISK_CORRELATIONS.read_bytes() if ON_DISK_CORRELATIONS.exists() else b""
 )

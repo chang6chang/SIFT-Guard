@@ -99,8 +99,7 @@ def fetch_sigma_archive(tag: str = SIGMA_TAG) -> Path:
         tf.extractall(path=workdir, filter="data")
     if not extracted.exists():
         raise RuntimeError(
-            f"expected extracted dir at {extracted}; tarball top-level "
-            "directory may have changed"
+            f"expected extracted dir at {extracted}; tarball top-level directory may have changed"
         )
     return extracted
 
@@ -234,9 +233,7 @@ def build_records(
     """
     rules_dir = sigma_root / "rules" / "windows"
     if not rules_dir.exists():
-        raise FileNotFoundError(
-            f"sigma rules dir missing at {rules_dir}; check sigma_root"
-        )
+        raise FileNotFoundError(f"sigma rules dir missing at {rules_dir}; check sigma_root")
 
     records: list[RagRecord] = []
     skipped_status = 0
@@ -336,9 +333,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.records_out:
         args.records_out.parent.mkdir(parents=True, exist_ok=True)
         args.records_out.write_text(
-            json.dumps(
-                [r.model_dump(mode="json") for r in records], indent=2
-            ),
+            json.dumps([r.model_dump(mode="json") for r in records], indent=2),
             encoding="utf-8",
         )
         print(f"  wrote {len(records)} records to {args.records_out}", file=sys.stderr)

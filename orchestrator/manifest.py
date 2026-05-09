@@ -29,9 +29,8 @@ never disappear).
 
 from __future__ import annotations
 
-import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -81,9 +80,7 @@ class HostEvidence(BaseModel):
     a length cap.
     """
 
-    host_id: str = Field(
-        min_length=1, max_length=128, pattern=_HOST_ID_PATTERN
-    )
+    host_id: str = Field(min_length=1, max_length=128, pattern=_HOST_ID_PATTERN)
     host_label: str = Field(min_length=1, max_length=256)
     evidence_files: list[EvidenceFile] = Field(min_length=1)
 
@@ -150,12 +147,8 @@ def read_manifest(case_dir: Path | str) -> CaseManifest:
     one)."""
     src = manifest_path(case_dir)
     if not src.exists():
-        raise FileNotFoundError(
-            f"no manifest at {src} — run-case mode produces this file"
-        )
-    return CaseManifest.model_validate_json(
-        src.read_text(encoding="utf-8")
-    )
+        raise FileNotFoundError(f"no manifest at {src} — run-case mode produces this file")
+    return CaseManifest.model_validate_json(src.read_text(encoding="utf-8"))
 
 
 def manifest_exists(case_dir: Path | str) -> bool:

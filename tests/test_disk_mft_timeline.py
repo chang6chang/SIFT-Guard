@@ -69,9 +69,7 @@ def _make_case_dir(
 
 
 class TestDiskMftResolution:
-    def test_evidence_id_not_in_case_yaml_raises_sanitized_value_error(
-        self, tmp_path: Path
-    ):
+    def test_evidence_id_not_in_case_yaml_raises_sanitized_value_error(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         bogus = "00000000-0000-4000-8000-000000000000"
         with pytest.raises(ValueError) as exc_info:
@@ -80,9 +78,7 @@ class TestDiskMftResolution:
         assert bogus not in str(exc_info.value)
 
     def test_wrong_artifact_class_rejected(self, tmp_path: Path):
-        case_dir = _make_case_dir(
-            tmp_path, artifact_class=ArtifactClass.MEMORY_IMAGE
-        )
+        case_dir = _make_case_dir(tmp_path, artifact_class=ArtifactClass.MEMORY_IMAGE)
         with pytest.raises(ValueError) as exc_info:
             disk_mft_timeline(VALID_EVIDENCE_ID, case_dir=str(case_dir))
         assert str(exc_info.value) == "evidence is not a disk image"
@@ -94,9 +90,7 @@ class TestDiskMftResolution:
 
 
 class TestDiskMftRejectionAudit:
-    def test_evidence_not_found_writes_rejection_chain_line(
-        self, tmp_path: Path
-    ):
+    def test_evidence_not_found_writes_rejection_chain_line(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         bogus = "00000000-0000-4000-8000-000000000000"
 
@@ -104,25 +98,18 @@ class TestDiskMftRejectionAudit:
             disk_mft_timeline(bogus, case_dir=str(case_dir))
 
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
         entry = lines[0]
-        assert entry["tool_name"] == (
-            "disk_mft_timeline:rejected_evidence_not_found"
-        )
+        assert entry["tool_name"] == ("disk_mft_timeline:rejected_evidence_not_found")
         assert entry["evidence_id"] == bogus
         assert entry["line_number"] == 1
         assert entry["prev_line_hash"] == _GENESIS_PREV_HASH
         assert len(entry["this_line_hash"]) == 64
 
-    def test_mount_failure_writes_rejection_chain_line(
-        self, tmp_path: Path
-    ):
+    def test_mount_failure_writes_rejection_chain_line(self, tmp_path: Path):
         from server.runners.disk_mount import MountError
+
         case_dir = _make_case_dir(tmp_path)
 
         with patch(
@@ -137,15 +124,9 @@ class TestDiskMftRejectionAudit:
         assert str(exc_info.value) == "disk-image mount failed"
 
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
-        assert lines[0]["tool_name"] == (
-            "disk_mft_timeline:rejected_mount_failed"
-        )
+        assert lines[0]["tool_name"] == ("disk_mft_timeline:rejected_mount_failed")
 
 
 # ---------------------------------------------------------------------------
@@ -163,16 +144,17 @@ class TestDiskMftHappyPath:
         )
         fake_mount = "/mnt/sift_disk"
 
-        with patch(
-            "server.tools.disk.mount_disk_image",
-            return_value=fake_mount,
-        ), patch(
-            "server.tools.disk.run_log2timeline_mft",
-            return_value=(fixture_stdout, fake_command, 42.0, "plaso 20240126"),
-        ) as mock_run:
-            summary = disk_mft_timeline(
-                VALID_EVIDENCE_ID, case_dir=str(case_dir)
-            )
+        with (
+            patch(
+                "server.tools.disk.mount_disk_image",
+                return_value=fake_mount,
+            ),
+            patch(
+                "server.tools.disk.run_log2timeline_mft",
+                return_value=(fixture_stdout, fake_command, 42.0, "plaso 20240126"),
+            ) as mock_run,
+        ):
+            summary = disk_mft_timeline(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
         ref = summary.extraction
         assert ref.plugin_name == "disk.mft.MftTimeline"
@@ -198,9 +180,7 @@ class TestDiskMftHappyPath:
         assert len(summary.model_dump_json().encode("utf-8")) <= 10_000
 
         # Stored extraction is loadable.
-        loaded_ref, parsed = load_extraction(
-            case_dir, VALID_EVIDENCE_ID, "disk.mft.MftTimeline"
-        )
+        loaded_ref, parsed = load_extraction(case_dir, VALID_EVIDENCE_ID, "disk.mft.MftTimeline")
         assert loaded_ref.cached is True
         assert loaded_ref.runtime_seconds is None
         assert parsed["plugin_name"] == "disk.mft.MftTimeline"
@@ -217,9 +197,7 @@ class TestDiskMftHappyPath:
         # Extractions chain line written + hash matches.
         chain_path = case_dir / "extractions.jsonl"
         chain_lines = [
-            json.loads(l)
-            for l in chain_path.read_text().splitlines()
-            if l.strip()
+            json.loads(line) for line in chain_path.read_text().splitlines() if line.strip()
         ]
         assert len(chain_lines) == 1
         assert chain_lines[0]["plugin_name"] == "disk.mft.MftTimeline"
@@ -229,8 +207,6 @@ class TestDiskMftHappyPath:
         # Success audit line under the bare tool_name.
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
         audit_lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
+            json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()
         ]
-        assert any(l["tool_name"] == "disk_mft_timeline" for l in audit_lines)
+        assert any(entry["tool_name"] == "disk_mft_timeline" for entry in audit_lines)

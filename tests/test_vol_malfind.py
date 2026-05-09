@@ -25,9 +25,7 @@ from server.tools.memory import vol_malfind
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-MALFIND_FIXTURE = (
-    Path(__file__).parent / "fixtures" / "vol_malfind_sample.json"
-)
+MALFIND_FIXTURE = Path(__file__).parent / "fixtures" / "vol_malfind_sample.json"
 
 VALID_EVIDENCE_ID = "550e8400-e29b-41d4-a716-446655440000"
 VALID_SHA256 = "eb33bdf63730858a805463d171245b233335dd6d89ed458bc681f7d282e10563"
@@ -130,9 +128,7 @@ def _bad_record_json() -> str:
 
 
 class TestVolMalfindResolution:
-    def test_evidence_id_not_in_case_yaml_raises_sanitized_value_error(
-        self, tmp_path: Path
-    ):
+    def test_evidence_id_not_in_case_yaml_raises_sanitized_value_error(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         bogus_id = "00000000-0000-4000-8000-000000000000"
         with pytest.raises(ValueError) as exc_info:
@@ -140,12 +136,8 @@ class TestVolMalfindResolution:
         assert str(exc_info.value) == "evidence_id not found in CASE.yaml"
         assert bogus_id not in str(exc_info.value)
 
-    def test_artifact_class_unknown_rejected_with_sanitized_message(
-        self, tmp_path: Path
-    ):
-        case_dir = _make_case_dir(
-            tmp_path, artifact_class=ArtifactClass.UNKNOWN
-        )
+    def test_artifact_class_unknown_rejected_with_sanitized_message(self, tmp_path: Path):
+        case_dir = _make_case_dir(tmp_path, artifact_class=ArtifactClass.UNKNOWN)
         with pytest.raises(ValueError) as exc_info:
             vol_malfind(VALID_EVIDENCE_ID, case_dir=str(case_dir))
         assert str(exc_info.value) == "evidence is not a memory image"
@@ -158,9 +150,7 @@ class TestVolMalfindResolution:
 
 
 class TestVolMalfindRejectionAudit:
-    def test_evidence_not_found_writes_rejection_chain_line(
-        self, tmp_path: Path
-    ):
+    def test_evidence_not_found_writes_rejection_chain_line(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         bogus_id = "00000000-0000-4000-8000-000000000000"
 
@@ -169,11 +159,7 @@ class TestVolMalfindRejectionAudit:
 
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
         assert audit_path.exists(), "rejection must extend the chain"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
         entry = lines[0]
         assert entry["tool_name"] == "vol_malfind:rejected_evidence_not_found"
@@ -190,9 +176,7 @@ class TestVolMalfindRejectionAudit:
 
 
 class TestVolMalfindHappyPath:
-    def test_returns_malfind_summary_with_three_detections(
-        self, tmp_path: Path
-    ):
+    def test_returns_malfind_summary_with_three_detections(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         fixture_stdout = MALFIND_FIXTURE.read_text(encoding="utf-8")
         fake_command = (
@@ -200,12 +184,13 @@ class TestVolMalfindHappyPath:
             "-f /mnt/rocba/Rocba-Memory.raw -r json windows.malfind.Malfind"
         )
 
-        with patch(
-            "server.tools.memory.get_vol_version", return_value="2.27.0"
-        ), patch(
-            "server.tools.memory.run_vol_plugin",
-            return_value=(fixture_stdout, fake_command, 73.5),
-        ) as mock_run:
+        with (
+            patch("server.tools.memory.get_vol_version", return_value="2.27.0"),
+            patch(
+                "server.tools.memory.run_vol_plugin",
+                return_value=(fixture_stdout, fake_command, 73.5),
+            ) as mock_run,
+        ):
             summary = vol_malfind(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
         ref = summary.extraction
@@ -236,9 +221,7 @@ class TestVolMalfindHappyPath:
         assert len(summary.model_dump_json().encode("utf-8")) <= 10_000
 
         # Stored extraction has the full detection list.
-        loaded_ref, parsed = load_extraction(
-            case_dir, VALID_EVIDENCE_ID, "windows.malfind.Malfind"
-        )
+        loaded_ref, parsed = load_extraction(case_dir, VALID_EVIDENCE_ID, "windows.malfind.Malfind")
         assert loaded_ref.cached is True
         assert loaded_ref.runtime_seconds is None
         assert parsed["plugin_name"] == "windows.malfind.Malfind"
@@ -273,9 +256,7 @@ class TestVolMalfindHappyPath:
         # Extractions chain line written with matching hash + record count.
         chain_path = case_dir / "extractions.jsonl"
         chain_lines = [
-            json.loads(l)
-            for l in chain_path.read_text().splitlines()
-            if l.strip()
+            json.loads(line) for line in chain_path.read_text().splitlines() if line.strip()
         ]
         assert len(chain_lines) == 1
         assert chain_lines[0]["evidence_id"] == VALID_EVIDENCE_ID
@@ -286,11 +267,9 @@ class TestVolMalfindHappyPath:
         # Audit log carries the success line under the bare tool_name.
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
         audit_lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
+            json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()
         ]
-        assert any(l["tool_name"] == "vol_malfind" for l in audit_lines)
+        assert any(entry["tool_name"] == "vol_malfind" for entry in audit_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -299,32 +278,25 @@ class TestVolMalfindHappyPath:
 
 
 class TestVolMalfindRecordWarnings:
-    def test_one_bad_record_logged_as_warning_others_preserved(
-        self, tmp_path: Path
-    ):
+    def test_one_bad_record_logged_as_warning_others_preserved(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
-        with patch(
-            "server.tools.memory.get_vol_version", return_value="2.27.0"
-        ), patch(
-            "server.tools.memory.run_vol_plugin",
-            return_value=(_bad_record_json(), "ssh ... vol ...", 1.0),
+        with (
+            patch("server.tools.memory.get_vol_version", return_value="2.27.0"),
+            patch(
+                "server.tools.memory.run_vol_plugin",
+                return_value=(_bad_record_json(), "ssh ... vol ...", 1.0),
+            ),
         ):
             summary = vol_malfind(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
         assert summary.extraction.record_count == 2
 
-        _, parsed = load_extraction(
-            case_dir, VALID_EVIDENCE_ID, "windows.malfind.Malfind"
-        )
+        _, parsed = load_extraction(case_dir, VALID_EVIDENCE_ID, "windows.malfind.Malfind")
         detections = parsed["detections"]
         assert {d["pid"] for d in detections} == {100, 200}
 
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 2
         assert lines[0]["tool_name"] == "vol_malfind:record_validation_warning"
         assert lines[1]["tool_name"] == "vol_malfind"
@@ -372,21 +344,26 @@ class TestParseMalfindIntegerStartVpn:
 
     def test_int_start_vpn_round_trips_via_parser(self):
         from server.runners.sift_vm import parse_malfind_json
-        raw = json.dumps([{
-            "PID": 812,
-            "Process": "LogonUI.exe",
-            "Start VPN": 46137344,  # int — the failure shape
-            "End VPN": 46141439,
-            "Tag": "VadS",
-            "Protection": "PAGE_EXECUTE_READWRITE",
-            "CommitCharge": 1,
-            "PrivateMemory": 1,
-            "File output": "Disabled",
-            "Hexdump": "00 " * 64,
-            "Disasm": "0x2c00000:\tnop",
-            "Notes": None,
-            "__children": [],
-        }])
+
+        raw = json.dumps(
+            [
+                {
+                    "PID": 812,
+                    "Process": "LogonUI.exe",
+                    "Start VPN": 46137344,  # int — the failure shape
+                    "End VPN": 46141439,
+                    "Tag": "VadS",
+                    "Protection": "PAGE_EXECUTE_READWRITE",
+                    "CommitCharge": 1,
+                    "PrivateMemory": 1,
+                    "File output": "Disabled",
+                    "Hexdump": "00 " * 64,
+                    "Disasm": "0x2c00000:\tnop",
+                    "Notes": None,
+                    "__children": [],
+                }
+            ]
+        )
         rows = parse_malfind_json(raw)
         assert len(rows) == 1
         # Parser hands int through; schema coerces it.

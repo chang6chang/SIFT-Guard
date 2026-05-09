@@ -31,7 +31,6 @@ import secrets
 import stat
 from pathlib import Path
 
-import pytest
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -141,8 +140,10 @@ def _extract_record(call_result) -> dict | None:
                 parsed = json.loads(text)
             except json.JSONDecodeError:
                 return None
-            if isinstance(parsed, dict) and "result" in parsed and isinstance(
-                parsed["result"], dict
+            if (
+                isinstance(parsed, dict)
+                and "result" in parsed
+                and isinstance(parsed["result"], dict)
             ):
                 return parsed["result"]
             return parsed if isinstance(parsed, dict) else None
@@ -155,7 +156,7 @@ def _extract_record(call_result) -> dict | None:
 
 
 class TestToolSurface:
-    def test_thirteen_tool_surface_is_locked(self, tmp_path: Path):
+    def test_nineteen_tool_surface_is_locked(self, tmp_path: Path):
         # Surface lock: every new MCP tool added to server/main.py
         # forces an explicit update here. Adding a tool without
         # extending this set means the surface grew silently — which
@@ -204,9 +205,7 @@ class TestToolSurface:
             f"{sorted(tool_names)}"
         )
 
-    def test_register_evidence_parameters_are_locked_to_filepath(
-        self, tmp_path: Path
-    ):
+    def test_register_evidence_parameters_are_locked_to_filepath(self, tmp_path: Path):
         listing = _run_async(_list_tools_only(tmp_path))
         tool = _tool_by_name(listing, "register_evidence")
         schema = tool.inputSchema
@@ -219,13 +218,9 @@ class TestToolSurface:
             "shows up here, CLAUDE.md rule 3 is broken."
         )
         assert properties["filepath"].get("type") == "string"
-        assert "filepath" in schema.get("required", []), (
-            "filepath must be required, not optional"
-        )
+        assert "filepath" in schema.get("required", []), "filepath must be required, not optional"
 
-    def test_vol_pslist_parameters_are_locked_to_evidence_id(
-        self, tmp_path: Path
-    ):
+    def test_vol_pslist_parameters_are_locked_to_evidence_id(self, tmp_path: Path):
         # Symmetric to the register_evidence schema lock. CLAUDE.md
         # rule 3: the agent never names a path or a plugin — only an
         # evidence_id resolved through the registry. If `case_dir`,
@@ -270,9 +265,7 @@ class TestToolSurface:
             f"{tool.description!r}"
         )
 
-    def test_vol_psscan_parameters_are_locked_to_evidence_id(
-        self, tmp_path: Path
-    ):
+    def test_vol_psscan_parameters_are_locked_to_evidence_id(self, tmp_path: Path):
         # Symmetric to vol_pslist's lock. Same architectural rule:
         # no `case_dir`, no `plugin_name`, no path leak — only
         # `evidence_id`. Schema-introspection test
@@ -310,9 +303,7 @@ class TestToolSurface:
             f"{tool.description!r}"
         )
 
-    def test_vol_pstree_parameters_are_locked_to_evidence_id(
-        self, tmp_path: Path
-    ):
+    def test_vol_pstree_parameters_are_locked_to_evidence_id(self, tmp_path: Path):
         # Symmetric to vol_pslist / vol_psscan locks. Same architectural
         # rule: no case_dir, no plugin_name, no path leak — only
         # evidence_id. Schema-introspection test test_no_path_fields.py
@@ -347,9 +338,7 @@ class TestToolSurface:
             f"{tool.description!r}"
         )
 
-    def test_vol_netscan_parameters_are_locked_to_evidence_id(
-        self, tmp_path: Path
-    ):
+    def test_vol_netscan_parameters_are_locked_to_evidence_id(self, tmp_path: Path):
         # Symmetric to the other vol_* locks. Same architectural rule:
         # no case_dir, no plugin_name, no path leak — only evidence_id.
         listing = _run_async(_list_tools_only(tmp_path))
@@ -368,9 +357,7 @@ class TestToolSurface:
             "evidence_id must be required, not optional"
         )
 
-    def test_vol_netscan_description_carries_cost_warning(
-        self, tmp_path: Path
-    ):
+    def test_vol_netscan_description_carries_cost_warning(self, tmp_path: Path):
         # netscan is the slowest of the four vol_* tools (~9m on
         # Rocba). The LLM must see the cost so it doesn't queue it
         # reflexively after every other call.
@@ -401,10 +388,7 @@ class TestToolSurface:
             "fields",
             "limit",
             "offset",
-        }, (
-            "query_records parameter set drifted; got "
-            f"{sorted(properties.keys())}"
-        )
+        }, f"query_records parameter set drifted; got {sorted(properties.keys())}"
         # plugin_name is a closed enum across the supported plugins.
         plugin_enum = properties["plugin_name"].get("enum", [])
         assert set(plugin_enum) == {
@@ -431,14 +415,9 @@ class TestToolSurface:
             "field",
             "filters",
             "top_n",
-        }, (
-            "group_by parameter set drifted; got "
-            f"{sorted(properties.keys())}"
-        )
+        }, f"group_by parameter set drifted; got {sorted(properties.keys())}"
         for required in ("evidence_id", "plugin_name", "field"):
-            assert required in tool.inputSchema.get("required", []), (
-                f"{required} must be required"
-            )
+            assert required in tool.inputSchema.get("required", []), f"{required} must be required"
 
     def test_set_difference_parameter_set(self, tmp_path: Path):
         listing = _run_async(_list_tools_only(tmp_path))
@@ -452,10 +431,7 @@ class TestToolSurface:
             "direction",
             "fields",
             "limit",
-        }, (
-            "set_difference parameter set drifted; got "
-            f"{sorted(properties.keys())}"
-        )
+        }, f"set_difference parameter set drifted; got {sorted(properties.keys())}"
         # Both plugin sides are closed enums; same set as query_records.
         for side in ("plugin_a", "plugin_b"):
             plugin_enum = properties[side].get("enum", [])
@@ -482,14 +458,9 @@ class TestToolSurface:
             "root_pid",
             "max_depth",
             "fields",
-        }, (
-            "subtree parameter set drifted; got "
-            f"{sorted(properties.keys())}"
-        )
+        }, f"subtree parameter set drifted; got {sorted(properties.keys())}"
         for required in ("evidence_id", "plugin_name", "root_pid"):
-            assert required in tool.inputSchema.get("required", []), (
-                f"{required} must be required"
-            )
+            assert required in tool.inputSchema.get("required", []), f"{required} must be required"
 
     # -----------------------------------------------------------------
     # Tier-1 summary-shape locks (week 5)
@@ -509,6 +480,7 @@ class TestToolSurface:
         required would re-break the migration approach.
         """
         from server.schemas import ExtractionRef
+
         schema = ExtractionRef.model_json_schema()
         prop = schema["properties"]["audit_line"]
         # pydantic v2 emits Optional[int] as anyOf[{type:integer}, {type:null}]
@@ -518,9 +490,7 @@ class TestToolSurface:
             "ExtractionRef.audit_line must accept null per the "
             "no-retroactive-backfill migration approach"
         )
-        assert "integer" in types, (
-            "ExtractionRef.audit_line must also accept int — value type"
-        )
+        assert "integer" in types, "ExtractionRef.audit_line must also accept int — value type"
 
     def test_audit_line_required_on_tier2_result_models(self, tmp_path: Path):
         """Tier-2 *Result.audit_line is REQUIRED (no `None`). Every
@@ -532,6 +502,7 @@ class TestToolSurface:
             SetDifferenceResult,
             SubtreeResult,
         )
+
         for cls in (
             QueryRecordsResult,
             GroupByResult,
@@ -552,8 +523,7 @@ class TestToolSurface:
         for name in ("vol_pslist", "vol_psscan", "vol_pstree", "vol_netscan"):
             tool = _tool_by_name(listing, name)
             assert "Summary" in tool.description, (
-                f"{name} description must advertise its Summary return; "
-                f"found: {tool.description!r}"
+                f"{name} description must advertise its Summary return; found: {tool.description!r}"
             )
             assert "extraction" in tool.description.lower(), (
                 f"{name} description must mention the on-disk extraction "
@@ -594,9 +564,7 @@ class TestToolSurface:
             "the server-controlled boundary is broken."
         )
 
-    def test_record_finding_confidence_includes_disputed_for_validator(
-        self, tmp_path: Path
-    ):
+    def test_record_finding_confidence_includes_disputed_for_validator(self, tmp_path: Path):
         # The Literal must include DISPUTED — not because analysts can
         # set it (they can't; record_finding rejects + audits), but
         # because the same DraftFinding schema is the type the week-6
@@ -665,9 +633,7 @@ class TestToolSurface:
             "evidence_refs",
             "hypothesis",
         ):
-            assert required in tool.inputSchema.get("required", []), (
-                f"{required} must be required"
-            )
+            assert required in tool.inputSchema.get("required", []), f"{required} must be required"
 
     def test_update_finding_parameter_set(self, tmp_path: Path):
         # `update_finding` is the orchestrator's tool. The orchestrator
@@ -704,9 +670,7 @@ class TestToolSurface:
             "driving_correlation_ids",
             "orchestrator_version",
         ):
-            assert required in tool.inputSchema.get("required", []), (
-                f"{required} must be required"
-            )
+            assert required in tool.inputSchema.get("required", []), f"{required} must be required"
 
     def test_record_correlation_correlation_type_enum(self, tmp_path: Path):
         # `correlation_type` is one of six Literal values (week 8
@@ -784,9 +748,7 @@ class TestRoundTrip:
 
         # (b) structured EvidenceRecord parsed from the response.
         record = _extract_record(ok)
-        assert record is not None, (
-            f"could not extract EvidenceRecord payload from {ok!r}"
-        )
+        assert record is not None, f"could not extract EvidenceRecord payload from {ok!r}"
         for key in (
             "evidence_id",
             "original_filename",
@@ -849,17 +811,14 @@ class TestRoundTrip:
         assert getattr(denied, "isError", False) is True, (
             f"/etc/passwd should yield isError=True; got {denied!r}"
         )
-        denied_text = "".join(
-            getattr(c, "text", "") or "" for c in (denied.content or [])
-        )
+        denied_text = "".join(getattr(c, "text", "") or "" for c in (denied.content or []))
         assert "Path outside evidence directory rejected" in denied_text, (
             f"sanitized rejection message missing from response: {denied_text!r}"
         )
         # Sanitization: the offending path must not appear anywhere in
         # the LLM-visible response.
         assert "/etc/passwd" not in denied_text, (
-            "rejection response must not echo the agent-supplied path "
-            f"back; got: {denied_text!r}"
+            f"rejection response must not echo the agent-supplied path back; got: {denied_text!r}"
         )
         lines_after_denied = audit.read_text(encoding="utf-8").splitlines()
         assert len(lines_after_denied) == 1, (

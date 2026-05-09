@@ -61,9 +61,7 @@ def _stream_sha256_and_magic(path: Path) -> tuple[str, bytes]:
     return hasher.hexdigest(), magic_bytes
 
 
-def _detect_artifact_class(
-    path: Path, size_bytes: int, magic: bytes
-) -> ArtifactClass:
+def _detect_artifact_class(path: Path, size_bytes: int, magic: bytes) -> ArtifactClass:
     extension = path.suffix.lower()
 
     # Magic-byte signatures take precedence over extension.
@@ -110,9 +108,7 @@ def _write_case_yaml(case_yaml_path: Path, doc: dict) -> None:
         yaml.safe_dump(doc, f, default_flow_style=False, sort_keys=False)
 
 
-def register_evidence(
-    filepath: str, case_dir: str = "case-data"
-) -> EvidenceRecord:
+def register_evidence(filepath: str, case_dir: str = "case-data") -> EvidenceRecord:
     """Register one piece of evidence into the case directory.
 
     Sequence:

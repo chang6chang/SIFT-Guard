@@ -93,11 +93,21 @@ class TestSubtreeHappyPath:
     def test_extracts_subtree_from_root(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
         # System (4) -> smss.exe (440) -> csrss.exe (550)
-        tree = _node(4, 0, "System", [
-            _node(440, 4, "smss.exe", [
-                _node(550, 440, "csrss.exe"),
-            ]),
-        ])
+        tree = _node(
+            4,
+            0,
+            "System",
+            [
+                _node(
+                    440,
+                    4,
+                    "smss.exe",
+                    [
+                        _node(550, 440, "csrss.exe"),
+                    ],
+                ),
+            ],
+        )
         _seed_pstree(case_dir, [tree])
 
         result = subtree(
@@ -118,7 +128,10 @@ class TestSubtreeHappyPath:
         # pstree-only; with no projection every untrusted record
         # field is present in `nodes`.
         assert result.untrusted_fields == [
-            "image_file_name", "audit", "cmd", "path",
+            "image_file_name",
+            "audit",
+            "cmd",
+            "path",
         ]
 
     def test_max_depth_bounds_traversal(self, tmp_path: Path):
@@ -249,10 +262,8 @@ class TestSubtreeAuditLinePlumbing:
             case_dir=str(case_dir),
         )
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
-        lines = [
-            json.loads(l) for l in audit_path.read_text().splitlines() if l.strip()
-        ]
-        success_lines = [l for l in lines if l["tool_name"] == "subtree"]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
+        success_lines = [entry for entry in lines if entry["tool_name"] == "subtree"]
         assert len(success_lines) == 1
         assert result.audit_line == success_lines[0]["line_number"]
 

@@ -88,8 +88,10 @@ class TestHostEvidence:
                 host_label="bad",
                 evidence_files=[
                     EvidenceFile(
-                        evidence_id="x", file_path="/y",
-                        evidence_type="memory", file_size_bytes=1,
+                        evidence_id="x",
+                        file_path="/y",
+                        evidence_type="memory",
+                        file_size_bytes=1,
                     )
                 ],
             )
@@ -107,20 +109,26 @@ class TestCaseManifest:
     def test_evidence_count_aggregates_across_hosts(self, tmp_path: Path):
         m = _make_manifest()
         # Add a second host with two files.
-        m.hosts.append(HostEvidence(
-            host_id="controller",
-            host_label="controller",
-            evidence_files=[
-                EvidenceFile(
-                    evidence_id="a", file_path="/c/m.raw",
-                    evidence_type="memory", file_size_bytes=1,
-                ),
-                EvidenceFile(
-                    evidence_id="b", file_path="/c/d.E01",
-                    evidence_type="disk", file_size_bytes=1,
-                ),
-            ],
-        ))
+        m.hosts.append(
+            HostEvidence(
+                host_id="controller",
+                host_label="controller",
+                evidence_files=[
+                    EvidenceFile(
+                        evidence_id="a",
+                        file_path="/c/m.raw",
+                        evidence_type="memory",
+                        file_size_bytes=1,
+                    ),
+                    EvidenceFile(
+                        evidence_id="b",
+                        file_path="/c/d.E01",
+                        evidence_type="disk",
+                        file_size_bytes=1,
+                    ),
+                ],
+            )
+        )
         assert m.evidence_count == 3
 
 
@@ -138,9 +146,7 @@ class TestPersistence:
         # Datetime survives the round-trip with UTC offset preserved.
         assert loaded.created_at.tzinfo is not None
 
-    def test_read_missing_manifest_raises_file_not_found(
-        self, tmp_path: Path
-    ):
+    def test_read_missing_manifest_raises_file_not_found(self, tmp_path: Path):
         assert not manifest_exists(tmp_path)
         with pytest.raises(FileNotFoundError):
             read_manifest(tmp_path)

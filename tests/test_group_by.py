@@ -49,9 +49,16 @@ def _seed_case_dir(tmp_path: Path) -> Path:
 
 def _pr(pid: int, ppid: int, name: str) -> ProcessRecord:
     return ProcessRecord(
-        pid=pid, ppid=ppid, image_file_name=name, offset_v=0, threads=1,
-        handles=None, session_id=None, wow64=False,
-        create_time=NOW_UTC, exit_time=None,
+        pid=pid,
+        ppid=ppid,
+        image_file_name=name,
+        offset_v=0,
+        threads=1,
+        handles=None,
+        session_id=None,
+        wow64=False,
+        create_time=NOW_UTC,
+        exit_time=None,
     )
 
 
@@ -212,10 +219,8 @@ class TestGroupByAuditLinePlumbing:
             case_dir=str(case_dir),
         )
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
-        lines = [
-            json.loads(l) for l in audit_path.read_text().splitlines() if l.strip()
-        ]
-        success_lines = [l for l in lines if l["tool_name"] == "group_by"]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
+        success_lines = [entry for entry in lines if entry["tool_name"] == "group_by"]
         assert len(success_lines) == 1
         assert result.audit_line == success_lines[0]["line_number"]
 

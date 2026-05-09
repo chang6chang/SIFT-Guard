@@ -29,7 +29,7 @@ import yaml
 
 from server.extractions import load_extraction
 from server.schemas import ArtifactClass, EvidenceRecord
-from server.tools.memory import translate_to_vm_path, vol_psscan
+from server.tools.memory import vol_psscan
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -92,25 +92,46 @@ def _bad_record_json() -> str:
     return json.dumps(
         [
             {
-                "PID": 4, "PPID": 0, "ImageFileName": "System",
-                "Offset(V)": 0, "Threads": 1, "Handles": None,
-                "SessionId": None, "Wow64": False,
-                "CreateTime": "2024-01-01T00:00:00+00:00", "ExitTime": None,
-                "File output": "Disabled", "__children": [],
+                "PID": 4,
+                "PPID": 0,
+                "ImageFileName": "System",
+                "Offset(V)": 0,
+                "Threads": 1,
+                "Handles": None,
+                "SessionId": None,
+                "Wow64": False,
+                "CreateTime": "2024-01-01T00:00:00+00:00",
+                "ExitTime": None,
+                "File output": "Disabled",
+                "__children": [],
             },
             {
-                "PID": -1, "PPID": 0, "ImageFileName": "Bad",
-                "Offset(V)": 0, "Threads": 1, "Handles": None,
-                "SessionId": None, "Wow64": False,
-                "CreateTime": "2024-01-01T00:00:00+00:00", "ExitTime": None,
-                "File output": "Disabled", "__children": [],
+                "PID": -1,
+                "PPID": 0,
+                "ImageFileName": "Bad",
+                "Offset(V)": 0,
+                "Threads": 1,
+                "Handles": None,
+                "SessionId": None,
+                "Wow64": False,
+                "CreateTime": "2024-01-01T00:00:00+00:00",
+                "ExitTime": None,
+                "File output": "Disabled",
+                "__children": [],
             },
             {
-                "PID": 100, "PPID": 4, "ImageFileName": "smss.exe",
-                "Offset(V)": 0, "Threads": 1, "Handles": None,
-                "SessionId": None, "Wow64": False,
-                "CreateTime": "2024-01-01T00:00:00+00:00", "ExitTime": None,
-                "File output": "Disabled", "__children": [],
+                "PID": 100,
+                "PPID": 4,
+                "ImageFileName": "smss.exe",
+                "Offset(V)": 0,
+                "Threads": 1,
+                "Handles": None,
+                "SessionId": None,
+                "Wow64": False,
+                "CreateTime": "2024-01-01T00:00:00+00:00",
+                "ExitTime": None,
+                "File output": "Disabled",
+                "__children": [],
             },
         ]
     )
@@ -122,9 +143,7 @@ def _bad_record_json() -> str:
 
 
 class TestVolPsscanResolution:
-    def test_evidence_id_not_in_case_yaml_raises_sanitized_value_error(
-        self, tmp_path: Path
-    ):
+    def test_evidence_id_not_in_case_yaml_raises_sanitized_value_error(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         bogus_id = "00000000-0000-4000-8000-000000000000"
         with pytest.raises(ValueError) as exc_info:
@@ -133,9 +152,7 @@ class TestVolPsscanResolution:
         # Sanitized: the attempted evidence_id is not echoed back.
         assert bogus_id not in str(exc_info.value)
 
-    def test_artifact_class_unknown_rejected_with_sanitized_message(
-        self, tmp_path: Path
-    ):
+    def test_artifact_class_unknown_rejected_with_sanitized_message(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path, artifact_class=ArtifactClass.UNKNOWN)
         with pytest.raises(ValueError) as exc_info:
             vol_psscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
@@ -157,9 +174,7 @@ _GENESIS_PREV_HASH = "0" * 64
 
 
 class TestVolPsscanRejectionAudit:
-    def test_evidence_not_found_writes_rejection_chain_line(
-        self, tmp_path: Path
-    ):
+    def test_evidence_not_found_writes_rejection_chain_line(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         bogus_id = "00000000-0000-4000-8000-000000000000"
 
@@ -168,11 +183,7 @@ class TestVolPsscanRejectionAudit:
 
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
         assert audit_path.exists(), "rejection must extend the chain"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
         entry = lines[0]
         assert entry["tool_name"] == "vol_psscan:rejected_evidence_not_found"
@@ -182,36 +193,23 @@ class TestVolPsscanRejectionAudit:
         assert len(entry["this_line_hash"]) == 64
         assert all(c in "0123456789abcdef" for c in entry["this_line_hash"])
 
-    def test_wrong_artifact_class_writes_rejection_chain_line(
-        self, tmp_path: Path
-    ):
-        case_dir = _make_case_dir(
-            tmp_path, artifact_class=ArtifactClass.UNKNOWN
-        )
+    def test_wrong_artifact_class_writes_rejection_chain_line(self, tmp_path: Path):
+        case_dir = _make_case_dir(tmp_path, artifact_class=ArtifactClass.UNKNOWN)
 
         with pytest.raises(ValueError):
             vol_psscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
         assert audit_path.exists(), "rejection must extend the chain"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
         entry = lines[0]
-        assert (
-            entry["tool_name"]
-            == "vol_psscan:rejected_wrong_artifact_class"
-        )
+        assert entry["tool_name"] == "vol_psscan:rejected_wrong_artifact_class"
         assert entry["evidence_id"] == VALID_EVIDENCE_ID
         assert entry["line_number"] == 1
         assert entry["prev_line_hash"] == _GENESIS_PREV_HASH
 
-    def test_path_translation_failed_writes_rejection_chain_line(
-        self, tmp_path: Path
-    ):
+    def test_path_translation_failed_writes_rejection_chain_line(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path, absolute_path="/tmp/Foo.raw")
 
         with pytest.raises(ValueError) as exc_info:
@@ -223,17 +221,10 @@ class TestVolPsscanRejectionAudit:
 
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
         assert audit_path.exists(), "rejection must extend the chain"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
         entry = lines[0]
-        assert (
-            entry["tool_name"]
-            == "vol_psscan:rejected_path_translation_failed"
-        )
+        assert entry["tool_name"] == "vol_psscan:rejected_path_translation_failed"
         assert entry["evidence_id"] == VALID_EVIDENCE_ID
         assert entry["line_number"] == 1
         assert entry["prev_line_hash"] == _GENESIS_PREV_HASH
@@ -260,12 +251,13 @@ class TestVolPsscanHappyPath:
             "-f /mnt/rocba/Rocba-Memory.raw -r json windows.psscan.PsScan"
         )
 
-        with patch(
-            "server.tools.memory.get_vol_version", return_value="2.27.0"
-        ), patch(
-            "server.tools.memory.run_vol_plugin",
-            return_value=(fixture_stdout, fake_command, 396.3),
-        ) as mock_run:
+        with (
+            patch("server.tools.memory.get_vol_version", return_value="2.27.0"),
+            patch(
+                "server.tools.memory.run_vol_plugin",
+                return_value=(fixture_stdout, fake_command, 396.3),
+            ) as mock_run,
+        ):
             summary = vol_psscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
         ref = summary.extraction
@@ -288,9 +280,7 @@ class TestVolPsscanHappyPath:
 
         # Stored extraction has the full record set with the original
         # provenance metadata we never expose in the summary.
-        _, parsed = load_extraction(
-            case_dir, VALID_EVIDENCE_ID, "windows.psscan.PsScan"
-        )
+        _, parsed = load_extraction(case_dir, VALID_EVIDENCE_ID, "windows.psscan.PsScan")
         assert parsed["plugin_name"] == "windows.psscan.PsScan"
         assert parsed["volatility_version"] == "2.27.0"
         assert parsed["evidence_id"] == VALID_EVIDENCE_ID
@@ -330,23 +320,20 @@ class TestVolPsscanHappyPath:
 
 
 class TestVolPsscanRecordWarnings:
-    def test_one_bad_record_logged_as_warning_others_preserved(
-        self, tmp_path: Path
-    ):
+    def test_one_bad_record_logged_as_warning_others_preserved(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
-        with patch(
-            "server.tools.memory.get_vol_version", return_value="2.27.0"
-        ), patch(
-            "server.tools.memory.run_vol_plugin",
-            return_value=(_bad_record_json(), "ssh ... vol ...", 396.0),
+        with (
+            patch("server.tools.memory.get_vol_version", return_value="2.27.0"),
+            patch(
+                "server.tools.memory.run_vol_plugin",
+                return_value=(_bad_record_json(), "ssh ... vol ...", 396.0),
+            ),
         ):
             summary = vol_psscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
         # The two valid records survived; the PID -1 row is gone.
         assert summary.extraction.record_count == 2
-        _, parsed = load_extraction(
-            case_dir, VALID_EVIDENCE_ID, "windows.psscan.PsScan"
-        )
+        _, parsed = load_extraction(case_dir, VALID_EVIDENCE_ID, "windows.psscan.PsScan")
         assert {r["pid"] for r in parsed["processes"]} == {4, 100}
 
         # Audit log: 1 warning entry + 1 main result entry, in that
@@ -354,11 +341,7 @@ class TestVolPsscanRecordWarnings:
         # reader can grep for it. Distinct from the pslist warning
         # tool_name so a chain reader can tell the two apart.
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 2
         assert lines[0]["tool_name"] == "vol_psscan:record_validation_warning"
         assert lines[0]["evidence_id"] == VALID_EVIDENCE_ID
@@ -374,9 +357,7 @@ class TestVolPsscanRecordWarnings:
 
 
 class TestAuditChain:
-    def test_audit_chain_extends_from_existing_on_disk_chain(
-        self, tmp_path: Path
-    ):
+    def test_audit_chain_extends_from_existing_on_disk_chain(self, tmp_path: Path):
         """Seed the tmp case dir from the real on-disk CASE.yaml + audit
         log and verify vol_psscan's new audit line links to the copied
         chain's last `this_line_hash`. The on-disk audit log is never
@@ -387,15 +368,12 @@ class TestAuditChain:
         (case_dir / "audit").mkdir(parents=True)
         (case_dir / "evidence").mkdir(parents=True)
         shutil.copy(ON_DISK_CASE_YAML, case_dir / "CASE.yaml")
-        shutil.copy(
-            ON_DISK_AUDIT_LOG, case_dir / "audit" / "sift-guard-mcp.jsonl"
-        )
+        shutil.copy(ON_DISK_AUDIT_LOG, case_dir / "audit" / "sift-guard-mcp.jsonl")
 
         case_yaml_path = case_dir / "CASE.yaml"
         doc = yaml.safe_load(case_yaml_path.read_text())
         rocba_entry = next(
-            e for e in doc["evidence"]
-            if e["original_filename"] == "Rocba-Memory.raw"
+            e for e in doc["evidence"] if e["original_filename"] == "Rocba-Memory.raw"
         )
         rocba_evidence_id = rocba_entry["evidence_id"]
         fake_rocba = case_dir / "evidence" / "Rocba-Memory.raw"
@@ -403,43 +381,32 @@ class TestAuditChain:
         rocba_entry["absolute_path"] = str(fake_rocba)
         case_yaml_path.write_text(yaml.safe_dump(doc, sort_keys=False))
 
-        seeded_lines = (
-            (case_dir / "audit" / "sift-guard-mcp.jsonl")
-            .read_text()
-            .splitlines()
-        )
+        seeded_lines = (case_dir / "audit" / "sift-guard-mcp.jsonl").read_text().splitlines()
         seeded_count = len(seeded_lines)
-        assert seeded_count >= 2, (
-            "expected the on-disk chain to have at least 2 lines"
-        )
+        assert seeded_count >= 2, "expected the on-disk chain to have at least 2 lines"
         last_seeded = json.loads(seeded_lines[-1])
         expected_prev = last_seeded["this_line_hash"]
 
         fixture_stdout = PSSCAN_FIXTURE.read_text(encoding="utf-8")
-        with patch(
-            "server.tools.memory.get_vol_version", return_value="2.27.0"
-        ), patch(
-            "server.tools.memory.run_vol_plugin",
-            return_value=(fixture_stdout, "ssh ... vol ...", 396.0),
+        with (
+            patch("server.tools.memory.get_vol_version", return_value="2.27.0"),
+            patch(
+                "server.tools.memory.run_vol_plugin",
+                return_value=(fixture_stdout, "ssh ... vol ...", 396.0),
+            ),
         ):
             vol_psscan(rocba_evidence_id, case_dir=str(case_dir))
 
-        new_lines = (
-            (case_dir / "audit" / "sift-guard-mcp.jsonl")
-            .read_text()
-            .splitlines()
-        )
+        new_lines = (case_dir / "audit" / "sift-guard-mcp.jsonl").read_text().splitlines()
         assert len(new_lines) == seeded_count + 1
         new_entry = json.loads(new_lines[-1])
         assert new_entry["tool_name"] == "vol_psscan"
         assert new_entry["evidence_id"] == rocba_evidence_id
         assert new_entry["prev_line_hash"] == expected_prev, (
-            "vol_psscan's audit line failed to link to the prior "
-            "chain — chain is broken"
+            "vol_psscan's audit line failed to link to the prior chain — chain is broken"
         )
         assert new_entry["line_number"] == seeded_count + 1
 
         assert ON_DISK_AUDIT_LOG.read_bytes() == on_disk_audit_before, (
-            "on-disk audit log was modified by the test — isolation "
-            "is broken"
+            "on-disk audit log was modified by the test — isolation is broken"
         )

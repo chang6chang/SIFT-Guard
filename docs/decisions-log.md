@@ -270,6 +270,15 @@ shape, and the `NotImplementedError` ensures no Week 2-3 caller
 silently believes it has the protection. The function lands in full
 form when the first disk-image tool requests it, not before.
 
+**Superseded 2026-05-09**: when the disk tools shipped (Week 4), the
+`/proc/mounts` read-only check landed inline in
+`server/runners/disk_mount.py` — `MountVerificationError` is raised
+on mismatch by `_is_readonly_mount` after every mount or premount
+verification. The placeholder import boundary in `server/integrity.py`
+was never adopted by any caller and was removed during the v0.9
+hygiene pass. The architectural requirement is satisfied; the stub
+module is not.
+
 **Week 2 Day 1: MCP error-message sanitization rule. Every MCP tool
 function must catch known exceptions and return sanitized error
 messages that do NOT echo agent-supplied input back.** Owner:

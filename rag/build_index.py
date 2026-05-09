@@ -81,15 +81,10 @@ def _load_or_build_attack_records(
     cache = output_dir / _ATTACK_RECORDS_SIDECAR
     if skip_fetch and cache.exists():
         print(f"  reading cached ATT&CK records from {cache}", file=sys.stderr)
-        return [
-            RagRecord.model_validate(d)
-            for d in json.loads(cache.read_text(encoding="utf-8"))
-        ]
+        return [RagRecord.model_validate(d) for d in json.loads(cache.read_text(encoding="utf-8"))]
     print("Fetching MITRE ATT&CK STIX bundle ...", file=sys.stderr)
     bundle = ingest_attack.fetch_attack_bundle()
-    records = ingest_attack.build_records(
-        bundle, embedding_model_version=embedding_model_version
-    )
+    records = ingest_attack.build_records(bundle, embedding_model_version=embedding_model_version)
     print(f"  {len(records)} ATT&CK records", file=sys.stderr)
     return records
 
@@ -103,10 +98,7 @@ def _load_or_build_sigma_records(
     cache = output_dir / _SIGMA_RECORDS_SIDECAR
     if skip_fetch and cache.exists():
         print(f"  reading cached Sigma records from {cache}", file=sys.stderr)
-        return [
-            RagRecord.model_validate(d)
-            for d in json.loads(cache.read_text(encoding="utf-8"))
-        ]
+        return [RagRecord.model_validate(d) for d in json.loads(cache.read_text(encoding="utf-8"))]
     sigma_root = ingest_sigma.fetch_sigma_archive()
     print(f"Reading Sigma rules from {sigma_root} ...", file=sys.stderr)
     records = ingest_sigma.build_records(
@@ -115,24 +107,18 @@ def _load_or_build_sigma_records(
     return records
 
 
-def _write_sidecar(
-    records: list[RagRecord], path: Path
-) -> None:
+def _write_sidecar(records: list[RagRecord], path: Path) -> None:
     """Persist the per-corpus records list to a side-car JSON. Used
     by the --skip-*-fetch flags on subsequent runs to avoid re-hitting
     the network."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(
-            [r.model_dump(mode="json") for r in records], indent=2
-        ),
+        json.dumps([r.model_dump(mode="json") for r in records], indent=2),
         encoding="utf-8",
     )
 
 
-def _merge_and_sort(
-    attack: list[RagRecord], sigma: list[RagRecord]
-) -> list[RagRecord]:
+def _merge_and_sort(attack: list[RagRecord], sigma: list[RagRecord]) -> list[RagRecord]:
     """Concatenate then sort deterministically.
 
     Sort key: (source, technique_id, citation_url).
@@ -194,9 +180,7 @@ def write_combined_index(
         show_progress_bar=False,
         batch_size=64,
     ).astype(np.float32)
-    assert embeddings.shape == (len(records), dim), (
-        f"unexpected embedding shape {embeddings.shape}"
-    )
+    assert embeddings.shape == (len(records), dim), f"unexpected embedding shape {embeddings.shape}"
 
     index = faiss.IndexFlatIP(dim)
     index.add(embeddings)
@@ -207,9 +191,7 @@ def write_combined_index(
 
     faiss.write_index(index, str(index_path))
     records_path.write_text(
-        json.dumps(
-            [r.model_dump(mode="json") for r in records], indent=2
-        ),
+        json.dumps([r.model_dump(mode="json") for r in records], indent=2),
         encoding="utf-8",
     )
 
@@ -253,26 +235,20 @@ def main(argv: list[str] | None = None) -> int:
         "--skip-attack-fetch",
         action="store_true",
         help=(
-            "Use the cached attack-only.records.json instead of "
-            "fetching the upstream STIX bundle."
+            "Use the cached attack-only.records.json instead of fetching the upstream STIX bundle."
         ),
     )
     parser.add_argument(
         "--skip-sigma-fetch",
         action="store_true",
         help=(
-            "Use the cached sigma-windows.records.json instead of "
-            "downloading the SigmaHQ tarball."
+            "Use the cached sigma-windows.records.json instead of downloading the SigmaHQ tarball."
         ),
     )
     args = parser.parse_args(argv)
 
-    attack = _load_or_build_attack_records(
-        args.output_dir, args.skip_attack_fetch, args.model
-    )
-    sigma = _load_or_build_sigma_records(
-        args.output_dir, args.skip_sigma_fetch, args.model
-    )
+    attack = _load_or_build_attack_records(args.output_dir, args.skip_attack_fetch, args.model)
+    sigma = _load_or_build_sigma_records(args.output_dir, args.skip_sigma_fetch, args.model)
 
     # Persist sidecars for subsequent --skip-*-fetch runs and for
     # inspection. Idempotent: same input → same output.
@@ -281,8 +257,7 @@ def main(argv: list[str] | None = None) -> int:
 
     merged = _merge_and_sort(attack, sigma)
     print(
-        f"Merged corpus: {len(attack)} ATT&CK + {len(sigma)} Sigma "
-        f"= {len(merged)} records",
+        f"Merged corpus: {len(attack)} ATT&CK + {len(sigma)} Sigma = {len(merged)} records",
         file=sys.stderr,
     )
 

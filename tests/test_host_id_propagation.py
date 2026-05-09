@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-import pytest
 import yaml
 
 from server.audit import append_audit_entry
@@ -60,6 +59,7 @@ def _make_case_dir(tmp_path: Path) -> Path:
     class _Stub:
         def model_dump_json(self):
             return json.dumps({"ok": True})
+
     append_audit_entry(
         case_dir=case_dir,
         tool_name="vol_pslist",
@@ -152,9 +152,7 @@ class TestRecordFindingHostId:
         entry = json.loads(line)
         assert entry["finding"]["host_id"] == "nfury"
 
-    def test_record_finding_without_host_id_is_backward_compat(
-        self, tmp_path: Path
-    ):
+    def test_record_finding_without_host_id_is_backward_compat(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         df = record_finding(
             evidence_id=VALID_EVIDENCE_ID,

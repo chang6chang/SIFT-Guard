@@ -42,7 +42,6 @@ from pathlib import Path
 
 from server.schemas import (
     CorrelationChainEntry,
-    CorrelationPayload,
     CorroboratesCorrelation,
     ContradictsCorrelation,
     RequestFollowupCorrelation,
@@ -123,9 +122,7 @@ def append_correlation_entry(
         correlation=correlation.model_dump(mode="json"),
         prev_correlation_hash=prev_correlation_hash,
     )
-    this_correlation_hash = (
-        CorrelationChainEntry.compute_this_correlation_hash(**chained_fields)
-    )
+    this_correlation_hash = CorrelationChainEntry.compute_this_correlation_hash(**chained_fields)
 
     entry = CorrelationChainEntry(
         line_number=line_number,

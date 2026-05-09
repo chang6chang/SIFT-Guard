@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import pytest
 import yaml
 from pydantic import BaseModel
 
@@ -101,9 +100,7 @@ def _draft(confidence: str = "MEDIUM") -> DraftFinding:
             "construct in-memory. Confidence is parameterized by the "
             "test scenario."
         ),
-        evidence_refs=[
-            EvidenceRef(source_tool="vol_pslist", audit_line=1, detail="seed")
-        ],
+        evidence_refs=[EvidenceRef(source_tool="vol_pslist", audit_line=1, detail="seed")],
         created_at=_NOW,
         tool_invocations=["vol_pslist:1"],
     )
@@ -138,6 +135,7 @@ def _real_update_via_kwargs(case_cwd: Path, args: dict[str, Any]) -> dict[str, A
 def _make_validator_stub(case_dir: Path, correlations_per_iter: list[list]):
     """Returns a callable matching dispatch_validator that writes the
     given correlations to correlations.jsonl + audit chain."""
+
     class _Stub(BaseModel):
         ok: str = "ok"
 
@@ -172,6 +170,7 @@ def _make_analyst_stub(case_dir: Path, drafts_per_analyst: dict[str, list[DraftF
     canned DraftFinding entries on the first call to each analyst.
     Subsequent calls (iter 2+) write nothing — simulating the analyst
     re-running and finding nothing new."""
+
     class _Stub(BaseModel):
         ok: str = "ok"
 
@@ -407,9 +406,7 @@ class TestRequestFollowupConsumed:
             focus_context: dict[str, Any] | None = None,
         ) -> DispatchResult:
             if iteration_number == 2:
-                captured_iter2_calls.append(
-                    {"agent": agent, "focus_context": focus_context}
-                )
+                captured_iter2_calls.append({"agent": agent, "focus_context": focus_context})
             if agent == "process_analyst" and "process_analyst" not in seen:
                 append_finding_entry(case_dir, finding)
                 append_audit_entry(

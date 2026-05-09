@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -16,9 +15,7 @@ from server.tools.disk import disk_registry
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-REGRIPPER_FIXTURE = (
-    PROJECT_ROOT / "tests" / "fixtures" / "disk_regripper_sample.txt"
-)
+REGRIPPER_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "disk_regripper_sample.txt"
 
 VALID_EVIDENCE_ID = "550e8400-e29b-41d4-a716-446655440000"
 VALID_SHA256 = "eb33bdf63730858a805463d171245b233335dd6d89ed458bc681f7d282e10563"
@@ -59,9 +56,7 @@ def _make_case_dir(
 
 
 class TestDiskRegistryResolution:
-    def test_evidence_id_not_in_case_yaml_raises_sanitized_value_error(
-        self, tmp_path: Path
-    ):
+    def test_evidence_id_not_in_case_yaml_raises_sanitized_value_error(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         bogus = "00000000-0000-4000-8000-000000000000"
         with pytest.raises(ValueError) as exc_info:
@@ -74,21 +69,22 @@ class TestDiskRegistryHappyPath:
         case_dir = _make_case_dir(tmp_path)
         fixture_stdout = REGRIPPER_FIXTURE.read_text(encoding="utf-8")
 
-        with patch(
-            "server.tools.disk.mount_disk_image",
-            return_value="/mnt/sift_disk",
-        ), patch(
-            "server.tools.disk.run_regripper",
-            return_value=(
-                fixture_stdout,
-                "rip.pl -r /mnt/sift_disk/Windows/System32/config/SYSTEM -f system",
-                12.0,
-                "rip.pl",
+        with (
+            patch(
+                "server.tools.disk.mount_disk_image",
+                return_value="/mnt/sift_disk",
+            ),
+            patch(
+                "server.tools.disk.run_regripper",
+                return_value=(
+                    fixture_stdout,
+                    "rip.pl -r /mnt/sift_disk/Windows/System32/config/SYSTEM -f system",
+                    12.0,
+                    "rip.pl",
+                ),
             ),
         ):
-            summary = disk_registry(
-                VALID_EVIDENCE_ID, case_dir=str(case_dir)
-            )
+            summary = disk_registry(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
         ref = summary.extraction
         assert ref.plugin_name == "disk.registry.Registry"
@@ -109,18 +105,14 @@ class TestDiskRegistryHappyPath:
         assert summary.untrusted_fields == ["top_key_paths_keys"]
         assert len(summary.model_dump_json().encode("utf-8")) <= 10_000
 
-        loaded_ref, parsed = load_extraction(
-            case_dir, VALID_EVIDENCE_ID, "disk.registry.Registry"
-        )
+        loaded_ref, parsed = load_extraction(case_dir, VALID_EVIDENCE_ID, "disk.registry.Registry")
         keys = parsed["keys"]
         assert len(keys) == 5
         # value_data is at-most-500-chars per the schema cap.
         for k in keys:
             assert len(k["value_data"]) <= 500
         # Confirm one of the persistence keys was captured.
-        evil_loader = next(
-            (k for k in keys if k["value_name"] == "EvilLoader"), None
-        )
+        evil_loader = next((k for k in keys if k["value_name"] == "EvilLoader"), None)
         assert evil_loader is not None
         assert evil_loader["hive_name"] == "SOFTWARE"
         assert "loader.exe" in evil_loader["value_data"]

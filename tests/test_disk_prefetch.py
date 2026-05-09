@@ -16,9 +16,7 @@ from server.tools.disk import disk_prefetch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-PREFETCH_FIXTURE = (
-    PROJECT_ROOT / "tests" / "fixtures" / "disk_prefetch_sample.jsonl"
-)
+PREFETCH_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "disk_prefetch_sample.jsonl"
 
 VALID_EVIDENCE_ID = "550e8400-e29b-41d4-a716-446655440000"
 VALID_SHA256 = "eb33bdf63730858a805463d171245b233335dd6d89ed458bc681f7d282e10563"
@@ -60,9 +58,7 @@ def _make_case_dir(
 
 
 class TestDiskPrefetchResolution:
-    def test_evidence_id_not_in_case_yaml_raises_sanitized_value_error(
-        self, tmp_path: Path
-    ):
+    def test_evidence_id_not_in_case_yaml_raises_sanitized_value_error(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         bogus = "00000000-0000-4000-8000-000000000000"
         with pytest.raises(ValueError) as exc_info:
@@ -70,9 +66,7 @@ class TestDiskPrefetchResolution:
         assert str(exc_info.value) == "evidence_id not found in CASE.yaml"
 
     def test_wrong_artifact_class_rejected(self, tmp_path: Path):
-        case_dir = _make_case_dir(
-            tmp_path, artifact_class=ArtifactClass.MEMORY_IMAGE
-        )
+        case_dir = _make_case_dir(tmp_path, artifact_class=ArtifactClass.MEMORY_IMAGE)
         with pytest.raises(ValueError) as exc_info:
             disk_prefetch(VALID_EVIDENCE_ID, case_dir=str(case_dir))
         assert str(exc_info.value) == "evidence is not a disk image"
@@ -83,12 +77,20 @@ class TestDiskPrefetchHappyPath:
         case_dir = _make_case_dir(tmp_path)
         fixture_stdout = PREFETCH_FIXTURE.read_text(encoding="utf-8")
 
-        with patch(
-            "server.tools.disk.mount_disk_image",
-            return_value="/mnt/sift_disk",
-        ), patch(
-            "server.tools.disk.run_prefetch",
-            return_value=(fixture_stdout, "pf2json /mnt/sift_disk/Windows/Prefetch", 5.0, "pf2json"),
+        with (
+            patch(
+                "server.tools.disk.mount_disk_image",
+                return_value="/mnt/sift_disk",
+            ),
+            patch(
+                "server.tools.disk.run_prefetch",
+                return_value=(
+                    fixture_stdout,
+                    "pf2json /mnt/sift_disk/Windows/Prefetch",
+                    5.0,
+                    "pf2json",
+                ),
+            ),
         ):
             summary = disk_prefetch(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
@@ -114,9 +116,7 @@ class TestDiskPrefetchHappyPath:
         assert len(summary.model_dump_json().encode("utf-8")) <= 10_000
 
         # Stored extraction is loadable.
-        loaded_ref, parsed = load_extraction(
-            case_dir, VALID_EVIDENCE_ID, "disk.prefetch.Prefetch"
-        )
+        loaded_ref, parsed = load_extraction(case_dir, VALID_EVIDENCE_ID, "disk.prefetch.Prefetch")
         assert loaded_ref.cached is True
         entries = parsed["entries"]
         assert len(entries) == 3
@@ -126,8 +126,6 @@ class TestDiskPrefetchHappyPath:
         # Audit success line under the bare tool_name.
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
         audit_lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
+            json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()
         ]
-        assert any(l["tool_name"] == "disk_prefetch" for l in audit_lines)
+        assert any(entry["tool_name"] == "disk_prefetch" for entry in audit_lines)

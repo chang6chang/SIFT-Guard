@@ -86,18 +86,8 @@ class TestWriteExtraction:
             runtime_seconds=14.7,
         )
 
-        json_path = (
-            tmp_path
-            / "extractions"
-            / EVIDENCE_ID
-            / "windows.pslist.PsList.json"
-        )
-        sidecar_path = (
-            tmp_path
-            / "extractions"
-            / EVIDENCE_ID
-            / "windows.pslist.PsList.sha256"
-        )
+        json_path = tmp_path / "extractions" / EVIDENCE_ID / "windows.pslist.PsList.json"
+        sidecar_path = tmp_path / "extractions" / EVIDENCE_ID / "windows.pslist.PsList.sha256"
         chain_path = tmp_path / "extractions.jsonl"
 
         assert json_path.exists()
@@ -137,9 +127,7 @@ class TestWriteExtraction:
                 runtime_seconds=14.7,
             )
 
-    def test_netscan_result_uses_connections_list_field(
-        self, tmp_path: Path
-    ):
+    def test_netscan_result_uses_connections_list_field(self, tmp_path: Path):
         record = NetworkRecord(
             proto="TCPv4",
             local_addr="0.0.0.0",
@@ -165,10 +153,7 @@ class TestWriteExtraction:
 
 class TestExtractionExists:
     def test_false_when_nothing_written(self, tmp_path: Path):
-        assert (
-            extraction_exists(tmp_path, EVIDENCE_ID, "windows.pslist.PsList")
-            is False
-        )
+        assert extraction_exists(tmp_path, EVIDENCE_ID, "windows.pslist.PsList") is False
 
     def test_true_after_write(self, tmp_path: Path):
         write_extraction(
@@ -178,10 +163,7 @@ class TestExtractionExists:
             _pslist_result([_process_record(4)]),
             runtime_seconds=14.7,
         )
-        assert (
-            extraction_exists(tmp_path, EVIDENCE_ID, "windows.pslist.PsList")
-            is True
-        )
+        assert extraction_exists(tmp_path, EVIDENCE_ID, "windows.pslist.PsList") is True
 
     def test_partial_state_treated_as_missing(self, tmp_path: Path):
         # Write all three artifacts, then delete the .sha256 sidecar
@@ -193,18 +175,10 @@ class TestExtractionExists:
             _pslist_result([_process_record(4)]),
             runtime_seconds=14.7,
         )
-        sidecar = (
-            tmp_path
-            / "extractions"
-            / EVIDENCE_ID
-            / "windows.pslist.PsList.sha256"
-        )
+        sidecar = tmp_path / "extractions" / EVIDENCE_ID / "windows.pslist.PsList.sha256"
         sidecar.unlink()
         # Partial state -> exists() is False, callers fall back to fresh.
-        assert (
-            extraction_exists(tmp_path, EVIDENCE_ID, "windows.pslist.PsList")
-            is False
-        )
+        assert extraction_exists(tmp_path, EVIDENCE_ID, "windows.pslist.PsList") is False
 
 
 class TestLoadExtraction:
@@ -217,9 +191,7 @@ class TestLoadExtraction:
             runtime_seconds=14.7,
         )
 
-        ref, parsed = load_extraction(
-            tmp_path, EVIDENCE_ID, "windows.pslist.PsList"
-        )
+        ref, parsed = load_extraction(tmp_path, EVIDENCE_ID, "windows.pslist.PsList")
         assert ref.cached is True
         assert ref.runtime_seconds is None
         assert ref.record_count == 2
@@ -243,12 +215,7 @@ class TestLoadExtraction:
         )
         # Tamper with the .json: append a single space. The sidecar and
         # chain still reference the old hash; load must reject.
-        json_path = (
-            tmp_path
-            / "extractions"
-            / EVIDENCE_ID
-            / "windows.pslist.PsList.json"
-        )
+        json_path = tmp_path / "extractions" / EVIDENCE_ID / "windows.pslist.PsList.json"
         with json_path.open("a", encoding="utf-8") as f:
             f.write(" ")
         with pytest.raises(HashMismatchError):
@@ -262,12 +229,7 @@ class TestLoadExtraction:
             _pslist_result([_process_record(4)]),
             runtime_seconds=14.7,
         )
-        sidecar = (
-            tmp_path
-            / "extractions"
-            / EVIDENCE_ID
-            / "windows.pslist.PsList.sha256"
-        )
+        sidecar = tmp_path / "extractions" / EVIDENCE_ID / "windows.pslist.PsList.sha256"
         # Replace the sidecar with a wrong-but-well-formed hash.
         sidecar.write_text("0" * 64 + "\n")
         with pytest.raises(HashMismatchError):
@@ -289,23 +251,18 @@ class TestLoadExtraction:
         assert ref.cached is False
 
         # Reload — cached ref must carry the same audit_line.
-        loaded_ref, _ = load_extraction(
-            tmp_path, EVIDENCE_ID, "windows.pslist.PsList"
-        )
+        loaded_ref, _ = load_extraction(tmp_path, EVIDENCE_ID, "windows.pslist.PsList")
         assert loaded_ref.audit_line == 42
         assert loaded_ref.cached is True
 
         # Chain entry on disk also carries audit_line.
         from server.extractions_log import find_extraction_entry
-        chain_entry = find_extraction_entry(
-            tmp_path, EVIDENCE_ID, "windows.pslist.PsList"
-        )
+
+        chain_entry = find_extraction_entry(tmp_path, EVIDENCE_ID, "windows.pslist.PsList")
         assert chain_entry is not None
         assert chain_entry.audit_line == 42
 
-    def test_legacy_chain_entry_without_audit_line_loads_as_none(
-        self, tmp_path: Path
-    ):
+    def test_legacy_chain_entry_without_audit_line_loads_as_none(self, tmp_path: Path):
         """Load a chain entry written without `audit_line` (the
         pre-2026-05-06 schema) and confirm it surfaces as None on the
         ExtractionRef. This pins the migration semantic: no
@@ -323,6 +280,7 @@ class TestLoadExtraction:
         result = _pslist_result([_process_record(4), _process_record(100)])
         payload = result.model_dump_json().encode("utf-8")
         import hashlib
+
         sha = hashlib.sha256(payload).hexdigest()
 
         case_dir = tmp_path
@@ -358,16 +316,11 @@ class TestLoadExtraction:
         # field, so its hash differs. For load_extraction's purposes,
         # only the .json sha (matched against sidecar + chain) is
         # verified; this test focuses on the audit_line=None surfacing.
-        (case_dir / "extractions.jsonl").write_text(
-            _json.dumps(legacy, default=str) + "\n"
-        )
+        (case_dir / "extractions.jsonl").write_text(_json.dumps(legacy, default=str) + "\n")
 
-        loaded_ref, _ = load_extraction(
-            case_dir, EVIDENCE_ID, "windows.pslist.PsList"
-        )
+        loaded_ref, _ = load_extraction(case_dir, EVIDENCE_ID, "windows.pslist.PsList")
         assert loaded_ref.audit_line is None, (
-            "legacy chain entries without audit_line must load as None — "
-            "no retroactive backfill"
+            "legacy chain entries without audit_line must load as None — no retroactive backfill"
         )
 
     def test_chain_line_persisted_runtime_seconds(self, tmp_path: Path):
@@ -386,8 +339,6 @@ class TestLoadExtraction:
 
         from server.extractions_log import find_extraction_entry
 
-        chain_entry = find_extraction_entry(
-            tmp_path, EVIDENCE_ID, "windows.pslist.PsList"
-        )
+        chain_entry = find_extraction_entry(tmp_path, EVIDENCE_ID, "windows.pslist.PsList")
         assert chain_entry is not None
         assert chain_entry.runtime_seconds == 14.7

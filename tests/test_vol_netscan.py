@@ -26,7 +26,7 @@ import yaml
 
 from server.extractions import load_extraction
 from server.schemas import ArtifactClass, EvidenceRecord
-from server.tools.memory import translate_to_vm_path, vol_netscan
+from server.tools.memory import vol_netscan
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -86,26 +86,41 @@ def _bad_record_json() -> str:
         [
             {
                 "Created": "2024-01-01T00:00:00+00:00",
-                "ForeignAddr": "0.0.0.0", "ForeignPort": 0,
-                "LocalAddr": "0.0.0.0", "LocalPort": 80,
-                "Offset": 100, "Owner": "System", "PID": 4,
-                "Proto": "TCPv4", "State": "LISTENING",
+                "ForeignAddr": "0.0.0.0",
+                "ForeignPort": 0,
+                "LocalAddr": "0.0.0.0",
+                "LocalPort": 80,
+                "Offset": 100,
+                "Owner": "System",
+                "PID": 4,
+                "Proto": "TCPv4",
+                "State": "LISTENING",
                 "__children": [],
             },
             {
                 "Created": "2024-01-01T00:00:00+00:00",
-                "ForeignAddr": "0.0.0.0", "ForeignPort": 0,
-                "LocalAddr": "0.0.0.0", "LocalPort": -1,
-                "Offset": 200, "Owner": "Bad", "PID": 99,
-                "Proto": "TCPv4", "State": "LISTENING",
+                "ForeignAddr": "0.0.0.0",
+                "ForeignPort": 0,
+                "LocalAddr": "0.0.0.0",
+                "LocalPort": -1,
+                "Offset": 200,
+                "Owner": "Bad",
+                "PID": 99,
+                "Proto": "TCPv4",
+                "State": "LISTENING",
                 "__children": [],
             },
             {
                 "Created": "2024-01-01T00:00:00+00:00",
-                "ForeignAddr": "0.0.0.0", "ForeignPort": 0,
-                "LocalAddr": "0.0.0.0", "LocalPort": 443,
-                "Offset": 300, "Owner": "System", "PID": 4,
-                "Proto": "TCPv4", "State": "LISTENING",
+                "ForeignAddr": "0.0.0.0",
+                "ForeignPort": 0,
+                "LocalAddr": "0.0.0.0",
+                "LocalPort": 443,
+                "Offset": 300,
+                "Owner": "System",
+                "PID": 4,
+                "Proto": "TCPv4",
+                "State": "LISTENING",
                 "__children": [],
             },
         ]
@@ -118,9 +133,7 @@ def _bad_record_json() -> str:
 
 
 class TestVolNetscanResolution:
-    def test_evidence_id_not_in_case_yaml_raises_sanitized_value_error(
-        self, tmp_path: Path
-    ):
+    def test_evidence_id_not_in_case_yaml_raises_sanitized_value_error(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         bogus_id = "00000000-0000-4000-8000-000000000000"
         with pytest.raises(ValueError) as exc_info:
@@ -128,9 +141,7 @@ class TestVolNetscanResolution:
         assert str(exc_info.value) == "evidence_id not found in CASE.yaml"
         assert bogus_id not in str(exc_info.value)
 
-    def test_artifact_class_unknown_rejected_with_sanitized_message(
-        self, tmp_path: Path
-    ):
+    def test_artifact_class_unknown_rejected_with_sanitized_message(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path, artifact_class=ArtifactClass.UNKNOWN)
         with pytest.raises(ValueError) as exc_info:
             vol_netscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
@@ -147,9 +158,7 @@ _GENESIS_PREV_HASH = "0" * 64
 
 
 class TestVolNetscanRejectionAudit:
-    def test_evidence_not_found_writes_rejection_chain_line(
-        self, tmp_path: Path
-    ):
+    def test_evidence_not_found_writes_rejection_chain_line(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         bogus_id = "00000000-0000-4000-8000-000000000000"
 
@@ -158,11 +167,7 @@ class TestVolNetscanRejectionAudit:
 
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
         assert audit_path.exists(), "rejection must extend the chain"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
         entry = lines[0]
         assert entry["tool_name"] == "vol_netscan:rejected_evidence_not_found"
@@ -171,43 +176,25 @@ class TestVolNetscanRejectionAudit:
         assert entry["prev_line_hash"] == _GENESIS_PREV_HASH
         assert len(entry["this_line_hash"]) == 64
 
-    def test_wrong_artifact_class_writes_rejection_chain_line(
-        self, tmp_path: Path
-    ):
+    def test_wrong_artifact_class_writes_rejection_chain_line(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path, artifact_class=ArtifactClass.UNKNOWN)
         with pytest.raises(ValueError):
             vol_netscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
-        assert (
-            lines[0]["tool_name"]
-            == "vol_netscan:rejected_wrong_artifact_class"
-        )
+        assert lines[0]["tool_name"] == "vol_netscan:rejected_wrong_artifact_class"
 
-    def test_path_translation_failed_writes_rejection_chain_line(
-        self, tmp_path: Path
-    ):
+    def test_path_translation_failed_writes_rejection_chain_line(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path, absolute_path="/tmp/Foo.raw")
         with pytest.raises(ValueError) as exc_info:
             vol_netscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
         assert "/tmp/Foo.raw" not in str(exc_info.value)
         assert "expected host prefix" in str(exc_info.value)
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
-        assert (
-            lines[0]["tool_name"]
-            == "vol_netscan:rejected_path_translation_failed"
-        )
+        assert lines[0]["tool_name"] == "vol_netscan:rejected_path_translation_failed"
 
 
 # ---------------------------------------------------------------------------
@@ -217,9 +204,7 @@ class TestVolNetscanRejectionAudit:
 
 
 class TestVolNetscanHappyPath:
-    def test_returns_netscan_result_with_all_five_protocol_cases(
-        self, tmp_path: Path
-    ):
+    def test_returns_netscan_result_with_all_five_protocol_cases(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         fixture_stdout = NETSCAN_FIXTURE.read_text(encoding="utf-8")
         # Runtime > psscan's mock value to surface a copy-paste bug if
@@ -230,12 +215,13 @@ class TestVolNetscanHappyPath:
             "-f /mnt/rocba/Rocba-Memory.raw -r json windows.netscan.NetScan"
         )
 
-        with patch(
-            "server.tools.memory.get_vol_version", return_value="2.27.0"
-        ), patch(
-            "server.tools.memory.run_vol_plugin",
-            return_value=(fixture_stdout, fake_command, 537.4),
-        ) as mock_run:
+        with (
+            patch("server.tools.memory.get_vol_version", return_value="2.27.0"),
+            patch(
+                "server.tools.memory.run_vol_plugin",
+                return_value=(fixture_stdout, fake_command, 537.4),
+            ) as mock_run,
+        ):
             summary = vol_netscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
         # Tier-1 contract: NetscanSummary + ExtractionRef returned;
@@ -270,9 +256,7 @@ class TestVolNetscanHappyPath:
         assert summary.untrusted_fields == []
 
         # Stored extraction has the full connection list.
-        _, parsed = load_extraction(
-            case_dir, VALID_EVIDENCE_ID, "windows.netscan.NetScan"
-        )
+        _, parsed = load_extraction(case_dir, VALID_EVIDENCE_ID, "windows.netscan.NetScan")
         assert parsed["plugin_name"] == "windows.netscan.NetScan"
         assert parsed["volatility_version"] == "2.27.0"
         assert parsed["runtime_seconds"] == 537.4
@@ -334,34 +318,27 @@ class TestVolNetscanHappyPath:
 
 
 class TestVolNetscanRecordWarnings:
-    def test_one_bad_record_logged_as_warning_others_preserved(
-        self, tmp_path: Path
-    ):
+    def test_one_bad_record_logged_as_warning_others_preserved(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
-        with patch(
-            "server.tools.memory.get_vol_version", return_value="2.27.0"
-        ), patch(
-            "server.tools.memory.run_vol_plugin",
-            return_value=(_bad_record_json(), "ssh ... vol ...", 540.0),
+        with (
+            patch("server.tools.memory.get_vol_version", return_value="2.27.0"),
+            patch(
+                "server.tools.memory.run_vol_plugin",
+                return_value=(_bad_record_json(), "ssh ... vol ...", 540.0),
+            ),
         ):
             summary = vol_netscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
         # Two valid records survived, the LocalPort=-1 row is gone.
         assert summary.extraction.record_count == 2
-        _, parsed = load_extraction(
-            case_dir, VALID_EVIDENCE_ID, "windows.netscan.NetScan"
-        )
+        _, parsed = load_extraction(case_dir, VALID_EVIDENCE_ID, "windows.netscan.NetScan")
         assert {c["local_port"] for c in parsed["connections"]} == {80, 443}
 
         # Audit log: 1 warning + 1 main result line, in that order.
         # tool_name distinct from the other plugins' warnings so a
         # chain reader can grep distinctly.
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 2
         assert lines[0]["tool_name"] == "vol_netscan:record_validation_warning"
         assert lines[0]["evidence_id"] == VALID_EVIDENCE_ID
@@ -375,24 +352,19 @@ class TestVolNetscanRecordWarnings:
 
 
 class TestAuditChain:
-    def test_audit_chain_extends_from_existing_on_disk_chain(
-        self, tmp_path: Path
-    ):
+    def test_audit_chain_extends_from_existing_on_disk_chain(self, tmp_path: Path):
         on_disk_audit_before = ON_DISK_AUDIT_LOG.read_bytes()
 
         case_dir = tmp_path / "case-data"
         (case_dir / "audit").mkdir(parents=True)
         (case_dir / "evidence").mkdir(parents=True)
         shutil.copy(ON_DISK_CASE_YAML, case_dir / "CASE.yaml")
-        shutil.copy(
-            ON_DISK_AUDIT_LOG, case_dir / "audit" / "sift-guard-mcp.jsonl"
-        )
+        shutil.copy(ON_DISK_AUDIT_LOG, case_dir / "audit" / "sift-guard-mcp.jsonl")
 
         case_yaml_path = case_dir / "CASE.yaml"
         doc = yaml.safe_load(case_yaml_path.read_text())
         rocba_entry = next(
-            e for e in doc["evidence"]
-            if e["original_filename"] == "Rocba-Memory.raw"
+            e for e in doc["evidence"] if e["original_filename"] == "Rocba-Memory.raw"
         )
         rocba_evidence_id = rocba_entry["evidence_id"]
         fake_rocba = case_dir / "evidence" / "Rocba-Memory.raw"
@@ -400,40 +372,31 @@ class TestAuditChain:
         rocba_entry["absolute_path"] = str(fake_rocba)
         case_yaml_path.write_text(yaml.safe_dump(doc, sort_keys=False))
 
-        seeded_lines = (
-            (case_dir / "audit" / "sift-guard-mcp.jsonl")
-            .read_text()
-            .splitlines()
-        )
+        seeded_lines = (case_dir / "audit" / "sift-guard-mcp.jsonl").read_text().splitlines()
         seeded_count = len(seeded_lines)
         last_seeded = json.loads(seeded_lines[-1])
         expected_prev = last_seeded["this_line_hash"]
 
         fixture_stdout = NETSCAN_FIXTURE.read_text(encoding="utf-8")
-        with patch(
-            "server.tools.memory.get_vol_version", return_value="2.27.0"
-        ), patch(
-            "server.tools.memory.run_vol_plugin",
-            return_value=(fixture_stdout, "ssh ... vol ...", 540.0),
+        with (
+            patch("server.tools.memory.get_vol_version", return_value="2.27.0"),
+            patch(
+                "server.tools.memory.run_vol_plugin",
+                return_value=(fixture_stdout, "ssh ... vol ...", 540.0),
+            ),
         ):
             vol_netscan(rocba_evidence_id, case_dir=str(case_dir))
 
-        new_lines = (
-            (case_dir / "audit" / "sift-guard-mcp.jsonl")
-            .read_text()
-            .splitlines()
-        )
+        new_lines = (case_dir / "audit" / "sift-guard-mcp.jsonl").read_text().splitlines()
         assert len(new_lines) == seeded_count + 1
         new_entry = json.loads(new_lines[-1])
         assert new_entry["tool_name"] == "vol_netscan"
         assert new_entry["evidence_id"] == rocba_evidence_id
         assert new_entry["prev_line_hash"] == expected_prev, (
-            "vol_netscan's audit line failed to link to the prior "
-            "chain — chain is broken"
+            "vol_netscan's audit line failed to link to the prior chain — chain is broken"
         )
         assert new_entry["line_number"] == seeded_count + 1
 
         assert ON_DISK_AUDIT_LOG.read_bytes() == on_disk_audit_before, (
-            "on-disk audit log was modified by the test — isolation "
-            "is broken"
+            "on-disk audit log was modified by the test — isolation is broken"
         )

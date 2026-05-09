@@ -16,7 +16,6 @@ class via session-scoped fixtures (see TestOnDiskIsolation).
 from __future__ import annotations
 
 import json
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -135,11 +134,7 @@ def _good_args(**overrides):
 def _read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    return [
-        json.loads(l)
-        for l in path.read_text().splitlines()
-        if l.strip()
-    ]
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -150,9 +145,7 @@ def _read_jsonl(path: Path) -> list[dict]:
 class TestRecordFindingHappyPath:
     def test_writes_one_finding_line_and_one_audit_line(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
-        finding = record_finding(
-            **_good_args(), case_dir=str(case_dir)
-        )
+        finding = record_finding(**_good_args(), case_dir=str(case_dir))
 
         # Findings chain: line 1, full DraftFinding payload, valid hash.
         findings = _read_jsonl(case_dir / "findings.jsonl")
@@ -197,9 +190,7 @@ class TestRecordFindingHappyPath:
         finding2 = record_finding(**_good_args(), case_dir=str(case_dir))
         assert finding.finding_id != finding2.finding_id
 
-    def test_tool_invocations_derived_from_evidence_refs(
-        self, tmp_path: Path
-    ):
+    def test_tool_invocations_derived_from_evidence_refs(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
         # Add a second seeded audit line (vol_netscan at line 2) so a
         # multi-ref finding has two distinct sources.
@@ -218,25 +209,24 @@ class TestRecordFindingHappyPath:
 
         refs = [
             EvidenceRef(
-                source_tool="vol_pslist", audit_line=1,
+                source_tool="vol_pslist",
+                audit_line=1,
                 detail="PID 4321 powershell.exe",
             ),
             EvidenceRef(
-                source_tool="vol_netscan", audit_line=2,
+                source_tool="vol_netscan",
+                audit_line=2,
                 detail="TCPv4 LISTENING 0.0.0.0:65500",
             ),
             # Duplicate to confirm dedup
             EvidenceRef(
-                source_tool="vol_pslist", audit_line=1,
+                source_tool="vol_pslist",
+                audit_line=1,
                 detail="parent svchost.exe PID 1244",
             ),
         ]
-        finding = record_finding(
-            **_good_args(evidence_refs=refs), case_dir=str(case_dir)
-        )
-        assert finding.tool_invocations == [
-            "vol_netscan:2", "vol_pslist:1"
-        ]
+        finding = record_finding(**_good_args(evidence_refs=refs), case_dir=str(case_dir))
+        assert finding.tool_invocations == ["vol_netscan:2", "vol_pslist:1"]
 
 
 # ---------------------------------------------------------------------------
@@ -260,9 +250,7 @@ class TestRejectEvidenceNotFound:
         # Audit chain extended with rejection line; findings.jsonl
         # never created (rejection precedes the findings write).
         audit_lines = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit_lines[-1]["tool_name"] == (
-            "record_finding:rejected_evidence_not_found"
-        )
+        assert audit_lines[-1]["tool_name"] == ("record_finding:rejected_evidence_not_found")
         # Operator-visible: bogus id IS captured in the audit log.
         assert audit_lines[-1]["evidence_id"] == bogus_id
         assert not (case_dir / "findings.jsonl").exists()
@@ -291,9 +279,7 @@ class TestRejectUnknownAnalyst:
         assert "pcap_analyst" not in str(exc_info.value)
 
         audit_lines = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit_lines[-1]["tool_name"] == (
-            "record_finding:rejected_unknown_analyst"
-        )
+        assert audit_lines[-1]["tool_name"] == ("record_finding:rejected_unknown_analyst")
         assert not (case_dir / "findings.jsonl").exists()
 
 
@@ -314,9 +300,7 @@ class TestRejectDisputedSelfMarked:
         assert "validator" in str(exc_info.value)
 
         audit_lines = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit_lines[-1]["tool_name"] == (
-            "record_finding:rejected_disputed_self_marked"
-        )
+        assert audit_lines[-1]["tool_name"] == ("record_finding:rejected_disputed_self_marked")
         assert not (case_dir / "findings.jsonl").exists()
 
 
@@ -330,7 +314,8 @@ class TestRejectInvalidAuditRef:
         case_dir = _seed_case_dir(tmp_path)
         bad_refs = [
             EvidenceRef(
-                source_tool="vol_pslist", audit_line=999,
+                source_tool="vol_pslist",
+                audit_line=999,
                 detail="PID 4321 — line 999 does not exist",
             )
         ]
@@ -342,21 +327,18 @@ class TestRejectInvalidAuditRef:
         assert "evidence_ref does not match audit chain" in str(exc_info.value)
 
         audit_lines = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit_lines[-1]["tool_name"] == (
-            "record_finding:rejected_invalid_audit_ref"
-        )
+        assert audit_lines[-1]["tool_name"] == ("record_finding:rejected_invalid_audit_ref")
         assert not (case_dir / "findings.jsonl").exists()
 
-    def test_source_tool_does_not_match_actual_audit_entry(
-        self, tmp_path: Path
-    ):
+    def test_source_tool_does_not_match_actual_audit_entry(self, tmp_path: Path):
         # The seeded line 1 is `vol_pslist`. Pointing source_tool at
         # vol_netscan must reject — the finding can't claim a tool
         # call that didn't fire.
         case_dir = _seed_case_dir(tmp_path)
         bad_refs = [
             EvidenceRef(
-                source_tool="vol_netscan", audit_line=1,
+                source_tool="vol_netscan",
+                audit_line=1,
                 detail="line 1 is actually vol_pslist not vol_netscan",
             )
         ]
@@ -366,9 +348,7 @@ class TestRejectInvalidAuditRef:
                 case_dir=str(case_dir),
             )
         audit_lines = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit_lines[-1]["tool_name"] == (
-            "record_finding:rejected_invalid_audit_ref"
-        )
+        assert audit_lines[-1]["tool_name"] == ("record_finding:rejected_invalid_audit_ref")
 
 
 # ---------------------------------------------------------------------------
@@ -390,9 +370,7 @@ class TestRejectSchemaValidation:
         assert "too short" not in str(exc_info.value)
 
         audit_lines = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit_lines[-1]["tool_name"] == (
-            "record_finding:rejected_schema_validation_failed"
-        )
+        assert audit_lines[-1]["tool_name"] == ("record_finding:rejected_schema_validation_failed")
 
     def test_description_too_long(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
@@ -403,9 +381,7 @@ class TestRejectSchemaValidation:
                 case_dir=str(case_dir),
             )
         audit_lines = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit_lines[-1]["tool_name"] == (
-            "record_finding:rejected_schema_validation_failed"
-        )
+        assert audit_lines[-1]["tool_name"] == ("record_finding:rejected_schema_validation_failed")
 
     def test_evidence_refs_empty_list_rejected(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
@@ -415,9 +391,7 @@ class TestRejectSchemaValidation:
                 case_dir=str(case_dir),
             )
         audit_lines = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit_lines[-1]["tool_name"] == (
-            "record_finding:rejected_schema_validation_failed"
-        )
+        assert audit_lines[-1]["tool_name"] == ("record_finding:rejected_schema_validation_failed")
 
 
 # ---------------------------------------------------------------------------
@@ -430,20 +404,18 @@ class TestFindingsChainContinuity:
     def test_two_consecutive_findings_link(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)
         # First finding.
-        record_finding(**_good_args(title="First finding A B C D E"),
-                       case_dir=str(case_dir))
+        record_finding(**_good_args(title="First finding A B C D E"), case_dir=str(case_dir))
         # Second finding.
-        record_finding(**_good_args(title="Second finding F G H I J"),
-                       case_dir=str(case_dir))
+        record_finding(**_good_args(title="Second finding F G H I J"), case_dir=str(case_dir))
 
         findings = _read_jsonl(case_dir / "findings.jsonl")
         assert len(findings) == 2
         assert findings[0]["line_number"] == 1
         assert findings[0]["prev_finding_hash"] == _GENESIS_PREV_HASH
         assert findings[1]["line_number"] == 2
-        assert findings[1]["prev_finding_hash"] == findings[0][
-            "this_finding_hash"
-        ], "second finding must link to the first"
+        assert findings[1]["prev_finding_hash"] == findings[0]["this_finding_hash"], (
+            "second finding must link to the first"
+        )
 
     def test_rejection_does_not_extend_findings_chain(self, tmp_path: Path):
         # Rejections write to the audit chain but NOT to findings.jsonl.
@@ -467,9 +439,7 @@ class TestFindingsChainContinuity:
 
         findings = _read_jsonl(case_dir / "findings.jsonl")
         assert len(findings) == 2  # rejection didn't write
-        assert findings[1]["prev_finding_hash"] == findings[0][
-            "this_finding_hash"
-        ]
+        assert findings[1]["prev_finding_hash"] == findings[0]["this_finding_hash"]
 
 
 # ---------------------------------------------------------------------------
@@ -491,12 +461,8 @@ class TestOnDiskIsolation:
             assert ON_DISK_FINDINGS.read_bytes() == _ON_DISK_FINDINGS_BEFORE
 
 
-_ON_DISK_AUDIT_BEFORE = (
-    ON_DISK_AUDIT_LOG.read_bytes() if ON_DISK_AUDIT_LOG.exists() else b""
-)
-_ON_DISK_FINDINGS_BEFORE = (
-    ON_DISK_FINDINGS.read_bytes() if ON_DISK_FINDINGS.exists() else b""
-)
+_ON_DISK_AUDIT_BEFORE = ON_DISK_AUDIT_LOG.read_bytes() if ON_DISK_AUDIT_LOG.exists() else b""
+_ON_DISK_FINDINGS_BEFORE = ON_DISK_FINDINGS.read_bytes() if ON_DISK_FINDINGS.exists() else b""
 
 
 # ---------------------------------------------------------------------------
@@ -516,23 +482,22 @@ class TestAuditLineProbeFixRegressionGuard:
     in record_finding's `EvidenceRef`. The first call must succeed
     — no probing, no rejection."""
 
-    def test_tier1_audit_line_is_directly_usable_in_evidence_ref(
-        self, tmp_path: Path
-    ):
+    def test_tier1_audit_line_is_directly_usable_in_evidence_ref(self, tmp_path: Path):
         from unittest.mock import patch
         from server.tools.memory import vol_pslist
 
         case_dir = _seed_case_dir(tmp_path, seed_audit=False)
         # No pre-seeded audit line; vol_pslist will write its own.
         # Mock the runner so we don't reach SSH.
-        fixture = (
-            PROJECT_ROOT / "tests" / "fixtures" / "vol_pslist_sample.json"
-        ).read_text(encoding="utf-8")
-        with patch(
-            "server.tools.memory.get_vol_version", return_value="2.27.0"
-        ), patch(
-            "server.tools.memory.run_vol_plugin",
-            return_value=(fixture, "vol", 5.0),
+        fixture = (PROJECT_ROOT / "tests" / "fixtures" / "vol_pslist_sample.json").read_text(
+            encoding="utf-8"
+        )
+        with (
+            patch("server.tools.memory.get_vol_version", return_value="2.27.0"),
+            patch(
+                "server.tools.memory.run_vol_plugin",
+                return_value=(fixture, "vol", 5.0),
+            ),
         ):
             summary = vol_pslist(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
@@ -572,9 +537,7 @@ class TestAuditLineProbeFixRegressionGuard:
         # record_finding success). The captured audit_line is line 1.
         assert captured_audit_line == 1
 
-    def test_tier2_set_difference_audit_line_is_accepted_in_evidence_ref(
-        self, tmp_path: Path
-    ):
+    def test_tier2_set_difference_audit_line_is_accepted_in_evidence_ref(self, tmp_path: Path):
         """Same regression check, tier-2 path: a `set_difference` call's
         audit_line is directly usable as `EvidenceRef.audit_line` with
         `source_tool="set_difference"`. Confirms the
@@ -593,12 +556,22 @@ class TestAuditLineProbeFixRegressionGuard:
         # Pre-write both extractions so set_difference has data to diff.
         def pr(pid: int) -> ProcessRecord:
             return ProcessRecord(
-                pid=pid, ppid=4, image_file_name="x.exe", offset_v=0,
-                threads=1, handles=None, session_id=None, wow64=False,
-                create_time=NOW_UTC, exit_time=None,
+                pid=pid,
+                ppid=4,
+                image_file_name="x.exe",
+                offset_v=0,
+                threads=1,
+                handles=None,
+                session_id=None,
+                wow64=False,
+                create_time=NOW_UTC,
+                exit_time=None,
             )
+
         write_extraction(
-            case_dir, VALID_EVIDENCE_ID, "windows.pslist.PsList",
+            case_dir,
+            VALID_EVIDENCE_ID,
+            "windows.pslist.PsList",
             PslistResult(
                 evidence_id=VALID_EVIDENCE_ID,
                 plugin_name="windows.pslist.PsList",
@@ -611,7 +584,9 @@ class TestAuditLineProbeFixRegressionGuard:
             runtime_seconds=14.7,
         )
         write_extraction(
-            case_dir, VALID_EVIDENCE_ID, "windows.psscan.PsScan",
+            case_dir,
+            VALID_EVIDENCE_ID,
+            "windows.psscan.PsScan",
             PsscanResult(
                 evidence_id=VALID_EVIDENCE_ID,
                 plugin_name="windows.psscan.PsScan",
@@ -665,9 +640,7 @@ class TestAuditLineProbeFixRegressionGuard:
 
 class TestFixtureRoundTrip:
     def test_three_fixture_findings_validate_against_DraftFinding(self):
-        fixture_path = (
-            Path(__file__).parent / "fixtures" / "draft_finding_sample.json"
-        )
+        fixture_path = Path(__file__).parent / "fixtures" / "draft_finding_sample.json"
         rows = json.loads(fixture_path.read_text(encoding="utf-8"))
         assert len(rows) == 3
         for row in rows:

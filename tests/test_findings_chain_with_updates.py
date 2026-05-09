@@ -101,9 +101,7 @@ def _update_line() -> dict:
             "previous_confidence": "MEDIUM",
             "new_confidence": "HIGH",
             "promotion_rule": "R3",
-            "driving_correlation_ids": [
-                "44444444-4444-4444-8444-444444444444"
-            ],
+            "driving_correlation_ids": ["44444444-4444-4444-8444-444444444444"],
             "created_at": _NOW.isoformat(),
             "audit_line": 5,
             "orchestrator_version": "orchestrator-v0.1",
@@ -168,9 +166,7 @@ class TestMixedChainReplay:
         # Unknown id returns None.
         assert read_finding_state(tmp_path, "deadbeef-dead-4dead-8dead-deaddeaddead") is None
 
-    def test_replay_derives_intermediate_state_when_no_update(
-        self, tmp_path: Path
-    ):
+    def test_replay_derives_intermediate_state_when_no_update(self, tmp_path: Path):
         # Just a DRAFT, no UPDATE — read_finding_state returns the
         # DRAFT's own state/confidence.
         path = tmp_path / "findings.jsonl"

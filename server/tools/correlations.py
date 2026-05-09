@@ -63,9 +63,7 @@ _TOOL_NAME = "record_correlation"
 _CASE_FILENAME = "CASE.yaml"
 _AUDIT_RELATIVE_PATH = ("audit", "sift-guard-mcp.jsonl")
 
-_VALID_CORRELATION_TYPES: frozenset[str] = frozenset(
-    t.value for t in CorrelationType
-)
+_VALID_CORRELATION_TYPES: frozenset[str] = frozenset(t.value for t in CorrelationType)
 
 
 class _RejectionReason(StrEnum):
@@ -131,9 +129,7 @@ def _log_rejection(
     case_id: str | None,
     correlation_type: str | None,
 ) -> None:
-    rejection = _RejectionRecord(
-        reason=reason, case_id=case_id, correlation_type=correlation_type
-    )
+    rejection = _RejectionRecord(reason=reason, case_id=case_id, correlation_type=correlation_type)
     append_audit_entry(
         case_dir=case_dir,
         tool_name=f"{_TOOL_NAME}:rejected_{reason.value}",
@@ -158,10 +154,7 @@ def _success_input_args(
         "correlation_type": correlation_type,
         "iteration_number": iteration_number,
         "finding_ids": sorted(set(finding_ids)),
-        "evidence_refs": [
-            {"source_tool": r.source_tool, "audit_line": r.audit_line}
-            for r in refs
-        ],
+        "evidence_refs": [{"source_tool": r.source_tool, "audit_line": r.audit_line} for r in refs],
     }
 
 
@@ -219,13 +212,9 @@ def _build_payload(
             or host_ids is not None
             or shared_indicator not in (None, {})
         ):
-            raise ValueError(
-                "corroborates accepts target_finding_ids + strength only"
-            )
+            raise ValueError("corroborates accepts target_finding_ids + strength only")
         if target_finding_ids is None or strength is None:
-            raise ValueError(
-                "corroborates requires target_finding_ids and strength"
-            )
+            raise ValueError("corroborates requires target_finding_ids and strength")
         return CorroboratesCorrelation(
             **common,
             target_finding_ids=target_finding_ids,
@@ -279,14 +268,10 @@ def _build_payload(
             or host_ids is not None
             or shared_indicator not in (None, {})
         ):
-            raise ValueError(
-                "strengthens accepts target_finding_id only"
-            )
+            raise ValueError("strengthens accepts target_finding_id only")
         if target_finding_id is None:
             raise ValueError("strengthens requires target_finding_id")
-        return StrengthensCorrelation(
-            **common, target_finding_id=target_finding_id
-        )
+        return StrengthensCorrelation(**common, target_finding_id=target_finding_id)
     if correlation_type == CorrelationType.WEAKENS.value:
         if (
             target_finding_ids is not None
@@ -302,14 +287,10 @@ def _build_payload(
             or host_ids is not None
             or shared_indicator not in (None, {})
         ):
-            raise ValueError(
-                "weakens accepts target_finding_id only"
-            )
+            raise ValueError("weakens accepts target_finding_id only")
         if target_finding_id is None:
             raise ValueError("weakens requires target_finding_id")
-        return WeakensCorrelation(
-            **common, target_finding_id=target_finding_id
-        )
+        return WeakensCorrelation(**common, target_finding_id=target_finding_id)
     if correlation_type == CorrelationType.REQUEST_FOLLOWUP.value:
         if (
             target_finding_ids is not None
@@ -326,14 +307,9 @@ def _build_payload(
                 "request_followup accepts target_analyst + "
                 "related_finding_ids + focus_context + rationale only"
             )
-        if (
-            target_analyst is None
-            or related_finding_ids is None
-            or rationale is None
-        ):
+        if target_analyst is None or related_finding_ids is None or rationale is None:
             raise ValueError(
-                "request_followup requires target_analyst, "
-                "related_finding_ids, and rationale"
+                "request_followup requires target_analyst, related_finding_ids, and rationale"
             )
         return RequestFollowupCorrelation(
             **common,
@@ -358,15 +334,8 @@ def _build_payload(
                 "cross_host accepts target_finding_ids + host_ids + "
                 "shared_indicator + strength only"
             )
-        if (
-            target_finding_ids is None
-            or host_ids is None
-            or strength is None
-        ):
-            raise ValueError(
-                "cross_host requires target_finding_ids, host_ids, "
-                "and strength"
-            )
+        if target_finding_ids is None or host_ids is None or strength is None:
+            raise ValueError("cross_host requires target_finding_ids, host_ids, and strength")
         return CrossHostCorrelation(
             **common,
             target_finding_ids=target_finding_ids,
@@ -536,9 +505,7 @@ def record_correlation(
         raise ValueError("referenced finding_id not in findings.jsonl")
 
     # 6. Append to the correlations chain.
-    chain_entry: CorrelationChainEntry = append_correlation_entry(
-        case_dir_path, payload
-    )
+    chain_entry: CorrelationChainEntry = append_correlation_entry(case_dir_path, payload)
 
     # 7. Audit success. The output_hash is the digest of the
     #    CorrelationChainEntry — so audit-replay can verify "the line
@@ -549,8 +516,11 @@ def record_correlation(
         tool_name=_TOOL_NAME,
         evidence_id=None,
         input_args=_success_input_args(
-            case_id, correlation_type, iteration_number,
-            referenced_ids, evidence_refs,
+            case_id,
+            correlation_type,
+            iteration_number,
+            referenced_ids,
+            evidence_refs,
         ),
         output=chain_entry,
     )

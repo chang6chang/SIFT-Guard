@@ -131,8 +131,7 @@ def promote(
     contradicts_serious = [
         c
         for c in correlations_for_finding
-        if isinstance(c, ContradictsCorrelation)
-        and c.severity in ("material", "fundamental")
+        if isinstance(c, ContradictsCorrelation) and c.severity in ("material", "fundamental")
     ]
     if contradicts_serious:
         return PromotionDecision(
@@ -145,9 +144,7 @@ def promote(
 
     # R2 — HIGH demoted by weakens. Only HIGH gets the demotion treatment.
     if f_conf == "HIGH":
-        weakens_list = [
-            c for c in correlations_for_finding if isinstance(c, WeakensCorrelation)
-        ]
+        weakens_list = [c for c in correlations_for_finding if isinstance(c, WeakensCorrelation)]
         if weakens_list:
             return PromotionDecision(
                 finding_id=fid,
@@ -184,9 +181,7 @@ def promote(
             new_state="CONFIRMED",
             new_confidence=_conf_max(f_conf, "MEDIUM"),
             promotion_rule="R4",
-            driving_correlation_ids=[
-                c.correlation_id for c in moderate_corroborates
-            ],
+            driving_correlation_ids=[c.correlation_id for c in moderate_corroborates],
         )
 
     # R5 — quiet stabilization. After two completed iterations with no

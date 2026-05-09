@@ -148,9 +148,7 @@ class IterationChainEntry(BaseModel):
 
     @classmethod
     def compute_this_iteration_hash(cls, **fields: Any) -> str:
-        payload = {
-            k: v for k, v in fields.items() if k != "this_iteration_hash"
-        }
+        payload = {k: v for k, v in fields.items() if k != "this_iteration_hash"}
         canonical = json.dumps(payload, sort_keys=True, default=_json_default)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -177,9 +175,7 @@ def _read_chain_state(iterations_path: Path) -> tuple[int, str]:
     return line_count + 1, prev_record["this_iteration_hash"]
 
 
-def append_iteration_entry(
-    case_dir: Path | str, payload: IterationPayload
-) -> IterationChainEntry:
+def append_iteration_entry(case_dir: Path | str, payload: IterationPayload) -> IterationChainEntry:
     """Append one hash-chained record to
     `<case_dir>/iterations.jsonl`.
 
@@ -199,9 +195,7 @@ def append_iteration_entry(
         iteration=payload.model_dump(mode="json"),
         prev_iteration_hash=prev_iteration_hash,
     )
-    this_iteration_hash = IterationChainEntry.compute_this_iteration_hash(
-        **chained_fields
-    )
+    this_iteration_hash = IterationChainEntry.compute_this_iteration_hash(**chained_fields)
 
     entry = IterationChainEntry(
         line_number=line_number,

@@ -86,8 +86,6 @@ import time
 from pathlib import Path
 from typing import Iterable
 
-from server.schemas import RegistryHiveName
-
 
 SIFT_DISK_PREMOUNTED_PATH_ENV = "SIFT_DISK_PREMOUNTED_PATH"
 SIFT_DISK_LOG2TIMELINE_BIN_ENV = "SIFT_DISK_LOG2TIMELINE_BIN"
@@ -204,9 +202,7 @@ def _detect_image_format(absolute_path: str) -> str:
     return "raw"
 
 
-def _run_subprocess(
-    argv: list[str], *, timeout_seconds: int = 60
-) -> tuple[str, str, float]:
+def _run_subprocess(argv: list[str], *, timeout_seconds: int = 60) -> tuple[str, str, float]:
     """Run a subprocess and return ``(stdout, command_string,
     runtime_seconds)``.
 
@@ -225,24 +221,16 @@ def _run_subprocess(
             check=True,
         )
     except subprocess.CalledProcessError as exc:
-        raise MountError(
-            f"subprocess {argv[0]!r} exited non-zero"
-        ) from exc
+        raise MountError(f"subprocess {argv[0]!r} exited non-zero") from exc
     except subprocess.TimeoutExpired as exc:
-        raise MountError(
-            f"subprocess {argv[0]!r} timed out after {timeout_seconds}s"
-        ) from exc
+        raise MountError(f"subprocess {argv[0]!r} timed out after {timeout_seconds}s") from exc
     except (OSError, FileNotFoundError) as exc:
-        raise MountError(
-            f"subprocess {argv[0]!r} could not be executed"
-        ) from exc
+        raise MountError(f"subprocess {argv[0]!r} could not be executed") from exc
     elapsed = time.monotonic() - start
     return result.stdout, shlex.join(argv), elapsed
 
 
-def mount_disk_image(
-    evidence_id: str, absolute_path: str
-) -> str:
+def mount_disk_image(evidence_id: str, absolute_path: str) -> str:
     """Resolve a disk-image evidence_id to its mounted-root path.
 
     Two-mode operation per the module docstring:
@@ -287,56 +275,53 @@ def mount_disk_image(
     mount_dir = Path(tempfile.mkdtemp(prefix=f"sift-disk-{evidence_id[:8]}-"))
     try:
         if fmt == "e01":
-            ewf_dir = Path(tempfile.mkdtemp(
-                prefix=f"sift-ewf-{evidence_id[:8]}-"
-            ))
-            ewfmount_bin = os.environ.get(
-                SIFT_DISK_EWFMOUNT_BIN_ENV, _DEFAULT_EWFMOUNT_BIN
-            )
-            mount_bin = os.environ.get(
-                SIFT_DISK_MOUNT_BIN_ENV, _DEFAULT_MOUNT_BIN
-            )
+            ewf_dir = Path(tempfile.mkdtemp(prefix=f"sift-ewf-{evidence_id[:8]}-"))
+            ewfmount_bin = os.environ.get(SIFT_DISK_EWFMOUNT_BIN_ENV, _DEFAULT_EWFMOUNT_BIN)
+            mount_bin = os.environ.get(SIFT_DISK_MOUNT_BIN_ENV, _DEFAULT_MOUNT_BIN)
             _run_subprocess(
                 [ewfmount_bin, absolute_path, str(ewf_dir)],
                 timeout_seconds=120,
             )
             _run_subprocess(
                 [
-                    mount_bin, "-o", "ro,loop",
+                    mount_bin,
+                    "-o",
+                    "ro,loop",
                     str(ewf_dir / "ewf1"),
                     str(mount_dir),
                 ],
                 timeout_seconds=60,
             )
         elif fmt == "raw":
-            mount_bin = os.environ.get(
-                SIFT_DISK_MOUNT_BIN_ENV, _DEFAULT_MOUNT_BIN
-            )
+            mount_bin = os.environ.get(SIFT_DISK_MOUNT_BIN_ENV, _DEFAULT_MOUNT_BIN)
             _run_subprocess(
                 [
-                    mount_bin, "-o", "ro,loop",
-                    absolute_path, str(mount_dir),
+                    mount_bin,
+                    "-o",
+                    "ro,loop",
+                    absolute_path,
+                    str(mount_dir),
                 ],
                 timeout_seconds=60,
             )
         elif fmt == "vhdx":
-            guestmount_bin = os.environ.get(
-                SIFT_DISK_GUESTMOUNT_BIN_ENV, _DEFAULT_GUESTMOUNT_BIN
-            )
+            guestmount_bin = os.environ.get(SIFT_DISK_GUESTMOUNT_BIN_ENV, _DEFAULT_GUESTMOUNT_BIN)
             _run_subprocess(
                 [
-                    guestmount_bin, "--ro", "-a", absolute_path,
-                    "-i", str(mount_dir),
+                    guestmount_bin,
+                    "--ro",
+                    "-a",
+                    absolute_path,
+                    "-i",
+                    str(mount_dir),
                 ],
                 timeout_seconds=120,
             )
         else:
-            raise MountError(f"unsupported disk-image format")
+            raise MountError("unsupported disk-image format")
 
         if not _is_path_mounted_readonly(str(mount_dir)):
-            raise MountVerificationError(
-                "post-mount /proc/mounts check did not show ro mount"
-            )
+            raise MountVerificationError("post-mount /proc/mounts check did not show ro mount")
     except Exception:
         # Best-effort cleanup; if teardown itself fails, surface the
         # original error rather than the cleanup error.
@@ -365,13 +350,13 @@ def umount_all_for(evidence_id: str) -> None:
     if os.environ.get(SIFT_DISK_PREMOUNTED_PATH_ENV):
         # Operator-managed mount; do not attempt to unmount.
         return
-    mount_bin = os.environ.get(
-        SIFT_DISK_MOUNT_BIN_ENV, _DEFAULT_MOUNT_BIN
-    )
+    mount_bin = os.environ.get(SIFT_DISK_MOUNT_BIN_ENV, _DEFAULT_MOUNT_BIN)
     try:
         subprocess.run(
             [mount_bin.replace("mount", "umount"), mount_path],
-            capture_output=True, check=False, timeout=60,
+            capture_output=True,
+            check=False,
+            timeout=60,
         )
     except (subprocess.TimeoutExpired, OSError):
         pass
@@ -404,26 +389,22 @@ def run_log2timeline_mft(
     that flag belongs to ``psort.py``, not ``log2timeline.py``. The
     actual plaso pipeline is two-step.
     """
-    log2timeline_bin = os.environ.get(
-        SIFT_DISK_LOG2TIMELINE_BIN_ENV, _DEFAULT_LOG2TIMELINE_BIN
-    )
-    psort_bin = os.environ.get(
-        SIFT_DISK_PSORT_BIN_ENV, _DEFAULT_PSORT_BIN
-    )
+    log2timeline_bin = os.environ.get(SIFT_DISK_LOG2TIMELINE_BIN_ENV, _DEFAULT_LOG2TIMELINE_BIN)
+    psort_bin = os.environ.get(SIFT_DISK_PSORT_BIN_ENV, _DEFAULT_PSORT_BIN)
     plaso_storage = Path(tempfile.mkdtemp(prefix="sift-plaso-")) / "out.plaso"
     jsonl_out = plaso_storage.with_suffix(".jsonl")
 
     try:
-        version_stdout, _, _ = _run_subprocess(
-            [log2timeline_bin, "--version"], timeout_seconds=30
-        )
+        version_stdout, _, _ = _run_subprocess([log2timeline_bin, "--version"], timeout_seconds=30)
         tool_version = version_stdout.strip().splitlines()[-1] if version_stdout else "plaso"
 
         _, l2t_cmd, l2t_elapsed = _run_subprocess(
             [
                 log2timeline_bin,
-                "--parsers", "mft",
-                "--storage-file", str(plaso_storage),
+                "--parsers",
+                "mft",
+                "--storage-file",
+                str(plaso_storage),
                 mount_path,
             ],
             timeout_seconds=timeout_seconds,
@@ -431,8 +412,10 @@ def run_log2timeline_mft(
         _, psort_cmd, psort_elapsed = _run_subprocess(
             [
                 psort_bin,
-                "-o", "json_line",
-                "-w", str(jsonl_out),
+                "-o",
+                "json_line",
+                "-w",
+                str(jsonl_out),
                 str(plaso_storage),
             ],
             timeout_seconds=timeout_seconds,
@@ -449,9 +432,7 @@ def run_log2timeline_mft(
     return stdout, command_string, l2t_elapsed + psort_elapsed, tool_version
 
 
-def run_prefetch(
-    mount_path: str, *, timeout_seconds: int = 300
-) -> tuple[str, str, float, str]:
+def run_prefetch(mount_path: str, *, timeout_seconds: int = 300) -> tuple[str, str, float, str]:
     """Parse `Windows/Prefetch/*.pf` under the mount.
 
     Subprocess invocation: ``${SIFT_DISK_PREFETCH_CMD:-pf2json}
@@ -460,9 +441,7 @@ def run_prefetch(
     empty stdout — the parser handles that as a zero-record
     extraction.
     """
-    prefetch_cmd = os.environ.get(
-        SIFT_DISK_PREFETCH_CMD_ENV, _DEFAULT_PREFETCH_CMD
-    )
+    prefetch_cmd = os.environ.get(SIFT_DISK_PREFETCH_CMD_ENV, _DEFAULT_PREFETCH_CMD)
     prefetch_dir = Path(mount_path) / RELATIVE_PREFETCH_DIR
     if not prefetch_dir.exists():
         return "", f"{prefetch_cmd} {prefetch_dir}", 0.0, "missing"
@@ -477,7 +456,8 @@ def run_prefetch(
 def run_evtx_dump(
     mount_path: str,
     channels: Iterable[str] = ("Security", "System"),
-    *, timeout_seconds: int = 600,
+    *,
+    timeout_seconds: int = 600,
 ) -> tuple[str, str, float, str]:
     """Dump the requested EVTX channels under the mount.
 
@@ -488,9 +468,7 @@ def run_evtx_dump(
     line as a synthetic ``__channel`` field so the parser can split
     them out without re-reading file-paths.
     """
-    cmd = os.environ.get(
-        SIFT_DISK_EVTX_DUMP_CMD_ENV, _DEFAULT_EVTX_DUMP_CMD
-    )
+    cmd = os.environ.get(SIFT_DISK_EVTX_DUMP_CMD_ENV, _DEFAULT_EVTX_DUMP_CMD)
     log_dir = Path(mount_path) / RELATIVE_EVTX_DIR
 
     pieces: list[str] = []
@@ -524,9 +502,7 @@ def run_evtx_dump(
     return combined_stdout, combined_command, cumulative_elapsed, cmd
 
 
-def run_regripper(
-    mount_path: str, *, timeout_seconds: int = 600
-) -> tuple[str, str, float, str]:
+def run_regripper(mount_path: str, *, timeout_seconds: int = 600) -> tuple[str, str, float, str]:
     """Run RegRipper across SYSTEM / SOFTWARE / SAM / NTUSER.DAT.
 
     Subprocess invocation per hive:
@@ -538,9 +514,7 @@ def run_regripper(
     Per-user NTUSER.DAT discovery: enumerates ``Users/*/NTUSER.DAT``
     under the mount and runs RegRipper once per user hive.
     """
-    rip_bin = os.environ.get(
-        SIFT_DISK_REGRIPPER_BIN_ENV, _DEFAULT_REGRIPPER_BIN
-    )
+    rip_bin = os.environ.get(SIFT_DISK_REGRIPPER_BIN_ENV, _DEFAULT_REGRIPPER_BIN)
 
     pieces: list[str] = []
     cmd_pieces: list[str] = []
@@ -643,12 +617,14 @@ def parse_plaso_jsonl(stdout: str) -> list[dict]:
         entry_type = _PLASO_TIMESTAMP_DESC_MAP.get(desc)
         if entry_type is None:
             continue
-        rows.append({
-            "timestamp": obj.get("datetime"),
-            "full_path": obj.get("display_name") or obj.get("filename") or "",
-            "entry_type": entry_type,
-            "file_size": obj.get("file_size"),
-        })
+        rows.append(
+            {
+                "timestamp": obj.get("datetime"),
+                "full_path": obj.get("display_name") or obj.get("filename") or "",
+                "entry_type": entry_type,
+                "file_size": obj.get("file_size"),
+            }
+        )
     return rows
 
 
@@ -675,14 +651,17 @@ def parse_prefetch(stdout: str) -> list[dict]:
         refs = obj.get("referenced_files") or []
         if not isinstance(refs, list):
             refs = []
-        rows.append({
-            "executable_name": obj.get("executable_filename")
-                or obj.get("executable_name") or "",
-            "run_count": int(obj.get("run_count") or 0),
-            "last_run_times": obj.get("last_run_times") or [],
-            "volume_path": obj.get("volume_path") or "",
-            "referenced_files": refs[:50],
-        })
+        rows.append(
+            {
+                "executable_name": obj.get("executable_filename")
+                or obj.get("executable_name")
+                or "",
+                "run_count": int(obj.get("run_count") or 0),
+                "last_run_times": obj.get("last_run_times") or [],
+                "volume_path": obj.get("volume_path") or "",
+                "referenced_files": refs[:50],
+            }
+        )
     return rows
 
 
@@ -704,17 +683,12 @@ def parse_evtx(stdout: str) -> list[dict]:
             obj = json.loads(stripped)
         except json.JSONDecodeError:
             continue
-        system = obj.get("Event", {}).get("System", {}) if isinstance(
-            obj.get("Event"), dict
-        ) else {}
+        system = (
+            obj.get("Event", {}).get("System", {}) if isinstance(obj.get("Event"), dict) else {}
+        )
         # Some evtx_dump variants flatten differently; fall back to
         # top-level keys when System.* is absent.
-        event_id_raw = (
-            system.get("EventID")
-            or obj.get("EventID")
-            or obj.get("event_id")
-            or 0
-        )
+        event_id_raw = system.get("EventID") or obj.get("EventID") or obj.get("event_id") or 0
         if isinstance(event_id_raw, dict):
             event_id_raw = event_id_raw.get("#text", 0)
         try:
@@ -722,21 +696,9 @@ def parse_evtx(stdout: str) -> list[dict]:
         except (TypeError, ValueError):
             continue
 
-        provider = system.get("Provider", {}) if isinstance(
-            system.get("Provider"), dict
-        ) else {}
-        source = (
-            provider.get("Name")
-            or system.get("Provider")
-            or obj.get("source")
-            or ""
-        )
-        channel = (
-            obj.get("__channel")
-            or system.get("Channel")
-            or obj.get("channel")
-            or ""
-        )
+        provider = system.get("Provider", {}) if isinstance(system.get("Provider"), dict) else {}
+        source = provider.get("Name") or system.get("Provider") or obj.get("source") or ""
+        channel = obj.get("__channel") or system.get("Channel") or obj.get("channel") or ""
         time_created_raw = (
             system.get("TimeCreated", {}).get("SystemTime")
             if isinstance(system.get("TimeCreated"), dict)
@@ -745,9 +707,11 @@ def parse_evtx(stdout: str) -> list[dict]:
 
         # Render EventData as a flat string for message_summary;
         # extract logon_type when present.
-        event_data = obj.get("Event", {}).get("EventData", {}) if isinstance(
-            obj.get("Event"), dict
-        ) else obj.get("EventData") or {}
+        event_data = (
+            obj.get("Event", {}).get("EventData", {})
+            if isinstance(obj.get("Event"), dict)
+            else obj.get("EventData") or {}
+        )
         if not isinstance(event_data, dict):
             event_data = {}
         # `Data` may be a list of {"@Name": "...", "#text": "..."}
@@ -776,18 +740,18 @@ def parse_evtx(stdout: str) -> list[dict]:
                     except (TypeError, ValueError):
                         pass
 
-        message_summary = _truncate_to_500(
-            "; ".join(rendered) if rendered else str(event_data)
-        )
+        message_summary = _truncate_to_500("; ".join(rendered) if rendered else str(event_data))
 
-        rows.append({
-            "event_id": event_id,
-            "timestamp": time_created_raw,
-            "source": str(source),
-            "channel": str(channel),
-            "message_summary": message_summary,
-            "logon_type": logon_type,
-        })
+        rows.append(
+            {
+                "event_id": event_id,
+                "timestamp": time_created_raw,
+                "source": str(source),
+                "channel": str(channel),
+                "message_summary": message_summary,
+                "logon_type": logon_type,
+            }
+        )
     return rows
 
 
@@ -834,7 +798,7 @@ def parse_regripper(stdout: str) -> list[dict]:
         if line.startswith(_REGRIPPER_HIVE_BANNER_PREFIX):
             # `# === HIVE: SYSTEM ===` or
             # `# === HIVE: NTUSER.DAT (alice) ===`
-            inner = line[len(_REGRIPPER_HIVE_BANNER_PREFIX):].rstrip(" =")
+            inner = line[len(_REGRIPPER_HIVE_BANNER_PREFIX) :].rstrip(" =")
             # Strip per-user suffix (preserve hive name only).
             paren = inner.find(" (")
             hive_name = inner[:paren] if paren != -1 else inner
@@ -844,7 +808,7 @@ def parse_regripper(stdout: str) -> list[dict]:
             continue
         stripped = line.strip()
         if stripped.startswith(_REGRIPPER_KEY_HEADER_RE):
-            active_key_path = stripped[len(_REGRIPPER_KEY_HEADER_RE):].strip()
+            active_key_path = stripped[len(_REGRIPPER_KEY_HEADER_RE) :].strip()
             active_last_modified = None
             continue
         if stripped.startswith(_REGRIPPER_LASTWRITE_RE):
@@ -854,7 +818,7 @@ def parse_regripper(stdout: str) -> list[dict]:
             colon_idx = stripped.find(":")
             sep = max(eq_idx, colon_idx)
             if sep > 0:
-                active_last_modified = stripped[sep + 1:].strip()
+                active_last_modified = stripped[sep + 1 :].strip()
             continue
         # Value line: try `name -> data` first, then `name: data`.
         if active_hive is None or active_key_path == "":
@@ -862,13 +826,13 @@ def parse_regripper(stdout: str) -> list[dict]:
         sep_idx = stripped.find(" -> ")
         if sep_idx > 0:
             value_name = stripped[:sep_idx].strip()
-            value_data = stripped[sep_idx + 4:].strip()
+            value_data = stripped[sep_idx + 4 :].strip()
         else:
             sep_idx = stripped.find(": ")
             if sep_idx <= 0:
                 continue
             value_name = stripped[:sep_idx].strip()
-            value_data = stripped[sep_idx + 2:].strip()
+            value_data = stripped[sep_idx + 2 :].strip()
         # Reject obvious non-value lines (banner text, blank labels).
         if not value_name or value_name.startswith("#"):
             continue
@@ -877,21 +841,21 @@ def parse_regripper(stdout: str) -> list[dict]:
         last_modified_iso: str | None = None
         if active_last_modified:
             try:
-                parsed = datetime.fromisoformat(
-                    active_last_modified.replace("Z", "+00:00")
-                )
+                parsed = datetime.fromisoformat(active_last_modified.replace("Z", "+00:00"))
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=timezone.utc)
                 last_modified_iso = parsed.isoformat()
             except (ValueError, TypeError):
                 last_modified_iso = None
-        rows.append({
-            "hive_name": active_hive,
-            "key_path": active_key_path,
-            "value_name": value_name,
-            "value_data": _truncate_to_500(value_data),
-            "last_modified": last_modified_iso,
-        })
+        rows.append(
+            {
+                "hive_name": active_hive,
+                "key_path": active_key_path,
+                "value_name": value_name,
+                "value_data": _truncate_to_500(value_data),
+                "last_modified": last_modified_iso,
+            }
+        )
     return rows
 
 

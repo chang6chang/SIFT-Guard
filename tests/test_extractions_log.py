@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from server.extractions_log import (
     append_extraction_entry,
@@ -103,9 +102,7 @@ class TestGenesisAppend:
 
 class TestFindExtractionEntry:
     def test_returns_none_for_missing_chain_file(self, tmp_path: Path):
-        assert find_extraction_entry(
-            tmp_path, EVID_A, "windows.pslist.PsList"
-        ) is None
+        assert find_extraction_entry(tmp_path, EVID_A, "windows.pslist.PsList") is None
 
     def test_returns_matching_entry_after_append(self, tmp_path: Path):
         append_extraction_entry(
@@ -117,9 +114,7 @@ class TestFindExtractionEntry:
             10,
             5.0,
         )
-        found = find_extraction_entry(
-            tmp_path, EVID_A, "windows.pslist.PsList"
-        )
+        found = find_extraction_entry(tmp_path, EVID_A, "windows.pslist.PsList")
         assert found is not None
         assert found.evidence_id == EVID_A
         assert found.plugin_name == "windows.pslist.PsList"
@@ -136,12 +131,13 @@ class TestFindExtractionEntry:
             5.0,
         )
         # Different evidence_id, same plugin: no match.
-        assert find_extraction_entry(
-            tmp_path,
-            "22222222-2222-4222-8222-222222222222",
-            "windows.pslist.PsList",
-        ) is None
+        assert (
+            find_extraction_entry(
+                tmp_path,
+                "22222222-2222-4222-8222-222222222222",
+                "windows.pslist.PsList",
+            )
+            is None
+        )
         # Same evidence_id, different plugin: no match.
-        assert find_extraction_entry(
-            tmp_path, EVID_A, "windows.psscan.PsScan"
-        ) is None
+        assert find_extraction_entry(tmp_path, EVID_A, "windows.psscan.PsScan") is None

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import pytest
 
 from orchestrator.promotion import PromotionDecision, promote
 from server.schemas import (

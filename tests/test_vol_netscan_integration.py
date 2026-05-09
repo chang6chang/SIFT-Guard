@@ -53,8 +53,7 @@ def test_vol_netscan_against_live_rocba(monkeypatch):
     # ---- Step 2: SSH+vol smoke check. ----
     try:
         sift_vm.get_vol_version()
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
-            OSError) as exc:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
         pytest.skip(f"SSH/vol unavailable on SIFT VM at {real_host}: {exc}")
 
     # ---- Step 3: find the registered Rocba entry. ----
@@ -63,7 +62,8 @@ def test_vol_netscan_against_live_rocba(monkeypatch):
     doc = yaml.safe_load(ON_DISK_CASE_YAML.read_text(encoding="utf-8")) or {}
     rocba = next(
         (
-            entry for entry in doc.get("evidence", [])
+            entry
+            for entry in doc.get("evidence", [])
             if entry.get("original_filename") == "Rocba-Memory.raw"
             and entry.get("artifact_class") == "memory_image"
         ),
@@ -75,21 +75,16 @@ def test_vol_netscan_against_live_rocba(monkeypatch):
 
     # ---- Step 4: snapshot the audit log. ----
     if ON_DISK_AUDIT_LOG.exists():
-        before_lines = ON_DISK_AUDIT_LOG.read_text(
-            encoding="utf-8"
-        ).splitlines()
+        before_lines = ON_DISK_AUDIT_LOG.read_text(encoding="utf-8").splitlines()
     else:
         before_lines = []
     before_count = len(before_lines)
     expected_prev_hash = (
-        json.loads(before_lines[-1])["this_line_hash"]
-        if before_lines else "0" * 64
+        json.loads(before_lines[-1])["this_line_hash"] if before_lines else "0" * 64
     )
 
     # ---- Step 5: the real call. ~9 minutes. ----
-    result = vol_netscan(
-        rocba_evidence_id, case_dir=str(PROJECT_ROOT / "case-data")
-    )
+    result = vol_netscan(rocba_evidence_id, case_dir=str(PROJECT_ROOT / "case-data"))
 
     # ---- Step 6: result assertions. ----
     assert isinstance(result, NetscanResult)
@@ -113,9 +108,7 @@ def test_vol_netscan_against_live_rocba(monkeypatch):
     # host. Asserting at least 3 distinct families to leave a sliver of
     # room for tightly-firewalled images that genuinely have only TCPv4.
     protos = {c.proto for c in result.connections}
-    assert len(protos) >= 3, (
-        f"expected ≥3 distinct protocol families; got {sorted(protos)}"
-    )
+    assert len(protos) >= 3, f"expected ≥3 distinct protocol families; got {sorted(protos)}"
     # TCPv4 must always be present — Windows always has at least one
     # listener (RPC, SMB, or similar).
     assert "TCPv4" in protos, "TCPv4 must be present on any Windows host"
@@ -124,8 +117,7 @@ def test_vol_netscan_against_live_rocba(monkeypatch):
     # always has services bound. If this fails the parser dropped State
     # or netscan produced empty output.
     listening_tcp = [
-        c for c in result.connections
-        if c.proto.startswith("TCP") and c.state == "LISTENING"
+        c for c in result.connections if c.proto.startswith("TCP") and c.state == "LISTENING"
     ]
     assert listening_tcp, (
         "no TCP LISTENING records — either State field was dropped "
@@ -134,8 +126,7 @@ def test_vol_netscan_against_live_rocba(monkeypatch):
 
     # Reproducibility metadata.
     assert re.match(r"^\d+\.\d+", result.volatility_version), (
-        f"volatility_version should look like a dotted version; "
-        f"got {result.volatility_version!r}"
+        f"volatility_version should look like a dotted version; got {result.volatility_version!r}"
     )
 
     # Every record is a typed NetworkRecord.

@@ -150,9 +150,7 @@ class TestQueryRecordsHappyPath:
         result = query_records(
             evidence_id=EVIDENCE_ID,
             plugin_name="windows.pslist.PsList",
-            filters=[
-                FieldFilter(field="image_file_name", op="eq", value="smss.exe")
-            ],
+            filters=[FieldFilter(field="image_file_name", op="eq", value="smss.exe")],
             case_dir=str(case_dir),
         )
         assert result.matched_count == 2
@@ -211,25 +209,35 @@ class TestQueryRecordsHappyPath:
             case_dir,
             [
                 NetworkRecord(
-                    proto="TCPv4", local_addr="0.0.0.0", local_port=445,
-                    foreign_addr="0.0.0.0", foreign_port=0,
-                    state="LISTENING", pid=4, owner="System",
-                    offset=0, created=None,
+                    proto="TCPv4",
+                    local_addr="0.0.0.0",
+                    local_port=445,
+                    foreign_addr="0.0.0.0",
+                    foreign_port=0,
+                    state="LISTENING",
+                    pid=4,
+                    owner="System",
+                    offset=0,
+                    created=None,
                 ),
                 NetworkRecord(
-                    proto="TCPv4", local_addr="192.168.1.5", local_port=53810,
-                    foreign_addr="17.57.144.165", foreign_port=5223,
-                    state="ESTABLISHED", pid=100, owner="APSDaemon.exe",
-                    offset=0, created=None,
+                    proto="TCPv4",
+                    local_addr="192.168.1.5",
+                    local_port=53810,
+                    foreign_addr="17.57.144.165",
+                    foreign_port=5223,
+                    state="ESTABLISHED",
+                    pid=100,
+                    owner="APSDaemon.exe",
+                    offset=0,
+                    created=None,
                 ),
             ],
         )
         result = query_records(
             evidence_id=EVIDENCE_ID,
             plugin_name="windows.netscan.NetScan",
-            filters=[
-                FieldFilter(field="owner", op="contains", value="Daemon")
-            ],
+            filters=[FieldFilter(field="owner", op="contains", value="Daemon")],
             case_dir=str(case_dir),
         )
         assert result.matched_count == 1
@@ -336,14 +344,8 @@ class TestQueryRecordsAuditLinePlumbing:
 
         # Cross-check against the actual audit-chain entry.
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
-        success_lines = [
-            l for l in lines if l["tool_name"] == "query_records"
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
+        success_lines = [entry for entry in lines if entry["tool_name"] == "query_records"]
         assert len(success_lines) == 1
         assert result.audit_line == success_lines[0]["line_number"]
 
@@ -356,6 +358,7 @@ class TestQueryRecordsAuditLinePlumbing:
         # Override _seed_pslist to use a known audit_line.
         from server.extractions import write_extraction
         from server.schemas import PslistResult
+
         write_extraction(
             case_dir,
             EVIDENCE_ID,
@@ -395,10 +398,7 @@ class TestQueryRecordsSizeBudget:
         # Synthetic 10000-row pslist. Process names are bounded to
         # short strings so the full record is realistic — typical
         # Windows EPROCESS names average ~12 chars.
-        records = [
-            _pr(p, p % 17, f"proc{p % 1000}.exe")
-            for p in range(1, 10001)
-        ]
+        records = [_pr(p, p % 17, f"proc{p % 1000}.exe") for p in range(1, 10001)]
         _seed_pslist(case_dir, records)
 
         result = query_records(
@@ -423,10 +423,7 @@ class TestQueryRecordsSizeBudget:
         is implicitly bound to when invoking with limit=200.
         """
         case_dir = _seed_case_dir(tmp_path)
-        records = [
-            _pr(p, p % 17, f"proc{p % 1000}.exe")
-            for p in range(1, 10001)
-        ]
+        records = [_pr(p, p % 17, f"proc{p % 1000}.exe") for p in range(1, 10001)]
         _seed_pslist(case_dir, records)
 
         result = query_records(
@@ -438,8 +435,7 @@ class TestQueryRecordsSizeBudget:
         )
         size = len(result.model_dump_json().encode("utf-8"))
         assert size < 10_240, (
-            f"query_records cap-limit narrow-projection exceeded 10 KB: "
-            f"{size} bytes."
+            f"query_records cap-limit narrow-projection exceeded 10 KB: {size} bytes."
         )
         assert result.returned_count == 200
 
@@ -457,10 +453,7 @@ class TestQueryRecordsSizeBudget:
         from server.schemas import ExtractionRef, PslistSummary
 
         case_dir = _seed_case_dir(tmp_path)
-        records = [
-            _pr(p, p % 17, f"proc{p % 1000}.exe")
-            for p in range(1, 10001)
-        ]
+        records = [_pr(p, p % 17, f"proc{p % 1000}.exe") for p in range(1, 10001)]
         _seed_pslist(case_dir, records)
 
         # Synthetic ExtractionRef pinned to a known shape — the

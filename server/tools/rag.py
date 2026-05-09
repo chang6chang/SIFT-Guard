@@ -119,9 +119,7 @@ def _technique_id_in_corpus(retriever: Retriever, technique_id: str) -> bool:
     over 697 records is well under a millisecond and avoids
     constructing a side index that would drift from the canonical
     records.json on a re-ingest."""
-    return any(
-        r.get("technique_id") == technique_id for r in retriever.records
-    )
+    return any(r.get("technique_id") == technique_id for r in retriever.records)
 
 
 def rag_query(
@@ -165,27 +163,19 @@ def rag_query(
     # 1. Exactly-one-input shape.
     if technique_id is not None and semantic_query is not None:
         _log_rejection(case_dir_path, _RejectionReason.BOTH_INPUTS, input_args)
-        raise ValueError(
-            "rag_query accepts exactly one of technique_id, semantic_query"
-        )
+        raise ValueError("rag_query accepts exactly one of technique_id, semantic_query")
     if technique_id is None and semantic_query is None:
         _log_rejection(case_dir_path, _RejectionReason.NO_INPUT, input_args)
-        raise ValueError(
-            "rag_query requires technique_id or semantic_query"
-        )
+        raise ValueError("rag_query requires technique_id or semantic_query")
 
     # 2. top_k bound.
     if top_k > _TOP_K_CAP or top_k < 1:
-        _log_rejection(
-            case_dir_path, _RejectionReason.TOP_K_TOO_LARGE, input_args
-        )
+        _log_rejection(case_dir_path, _RejectionReason.TOP_K_TOO_LARGE, input_args)
         raise ValueError("top_k out of allowed range (1..20)")
 
     # 3. semantic_query length bound.
     if semantic_query is not None and len(semantic_query) > _QUERY_LENGTH_CAP:
-        _log_rejection(
-            case_dir_path, _RejectionReason.QUERY_TOO_LONG, input_args
-        )
+        _log_rejection(case_dir_path, _RejectionReason.QUERY_TOO_LONG, input_args)
         raise ValueError("semantic_query exceeds 500 characters")
 
     # 4. technique_id shape — must match the canonical ATT&CK form.
@@ -200,9 +190,7 @@ def rag_query(
             _RejectionReason.TECHNIQUE_ID_BAD_SHAPE,
             input_args,
         )
-        raise ValueError(
-            "technique_id must match T<4 digits>[.<3 digits>] form"
-        )
+        raise ValueError("technique_id must match T<4 digits>[.<3 digits>] form")
 
     # 5. Construct the retriever (cheap; lazy model load) and resolve.
     retriever = Retriever()
@@ -227,9 +215,7 @@ def rag_query(
         query_value = semantic_query  # type: ignore[assignment]
         query_kind = "semantic"
 
-    embedding_model_version = retriever.meta.get(
-        "embedding_model_version", retriever.model_name
-    )
+    embedding_model_version = retriever.meta.get("embedding_model_version", retriever.model_name)
 
     audit_line = peek_next_line_number(case_dir_path)
     result = RagQueryResult(

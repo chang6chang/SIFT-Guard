@@ -66,9 +66,7 @@ def _payload(
 
 class TestGenesisAppend:
     def test_writes_first_line(self, tmp_path: Path):
-        entry = append_iteration_entry(
-            tmp_path, _payload(1, _termination_continue())
-        )
+        entry = append_iteration_entry(tmp_path, _payload(1, _termination_continue()))
         assert entry.line_number == 1
         assert entry.prev_iteration_hash == "0" * 64
         assert len(entry.this_iteration_hash) == 64
@@ -86,12 +84,8 @@ class TestGenesisAppend:
 
 class TestChainLinkage:
     def test_two_appends_chain(self, tmp_path: Path):
-        first = append_iteration_entry(
-            tmp_path, _payload(1, _termination_continue())
-        )
-        second = append_iteration_entry(
-            tmp_path, _payload(2, _termination_terminate())
-        )
+        first = append_iteration_entry(tmp_path, _payload(1, _termination_continue()))
+        second = append_iteration_entry(tmp_path, _payload(2, _termination_terminate()))
         assert second.line_number == 2
         assert second.prev_iteration_hash == first.this_iteration_hash
         assert second.this_iteration_hash != first.this_iteration_hash
@@ -106,9 +100,7 @@ class TestChainLinkage:
 
 class TestHashComputable:
     def test_recomputed_hash_matches_stored(self, tmp_path: Path):
-        entry = append_iteration_entry(
-            tmp_path, _payload(1, _termination_continue())
-        )
+        entry = append_iteration_entry(tmp_path, _payload(1, _termination_continue()))
         recomputed = IterationChainEntry.compute_this_iteration_hash(
             line_number=entry.line_number,
             timestamp=entry.timestamp,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -57,9 +56,7 @@ def _make_case_dir(
 
 
 class TestDiskEvtxResolution:
-    def test_evidence_id_not_in_case_yaml_raises_sanitized_value_error(
-        self, tmp_path: Path
-    ):
+    def test_evidence_id_not_in_case_yaml_raises_sanitized_value_error(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         bogus = "00000000-0000-4000-8000-000000000000"
         with pytest.raises(ValueError) as exc_info:
@@ -68,22 +65,23 @@ class TestDiskEvtxResolution:
 
 
 class TestDiskEvtxHappyPath:
-    def test_returns_summary_with_three_events_logon_type_extracted(
-        self, tmp_path: Path
-    ):
+    def test_returns_summary_with_three_events_logon_type_extracted(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         fixture_stdout = EVTX_FIXTURE.read_text(encoding="utf-8")
 
-        with patch(
-            "server.tools.disk.mount_disk_image",
-            return_value="/mnt/sift_disk",
-        ), patch(
-            "server.tools.disk.run_evtx_dump",
-            return_value=(
-                fixture_stdout,
-                "evtx_dump.py -o json /mnt/sift_disk/Windows/System32/winevt/Logs/Security.evtx",
-                7.5,
-                "evtx_dump.py",
+        with (
+            patch(
+                "server.tools.disk.mount_disk_image",
+                return_value="/mnt/sift_disk",
+            ),
+            patch(
+                "server.tools.disk.run_evtx_dump",
+                return_value=(
+                    fixture_stdout,
+                    "evtx_dump.py -o json /mnt/sift_disk/Windows/System32/winevt/Logs/Security.evtx",
+                    7.5,
+                    "evtx_dump.py",
+                ),
             ),
         ):
             summary = disk_evtx(VALID_EVIDENCE_ID, case_dir=str(case_dir))
@@ -107,9 +105,7 @@ class TestDiskEvtxHappyPath:
         assert summary.untrusted_fields == []
         assert len(summary.model_dump_json().encode("utf-8")) <= 10_000
 
-        loaded_ref, parsed = load_extraction(
-            case_dir, VALID_EVIDENCE_ID, "disk.evtx.EventLog"
-        )
+        loaded_ref, parsed = load_extraction(case_dir, VALID_EVIDENCE_ID, "disk.evtx.EventLog")
         events = parsed["events"]
         assert len(events) == 3
         # Event 4624 — RDP-style logon (LogonType 10).

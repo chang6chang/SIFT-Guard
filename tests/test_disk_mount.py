@@ -19,7 +19,6 @@ import pytest
 
 from server.runners import disk_mount
 from server.runners.disk_mount import (
-    MountError,
     MountVerificationError,
     SIFT_DISK_PREMOUNTED_PATH_ENV,
     _detect_image_format,
@@ -73,10 +72,7 @@ class TestDetectImageFormat:
 
 
 def _fake_proc_mounts_for(target: str, opts: str = "ro,relatime") -> str:
-    return (
-        "proc /proc proc rw,relatime 0 0\n"
-        f"/dev/loop1 {target} ext4 {opts} 0 0\n"
-    )
+    return f"proc /proc proc rw,relatime 0 0\n/dev/loop1 {target} ext4 {opts} 0 0\n"
 
 
 class TestPremountedMode:
@@ -87,48 +83,47 @@ class TestPremountedMode:
         target.mkdir()
         monkeypatch.setenv(SIFT_DISK_PREMOUNTED_PATH_ENV, str(target))
         with patch.object(
-            disk_mount, "_read_proc_mounts",
+            disk_mount,
+            "_read_proc_mounts",
             return_value=_fake_proc_mounts_for(str(target)),
         ):
             result = mount_disk_image("eid-1", "/case/disk.raw")
         assert result == str(target)
 
-    def test_premounted_path_missing_ro_raises(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_premounted_path_missing_ro_raises(self, tmp_path: Path, monkeypatch):
         target = tmp_path / "mounted"
         target.mkdir()
         monkeypatch.setenv(SIFT_DISK_PREMOUNTED_PATH_ENV, str(target))
         with patch.object(
-            disk_mount, "_read_proc_mounts",
+            disk_mount,
+            "_read_proc_mounts",
             return_value=_fake_proc_mounts_for(str(target), opts="rw"),
         ):
             with pytest.raises(MountVerificationError):
                 mount_disk_image("eid-2", "/case/disk.raw")
 
-    def test_premounted_path_skips_shellout(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_premounted_path_skips_shellout(self, tmp_path: Path, monkeypatch):
         target = tmp_path / "mounted"
         target.mkdir()
         monkeypatch.setenv(SIFT_DISK_PREMOUNTED_PATH_ENV, str(target))
-        with patch.object(
-            disk_mount, "_read_proc_mounts",
-            return_value=_fake_proc_mounts_for(str(target)),
-        ), patch("subprocess.run") as mock_run:
+        with (
+            patch.object(
+                disk_mount,
+                "_read_proc_mounts",
+                return_value=_fake_proc_mounts_for(str(target)),
+            ),
+            patch("subprocess.run") as mock_run,
+        ):
             mount_disk_image("eid-3", "/case/disk.raw")
-        assert mock_run.call_count == 0, (
-            "premounted mode must not invoke any subprocess"
-        )
+        assert mock_run.call_count == 0, "premounted mode must not invoke any subprocess"
 
-    def test_cached_mount_is_reused_on_repeat_call(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_cached_mount_is_reused_on_repeat_call(self, tmp_path: Path, monkeypatch):
         target = tmp_path / "mounted"
         target.mkdir()
         monkeypatch.setenv(SIFT_DISK_PREMOUNTED_PATH_ENV, str(target))
         with patch.object(
-            disk_mount, "_read_proc_mounts",
+            disk_mount,
+            "_read_proc_mounts",
             return_value=_fake_proc_mounts_for(str(target)),
         ) as mock_read:
             first = mount_disk_image("eid-4", "/case/disk.raw")
@@ -149,21 +144,24 @@ class TestPremountedMode:
 class TestIsPathMountedReadonly:
     def test_recognizes_ro_in_options(self):
         with patch.object(
-            disk_mount, "_read_proc_mounts",
+            disk_mount,
+            "_read_proc_mounts",
             return_value="/dev/loop1 /mnt/x ext4 ro,relatime 0 0\n",
         ):
             assert _is_path_mounted_readonly("/mnt/x") is True
 
     def test_rejects_rw_mount(self):
         with patch.object(
-            disk_mount, "_read_proc_mounts",
+            disk_mount,
+            "_read_proc_mounts",
             return_value="/dev/loop1 /mnt/x ext4 rw,relatime 0 0\n",
         ):
             assert _is_path_mounted_readonly("/mnt/x") is False
 
     def test_returns_false_for_unmounted_path(self):
         with patch.object(
-            disk_mount, "_read_proc_mounts",
+            disk_mount,
+            "_read_proc_mounts",
             return_value="proc /proc proc rw,relatime 0 0\n",
         ):
             assert _is_path_mounted_readonly("/mnt/missing") is False
@@ -218,9 +216,7 @@ class TestParsePrefetch:
     def test_caps_referenced_files_at_50(self):
         # Synthetic huge referenced-files list — parser truncates
         # to 50 to match the schema's max_length=50 contract.
-        big = ", ".join(
-            [f'"\\\\path\\\\file{i}.dll"' for i in range(120)]
-        )
+        big = ", ".join([f'"\\\\path\\\\file{i}.dll"' for i in range(120)])
         line = (
             '{"executable_filename": "BIG.EXE", "run_count": 1, '
             '"last_run_times": [], "volume_path": "X", '
@@ -278,26 +274,20 @@ class TestParseRegripper:
 
         # SYSTEM/Services/EvilSvc/ImagePath.
         evil = next(
-            r for r in rows
-            if r["hive_name"] == "SYSTEM"
-            and r["value_name"] == "ImagePath"
+            r for r in rows if r["hive_name"] == "SYSTEM" and r["value_name"] == "ImagePath"
         )
         assert "evil.exe" in evil["value_data"]
         assert "Services\\EvilSvc" in evil["key_path"]
 
         # SOFTWARE Run key.
         run = next(
-            r for r in rows
-            if r["hive_name"] == "SOFTWARE"
-            and r["value_name"] == "EvilLoader"
+            r for r in rows if r["hive_name"] == "SOFTWARE" and r["value_name"] == "EvilLoader"
         )
         assert "Run" in run["key_path"]
 
         # NTUSER.DAT Run key.
         ntuser_run = next(
-            r for r in rows
-            if r["hive_name"] == "NTUSER.DAT"
-            and r["value_name"] == "SkypeUpdater"
+            r for r in rows if r["hive_name"] == "NTUSER.DAT" and r["value_name"] == "SkypeUpdater"
         )
         assert "Run" in ntuser_run["key_path"]
 
@@ -320,14 +310,13 @@ class TestParseRegripper:
 
 
 class TestUmountAllFor:
-    def test_premounted_mode_does_not_shellout(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_premounted_mode_does_not_shellout(self, tmp_path: Path, monkeypatch):
         target = tmp_path / "mounted"
         target.mkdir()
         monkeypatch.setenv(SIFT_DISK_PREMOUNTED_PATH_ENV, str(target))
         with patch.object(
-            disk_mount, "_read_proc_mounts",
+            disk_mount,
+            "_read_proc_mounts",
             return_value=_fake_proc_mounts_for(str(target)),
         ):
             mount_disk_image("eid-u", "/case/disk.raw")

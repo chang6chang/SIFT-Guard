@@ -38,7 +38,6 @@ after this refactor stabilizes.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from datetime import datetime, timezone
@@ -125,9 +124,7 @@ def append_extraction_entry(
         audit_line=audit_line,
         prev_extraction_hash=prev_extraction_hash,
     )
-    this_extraction_hash = ExtractionChainEntry.compute_this_extraction_hash(
-        **chained_fields
-    )
+    this_extraction_hash = ExtractionChainEntry.compute_this_extraction_hash(**chained_fields)
 
     entry = ExtractionChainEntry(
         line_number=line_number,
@@ -174,10 +171,7 @@ def find_extraction_entry(
             if not stripped:
                 continue
             row = json.loads(stripped)
-            if (
-                row.get("evidence_id") == evidence_id
-                and row.get("plugin_name") == plugin_name
-            ):
+            if row.get("evidence_id") == evidence_id and row.get("plugin_name") == plugin_name:
                 return ExtractionChainEntry.model_validate(row)
     return None
 

@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -141,8 +140,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--token-budget",
         type=int,
         default=None,
-        help="Override the default multi-host budget "
-        "(500K + 250K × host_count, capped at 5M).",
+        help="Override the default multi-host budget (500K + 250K × host_count, capped at 5M).",
     )
     runcase_p.add_argument(
         "--log-level",
@@ -233,9 +231,7 @@ def _build_manifest_from_scan(
         evidence_files: list[EvidenceFile] = []
         for path, evtype, size in files:
             try:
-                record = register_evidence(
-                    str(path), case_dir=str(case_dir)
-                )
+                record = register_evidence(str(path), case_dir=str(case_dir))
             except (
                 FileNotFoundError,
                 ValueError,
@@ -243,8 +239,7 @@ def _build_manifest_from_scan(
                 OSError,
             ) as exc:
                 print(
-                    f"warning: register_evidence failed for "
-                    f"{path.name}: {exc}",
+                    f"warning: register_evidence failed for {path.name}: {exc}",
                     file=sys.stderr,
                 )
                 continue
@@ -258,11 +253,13 @@ def _build_manifest_from_scan(
                 )
             )
         if evidence_files:
-            hosts.append(HostEvidence(
-                host_id=host_id,
-                host_label=host_label,
-                evidence_files=evidence_files,
-            ))
+            hosts.append(
+                HostEvidence(
+                    host_id=host_id,
+                    host_label=host_label,
+                    evidence_files=evidence_files,
+                )
+            )
 
     return CaseManifest(
         case_id=case_id,
@@ -274,12 +271,12 @@ def _build_manifest_from_scan(
 def _cmd_run_case(args: argparse.Namespace) -> int:
     """Multi-evidence subcommand. Five steps:
 
-      1. Scan the evidence directory.
-      2. register_evidence each found file (skip + warn on
-         per-file failures; CLAUDE.md path confinement applies).
-      3. Build + persist the manifest.
-      4. Print the summary table to stdout for operator review.
-      5. Drive `run_loop_multi_host` (unless --scan-only).
+    1. Scan the evidence directory.
+    2. register_evidence each found file (skip + warn on
+       per-file failures; CLAUDE.md path confinement applies).
+    3. Build + persist the manifest.
+    4. Print the summary table to stdout for operator review.
+    5. Drive `run_loop_multi_host` (unless --scan-only).
     """
     case_dir = args.case_dir.resolve()
     evidence_dir = args.evidence_dir.resolve()
@@ -293,13 +290,10 @@ def _cmd_run_case(args: argparse.Namespace) -> int:
         )
         return 2
 
-    manifest = _build_manifest_from_scan(
-        case_dir=case_dir, evidence_dir=evidence_dir
-    )
+    manifest = _build_manifest_from_scan(case_dir=case_dir, evidence_dir=evidence_dir)
     if not manifest.hosts:
         print(
-            "error: no evidence files found / registered "
-            f"under {evidence_dir}",
+            f"error: no evidence files found / registered under {evidence_dir}",
             file=sys.stderr,
         )
         return 3
@@ -310,10 +304,7 @@ def _cmd_run_case(args: argparse.Namespace) -> int:
     if table:
         print(table)
         print()
-    print(
-        f"manifest: {len(manifest.hosts)} host(s), "
-        f"{manifest.evidence_count} evidence file(s)"
-    )
+    print(f"manifest: {len(manifest.hosts)} host(s), {manifest.evidence_count} evidence file(s)")
 
     if args.scan_only:
         print("(--scan-only set; not driving the loop)")
@@ -327,9 +318,7 @@ def _cmd_run_case(args: argparse.Namespace) -> int:
     if args.token_budget is not None:
         kwargs["token_budget"] = args.token_budget
     else:
-        kwargs["token_budget"] = _default_multi_host_token_budget(
-            len(manifest.hosts)
-        )
+        kwargs["token_budget"] = _default_multi_host_token_budget(len(manifest.hosts))
 
     outcome = run_loop_multi_host(**kwargs)
     _print_summary(outcome)

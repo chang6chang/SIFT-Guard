@@ -67,9 +67,7 @@ class TestScanEvidenceDirectory:
         evidence_dir.mkdir(parents=True, exist_ok=True)
         # nfury host: memory raw + disk E01 (E01 magic for the disk
         # so the type detection survives a renamed extension).
-        (evidence_dir / "win7-64-nfury-10.3.58.6.raw").write_bytes(
-            b"\x00" * 16
-        )
+        (evidence_dir / "win7-64-nfury-10.3.58.6.raw").write_bytes(b"\x00" * 16)
         (evidence_dir / "nfury-disk.E01").write_bytes(_E01_HEADER)
         # controller host: memory raw with LiME magic.
         (evidence_dir / "controller-memory.raw").write_bytes(_LIME_HEADER)
@@ -84,9 +82,7 @@ class TestScanEvidenceDirectory:
         # Sorted alphabetically by host_id.
         assert host_ids == ["controller", "nfury"]
 
-    def test_per_host_evidence_types_match_magic_detection(
-        self, tmp_path: Path
-    ):
+    def test_per_host_evidence_types_match_magic_detection(self, tmp_path: Path):
         evidence_dir = tmp_path / "evidence"
         self._seed(evidence_dir)
         result = dict(
@@ -102,15 +98,11 @@ class TestScanEvidenceDirectory:
         evidence_dir = tmp_path / "evidence"
         self._seed(evidence_dir)
         all_filenames = [
-            p.name
-            for _, _, files in scan_evidence_directory(evidence_dir)
-            for p, _, _ in files
+            p.name for _, _, files in scan_evidence_directory(evidence_dir) for p, _, _ in files
         ]
         assert "readme.txt" not in all_filenames
 
-    def test_singleton_host_when_no_token_extractable(
-        self, tmp_path: Path
-    ):
+    def test_singleton_host_when_no_token_extractable(self, tmp_path: Path):
         # `disk-image.E01` strips to nothing → singleton bucket
         # named after the stem.
         evidence_dir = tmp_path / "evidence"
@@ -132,22 +124,23 @@ class TestSplitImageDetection:
 
     def test_memory_in_filename_promotes_001_to_memory(self, tmp_path: Path):
         from orchestrator.inventory import _detect_evidence_type_by_extension
+
         p = tmp_path / "nfury-memory.001"
         p.write_bytes(b"\x00" * 16)
         assert _detect_evidence_type_by_extension(p) == "memory"
 
-    def test_no_memory_in_filename_keeps_001_as_unknown(
-        self, tmp_path: Path
-    ):
+    def test_no_memory_in_filename_keeps_001_as_unknown(self, tmp_path: Path):
         # SRL-2015 disk split images use `name.E01`; bare `.001`
         # without a "memory" hint is conservatively unknown.
         from orchestrator.inventory import _detect_evidence_type_by_extension
+
         p = tmp_path / "nfury.001"
         p.write_bytes(b"\x00" * 16)
         assert _detect_evidence_type_by_extension(p) == "unknown"
 
     def test_memory_substring_match_is_case_insensitive(self, tmp_path: Path):
         from orchestrator.inventory import _detect_evidence_type_by_extension
+
         p = tmp_path / "Nfury-MEMORY.001"
         p.write_bytes(b"\x00" * 16)
         assert _detect_evidence_type_by_extension(p) == "memory"
@@ -162,6 +155,7 @@ class TestNonEvidenceFiltering:
         baseline.mkdir(parents=True)
         # A genuinely-shaped disk image, but under baseline/ → skip.
         from tests.test_inventory import _E01_HEADER  # noqa: F401
+
         (baseline / "win7-baseline.img").write_bytes(b"\x00" * 16)
         # And a real evidence file at the top-level so the result
         # set is non-empty.
@@ -251,8 +245,7 @@ class TestSrlDatasetLayout:
         for host_id, _, files in result:
             names = {p.name for p, _, _ in files}
             assert names == {f"{host_id}-memory.001", f"{host_id}.E01"}, (
-                f"host {host_id} should have exactly memory.001 + .E01; "
-                f"got {names}"
+                f"host {host_id} should have exactly memory.001 + .E01; got {names}"
             )
 
     def test_memory_001_files_typed_as_memory(self, tmp_path: Path):
@@ -260,10 +253,7 @@ class TestSrlDatasetLayout:
         self._seed(evidence_dir)
         result = scan_evidence_directory(evidence_dir)
         memory_001 = [
-            (p.name, t)
-            for _, _, files in result
-            for p, t, _ in files
-            if p.name.endswith(".001")
+            (p.name, t) for _, _, files in result for p, t, _ in files if p.name.endswith(".001")
         ]
         assert len(memory_001) == 4
         assert all(t == "memory" for _, t in memory_001)
@@ -281,29 +271,20 @@ class TestSrlDatasetLayout:
         assert len(disk_e01) == 4
         assert all(t == "disk" for _, t in disk_e01)
 
-    def test_mans_csv_txt_dump_baseline_img_all_skipped(
-        self, tmp_path: Path
-    ):
+    def test_mans_csv_txt_dump_baseline_img_all_skipped(self, tmp_path: Path):
         evidence_dir = tmp_path / "evidence"
         self._seed(evidence_dir)
         result = scan_evidence_directory(evidence_dir)
-        all_names = [
-            p.name
-            for _, _, files in result
-            for p, _, _ in files
-        ]
+        all_names = [p.name for _, _, files in result for p, _, _ in files]
         # .mans (per-host)
         assert not any(n.endswith(".mans") for n in all_names)
         # precooked/ files (any extension under that dir)
         for skipped_ext in (".csv", ".dump", ".xlsx", ".body", ".ioc", ".txt"):
-            assert not any(
-                n.endswith(skipped_ext) for n in all_names
-            ), f"a {skipped_ext} file leaked into the manifest"
+            assert not any(n.endswith(skipped_ext) for n in all_names), (
+                f"a {skipped_ext} file leaked into the manifest"
+            )
         # baseline/*.img
-        assert not any(
-            n.endswith(".img") and "baseline" in n.lower()
-            for n in all_names
-        )
+        assert not any(n.endswith(".img") and "baseline" in n.lower() for n in all_names)
         # Total file count: 4 hosts × 2 files = 8.
         assert len(all_names) == 8
 
@@ -311,27 +292,35 @@ class TestSrlDatasetLayout:
 class TestFormatInventoryTable:
     def test_two_host_two_evidence_table(self):
         ef_a = EvidenceFile(
-            evidence_id="a", file_path="/c/nfury-memory.raw",
-            evidence_type="memory", os_guess="Windows 7 64-bit",
+            evidence_id="a",
+            file_path="/c/nfury-memory.raw",
+            evidence_type="memory",
+            os_guess="Windows 7 64-bit",
             file_size_bytes=14_000_000_000,
         )
         ef_b = EvidenceFile(
-            evidence_id="b", file_path="/c/nfury-disk.E01",
-            evidence_type="disk", os_guess="Windows 7 64-bit",
+            evidence_id="b",
+            file_path="/c/nfury-disk.E01",
+            evidence_type="disk",
+            os_guess="Windows 7 64-bit",
             file_size_bytes=8_700_000_000,
         )
         ef_c = EvidenceFile(
-            evidence_id="c", file_path="/c/controller-memory.raw",
-            evidence_type="memory", os_guess="Server 2008 R2",
+            evidence_id="c",
+            file_path="/c/controller-memory.raw",
+            evidence_type="memory",
+            os_guess="Server 2008 R2",
             file_size_bytes=17_500_000_000,
         )
         hosts = [
             HostEvidence(
-                host_id="nfury", host_label="nfury",
+                host_id="nfury",
+                host_label="nfury",
                 evidence_files=[ef_a, ef_b],
             ),
             HostEvidence(
-                host_id="controller", host_label="controller",
+                host_id="controller",
+                host_label="controller",
                 evidence_files=[ef_c],
             ),
         ]

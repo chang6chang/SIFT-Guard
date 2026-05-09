@@ -26,9 +26,7 @@ from server.tools.memory import vol_cmdline
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CMDLINE_FIXTURE = (
-    Path(__file__).parent / "fixtures" / "vol_cmdline_sample.json"
-)
+CMDLINE_FIXTURE = Path(__file__).parent / "fixtures" / "vol_cmdline_sample.json"
 
 VALID_EVIDENCE_ID = "550e8400-e29b-41d4-a716-446655440000"
 VALID_SHA256 = "eb33bdf63730858a805463d171245b233335dd6d89ed458bc681f7d282e10563"
@@ -96,9 +94,7 @@ def _bad_record_json() -> str:
 
 
 class TestVolCmdlineResolution:
-    def test_evidence_id_not_in_case_yaml_raises_sanitized_value_error(
-        self, tmp_path: Path
-    ):
+    def test_evidence_id_not_in_case_yaml_raises_sanitized_value_error(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         bogus_id = "00000000-0000-4000-8000-000000000000"
         with pytest.raises(ValueError) as exc_info:
@@ -106,12 +102,8 @@ class TestVolCmdlineResolution:
         assert str(exc_info.value) == "evidence_id not found in CASE.yaml"
         assert bogus_id not in str(exc_info.value)
 
-    def test_artifact_class_unknown_rejected_with_sanitized_message(
-        self, tmp_path: Path
-    ):
-        case_dir = _make_case_dir(
-            tmp_path, artifact_class=ArtifactClass.UNKNOWN
-        )
+    def test_artifact_class_unknown_rejected_with_sanitized_message(self, tmp_path: Path):
+        case_dir = _make_case_dir(tmp_path, artifact_class=ArtifactClass.UNKNOWN)
         with pytest.raises(ValueError) as exc_info:
             vol_cmdline(VALID_EVIDENCE_ID, case_dir=str(case_dir))
         assert str(exc_info.value) == "evidence is not a memory image"
@@ -124,9 +116,7 @@ class TestVolCmdlineResolution:
 
 
 class TestVolCmdlineRejectionAudit:
-    def test_evidence_not_found_writes_rejection_chain_line(
-        self, tmp_path: Path
-    ):
+    def test_evidence_not_found_writes_rejection_chain_line(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
         bogus_id = "00000000-0000-4000-8000-000000000000"
 
@@ -135,11 +125,7 @@ class TestVolCmdlineRejectionAudit:
 
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
         assert audit_path.exists(), "rejection must extend the chain"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
         entry = lines[0]
         assert entry["tool_name"] == "vol_cmdline:rejected_evidence_not_found"
@@ -164,12 +150,13 @@ class TestVolCmdlineHappyPath:
             "-f /mnt/rocba/Rocba-Memory.raw -r json windows.cmdline.CmdLine"
         )
 
-        with patch(
-            "server.tools.memory.get_vol_version", return_value="2.27.0"
-        ), patch(
-            "server.tools.memory.run_vol_plugin",
-            return_value=(fixture_stdout, fake_command, 41.2),
-        ) as mock_run:
+        with (
+            patch("server.tools.memory.get_vol_version", return_value="2.27.0"),
+            patch(
+                "server.tools.memory.run_vol_plugin",
+                return_value=(fixture_stdout, fake_command, 41.2),
+            ) as mock_run,
+        ):
             summary = vol_cmdline(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
         # ExtractionRef is the agent-visible handle for the stored data.
@@ -201,9 +188,7 @@ class TestVolCmdlineHappyPath:
 
         # The full CmdLineResult is now on disk; loading it gives back
         # the three records with their original fields.
-        loaded_ref, parsed = load_extraction(
-            case_dir, VALID_EVIDENCE_ID, "windows.cmdline.CmdLine"
-        )
+        loaded_ref, parsed = load_extraction(case_dir, VALID_EVIDENCE_ID, "windows.cmdline.CmdLine")
         assert loaded_ref.cached is True
         assert loaded_ref.runtime_seconds is None  # cache contract
         assert parsed["plugin_name"] == "windows.cmdline.CmdLine"
@@ -230,7 +215,7 @@ class TestVolCmdlineHappyPath:
         # Extractions chain line was created with matching hash.
         chain_path = case_dir / "extractions.jsonl"
         chain_lines = [
-            json.loads(l) for l in chain_path.read_text().splitlines() if l.strip()
+            json.loads(line) for line in chain_path.read_text().splitlines() if line.strip()
         ]
         assert len(chain_lines) == 1
         assert chain_lines[0]["evidence_id"] == VALID_EVIDENCE_ID
@@ -242,11 +227,9 @@ class TestVolCmdlineHappyPath:
         # `vol_cmdline` (no `:cached` / `:rejected_*` suffix).
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
         audit_lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
+            json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()
         ]
-        assert any(l["tool_name"] == "vol_cmdline" for l in audit_lines)
+        assert any(entry["tool_name"] == "vol_cmdline" for entry in audit_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -255,32 +238,25 @@ class TestVolCmdlineHappyPath:
 
 
 class TestVolCmdlineRecordWarnings:
-    def test_one_bad_record_logged_as_warning_others_preserved(
-        self, tmp_path: Path
-    ):
+    def test_one_bad_record_logged_as_warning_others_preserved(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path)
-        with patch(
-            "server.tools.memory.get_vol_version", return_value="2.27.0"
-        ), patch(
-            "server.tools.memory.run_vol_plugin",
-            return_value=(_bad_record_json(), "ssh ... vol ...", 1.0),
+        with (
+            patch("server.tools.memory.get_vol_version", return_value="2.27.0"),
+            patch(
+                "server.tools.memory.run_vol_plugin",
+                return_value=(_bad_record_json(), "ssh ... vol ...", 1.0),
+            ),
         ):
             summary = vol_cmdline(VALID_EVIDENCE_ID, case_dir=str(case_dir))
 
         assert summary.extraction.record_count == 2
 
-        _, parsed = load_extraction(
-            case_dir, VALID_EVIDENCE_ID, "windows.cmdline.CmdLine"
-        )
+        _, parsed = load_extraction(case_dir, VALID_EVIDENCE_ID, "windows.cmdline.CmdLine")
         records = parsed["processes"]
         assert {r["pid"] for r in records} == {4, 100}
 
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
-        lines = [
-            json.loads(l)
-            for l in audit_path.read_text().splitlines()
-            if l.strip()
-        ]
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 2
         assert lines[0]["tool_name"] == "vol_cmdline:record_validation_warning"
         assert lines[1]["tool_name"] == "vol_cmdline"

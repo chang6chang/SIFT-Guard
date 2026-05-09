@@ -27,7 +27,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import pytest
 import yaml
 from pydantic import BaseModel
 
@@ -104,8 +103,7 @@ def _make_draft(analyst: str, title_seed: str) -> DraftFinding:
         evidence_id=EVID,
         analyst=analyst,
         state="DRAFT",
-        category=("process_hidden" if analyst == "process_analyst"
-                  else "network_anomaly"),
+        category=("process_hidden" if analyst == "process_analyst" else "network_anomaly"),
         severity="medium",
         confidence="MEDIUM",
         title=f"Synthetic finding {title_seed}",
@@ -114,9 +112,7 @@ def _make_draft(analyst: str, title_seed: str) -> DraftFinding:
             f"analyst {analyst}. The mock dispatch writes this entry "
             f"directly to findings.jsonl as if the analyst had run."
         ),
-        evidence_refs=[
-            EvidenceRef(source_tool="vol_pslist", audit_line=1, detail="seed")
-        ],
+        evidence_refs=[EvidenceRef(source_tool="vol_pslist", audit_line=1, detail="seed")],
         created_at=_NOW,
         tool_invocations=["vol_pslist:1"],
     )
@@ -168,8 +164,10 @@ class _MockDispatcher:
         )
         for finding in self._analyst_findings.get(agent, []):
             append_finding_entry(self.case_dir, finding)
+
             class _Stub(BaseModel):
                 ok: str = "ok"
+
             append_audit_entry(
                 case_dir=self.case_dir,
                 tool_name="record_finding",
@@ -211,8 +209,10 @@ class _MockDispatcher:
         if self._iter_correlations_idx < len(self._validator_corrs):
             for corr in self._validator_corrs[self._iter_correlations_idx]:
                 append_correlation_entry(self.case_dir, corr)
+
                 class _Stub(BaseModel):
                     ok: str = "ok"
+
                 append_audit_entry(
                     case_dir=self.case_dir,
                     tool_name="record_correlation",
@@ -256,9 +256,7 @@ def _make_corroborates(target_fid: str, strength: str) -> CorroboratesCorrelatio
         iteration_number=1,
         created_at=_NOW,
         audit_line=1,
-        evidence_refs=[
-            EvidenceRef(source_tool="vol_pslist", audit_line=1, detail="seed")
-        ],
+        evidence_refs=[EvidenceRef(source_tool="vol_pslist", audit_line=1, detail="seed")],
         hypothesis=(
             "Synthetic corroborates correlation planted by the loop "
             "test fixture. Drives R3/R4 promotion in PROMOTE step."
@@ -277,9 +275,7 @@ def _make_request_followup(
         iteration_number=1,
         created_at=_NOW,
         audit_line=1,
-        evidence_refs=[
-            EvidenceRef(source_tool="vol_pslist", audit_line=1, detail="seed")
-        ],
+        evidence_refs=[EvidenceRef(source_tool="vol_pslist", audit_line=1, detail="seed")],
         hypothesis=(
             "Synthetic request_followup correlation that asks the "
             "named analyst to re-run with the given focus context."
@@ -321,11 +317,7 @@ class TestFirstIterationDispatch:
             case_cwd=tmp_path,
         )
         assert isinstance(outcome, LoopOutcome)
-        agents_first = [
-            c["agent"]
-            for c in mock.analyst_calls
-            if c["iteration_number"] == 1
-        ]
+        agents_first = [c["agent"] for c in mock.analyst_calls if c["iteration_number"] == 1]
         assert sorted(agents_first) == ["network_analyst", "process_analyst"]
 
 
@@ -352,10 +344,10 @@ class TestSecondIterationFollowup:
             },
             validator_correlations_per_iter=[
                 [followup_corr],  # iter 1 emits followup
-                [],               # iter 2 emits nothing
+                [],  # iter 2 emits nothing
             ],
         )
-        outcome = run_loop(
+        run_loop(
             case_dir=case_dir,
             evidence_id=EVID,
             max_iterations=3,
@@ -364,9 +356,7 @@ class TestSecondIterationFollowup:
             update_finding_fn=_real_update_via_kwargs,
             case_cwd=tmp_path,
         )
-        agents_iter2 = [
-            c for c in mock.analyst_calls if c["iteration_number"] == 2
-        ]
+        agents_iter2 = [c for c in mock.analyst_calls if c["iteration_number"] == 2]
         assert len(agents_iter2) == 1
         assert agents_iter2[0]["agent"] == "process_analyst"
         assert agents_iter2[0]["focus_context"] == {"pids": [7900]}
@@ -416,7 +406,7 @@ class TestTerminationRc:
                 "network_analyst": [],
             },
             validator_correlations_per_iter=[[]],  # no correlations,
-                                                   # nothing promotes
+            # nothing promotes
             token_per_dispatch=250_000,
         )
         outcome = run_loop(
@@ -590,9 +580,7 @@ class TestR5PersistsToChain:
     fires on the post-R5 state.
     """
 
-    def test_three_silent_drafts_reach_confirmed_via_r5(
-        self, tmp_path: Path
-    ):
+    def test_three_silent_drafts_reach_confirmed_via_r5(self, tmp_path: Path):
         from orchestrator.loop import (
             _IterationState,
             _step_plan,
@@ -618,9 +606,7 @@ class TestR5PersistsToChain:
         # === PROMOTE call 1: iterations_so_far=1 — R5 not yet
         # eligible. All three should be R6 (no chain growth, still
         # DRAFT).
-        state1 = _IterationState(
-            iteration_number=2, started_at=_NOW
-        )
+        state1 = _IterationState(iteration_number=2, started_at=_NOW)
         _step_promote(
             state1,
             case_dir=case_dir,
@@ -637,9 +623,7 @@ class TestR5PersistsToChain:
         # Three update_finding writes append; chain reflects
         # CONFIRMED. driving_correlation_ids is empty (R5's defining
         # precondition), permitted by the model_validator.
-        state2 = _IterationState(
-            iteration_number=3, started_at=_NOW
-        )
+        state2 = _IterationState(iteration_number=3, started_at=_NOW)
         _step_promote(
             state2,
             case_dir=case_dir,

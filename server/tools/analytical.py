@@ -99,9 +99,7 @@ _PSLIST_FIELDS: frozenset[str] = frozenset(
         "exit_time",
     }
 )
-_PSTREE_FIELDS: frozenset[str] = _PSLIST_FIELDS | frozenset(
-    {"audit", "cmd", "path"}
-)
+_PSTREE_FIELDS: frozenset[str] = _PSLIST_FIELDS | frozenset({"audit", "cmd", "path"})
 _NETSCAN_FIELDS: frozenset[str] = frozenset(
     {
         "proto",
@@ -116,9 +114,7 @@ _NETSCAN_FIELDS: frozenset[str] = frozenset(
         "created",
     }
 )
-_CMDLINE_FIELDS: frozenset[str] = frozenset(
-    {"pid", "process_name", "cmdline"}
-)
+_CMDLINE_FIELDS: frozenset[str] = frozenset({"pid", "process_name", "cmdline"})
 _MALFIND_FIELDS: frozenset[str] = frozenset(
     {
         "pid",
@@ -130,9 +126,7 @@ _MALFIND_FIELDS: frozenset[str] = frozenset(
         "disassembly",
     }
 )
-_DISK_MFT_FIELDS: frozenset[str] = frozenset(
-    {"timestamp", "full_path", "entry_type", "file_size"}
-)
+_DISK_MFT_FIELDS: frozenset[str] = frozenset({"timestamp", "full_path", "entry_type", "file_size"})
 _DISK_PREFETCH_FIELDS: frozenset[str] = frozenset(
     {
         "executable_name",
@@ -428,9 +422,7 @@ def _filter_args_for_audit(filters: list[FieldFilter]) -> list[dict]:
     form. Same property holds for the agent-input echoed into
     rejection lines.
     """
-    return [
-        {"field": f.field, "op": f.op, "value": f.value} for f in filters
-    ]
+    return [{"field": f.field, "op": f.op, "value": f.value} for f in filters]
 
 
 def query_records(
@@ -465,9 +457,7 @@ def query_records(
         "offset": offset,
     }
 
-    _validate_evidence_id(
-        case_dir_path, evidence_id, _QUERY_RECORDS_TOOL, input_args
-    )
+    _validate_evidence_id(case_dir_path, evidence_id, _QUERY_RECORDS_TOOL, input_args)
 
     if limit > _QUERY_RECORDS_LIMIT_CAP or limit < 0 or offset < 0:
         _log_rejection(
@@ -559,9 +549,7 @@ def group_by(
         "top_n": top_n,
     }
 
-    _validate_evidence_id(
-        case_dir_path, evidence_id, _GROUP_BY_TOOL, input_args
-    )
+    _validate_evidence_id(case_dir_path, evidence_id, _GROUP_BY_TOOL, input_args)
 
     if top_n > _GROUP_BY_TOP_N_CAP or top_n < 0:
         _log_rejection(
@@ -675,9 +663,7 @@ def set_difference(
         "limit": limit,
     }
 
-    _validate_evidence_id(
-        case_dir_path, evidence_id, _SET_DIFFERENCE_TOOL, input_args
-    )
+    _validate_evidence_id(case_dir_path, evidence_id, _SET_DIFFERENCE_TOOL, input_args)
 
     if direction not in ("a_minus_b", "b_minus_a", "symmetric"):
         # Pydantic SetDifferenceResult.direction is a Literal but the
@@ -711,10 +697,7 @@ def set_difference(
         )
         raise ValueError("limit out of allowed range")
 
-    if (
-        key not in _FIELDS_BY_PLUGIN[plugin_a]
-        or key not in _FIELDS_BY_PLUGIN[plugin_b]
-    ):
+    if key not in _FIELDS_BY_PLUGIN[plugin_a] or key not in _FIELDS_BY_PLUGIN[plugin_b]:
         _log_rejection(
             case_dir_path,
             _SET_DIFFERENCE_TOOL,
@@ -774,21 +757,15 @@ def set_difference(
     if direction == "a_minus_b":
         returned_keys = a_only
         source_records = records_a
-        total_matching = sum(
-            1 for r in records_a if r.get(key) in returned_keys
-        )
+        total_matching = sum(1 for r in records_a if r.get(key) in returned_keys)
     elif direction == "b_minus_a":
         returned_keys = b_only
         source_records = records_b
-        total_matching = sum(
-            1 for r in records_b if r.get(key) in returned_keys
-        )
+        total_matching = sum(1 for r in records_b if r.get(key) in returned_keys)
     else:  # symmetric
         returned_keys = a_only | b_only
         source_records = records_a + records_b
-        total_matching = sum(
-            1 for r in source_records if r.get(key) in returned_keys
-        )
+        total_matching = sum(1 for r in source_records if r.get(key) in returned_keys)
 
     # Per-record (NOT per-key) returned set: PID 7900's two
     # pool-aliased EPROCESS records both come back when querying
@@ -813,12 +790,8 @@ def set_difference(
     # a true cross-schema symmetric (e.g., pslist↔netscan) cannot
     # happen because `key` must be valid on both, and only `pid`
     # qualifies — which is integer-typed in both schemas.
-    source_plugin_for_untrusted = (
-        plugin_b if direction == "b_minus_a" else plugin_a
-    )
-    diff_untrusted = untrusted_fields_for(
-        source_plugin_for_untrusted, fields
-    )
+    source_plugin_for_untrusted = plugin_b if direction == "b_minus_a" else plugin_a
+    diff_untrusted = untrusted_fields_for(source_plugin_for_untrusted, fields)
 
     result = SetDifferenceResult(
         extraction_a=ref_a,
@@ -879,9 +852,7 @@ def subtree(
         "fields": fields,
     }
 
-    _validate_evidence_id(
-        case_dir_path, evidence_id, _SUBTREE_TOOL, input_args
-    )
+    _validate_evidence_id(case_dir_path, evidence_id, _SUBTREE_TOOL, input_args)
 
     if plugin_name != "windows.pstree.PsTree":
         # Defense-in-depth: the Literal in the MCP signature should

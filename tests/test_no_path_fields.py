@@ -75,9 +75,7 @@ def _is_path_shaped_name(field_name: str) -> bool:
 
 # Kept for the symmetric self-test below — `filepath` is the canonical
 # allow-listed name and the test still pins the detector against it.
-_PATH_NAME_PATTERN = re.compile(
-    r"\b(path|file|filename|filepath|dir|directory)\b", re.IGNORECASE
-)
+_PATH_NAME_PATTERN = re.compile(r"\b(path|file|filename|filepath|dir|directory)\b", re.IGNORECASE)
 
 # (tool_name, field_name) pairs that are allowed to look path-shaped.
 # Keep this list minimal. Every entry is a load-bearing exception that
@@ -131,9 +129,7 @@ def _walk_tool_for_violations(tool) -> list[str]:
         if (tool.name, prop_name) in ALLOWED_PATH_FIELDS:
             continue
         name_hits = _is_path_shaped_name(prop_name)
-        format_hits = (
-            isinstance(prop_schema, dict) and prop_schema.get("format") == "path"
-        )
+        format_hits = isinstance(prop_schema, dict) and prop_schema.get("format") == "path"
         if name_hits or format_hits:
             why = []
             if name_hits:

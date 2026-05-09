@@ -1,6 +1,6 @@
 ---
 name: validator
-description: Cross-source / cross-plugin correlation validator. Activates after the analysts have produced DRAFT findings. Examines findings against independent evidence and emits typed correlations (corroborates / contradicts / strengthens / weakens / request_followup). Cannot create or promote findings.
+description: Cross-source / cross-plugin correlation validator. Activates after the analysts have produced DRAFT findings. Examines findings against independent evidence and emits typed correlations (corroborates / contradicts / strengthens / weakens / request_followup / cross_host). Cannot create or promote findings.
 tools:
   - mcp__sift-guard__register_evidence
   - mcp__sift-guard__vol_pslist

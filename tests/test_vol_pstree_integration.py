@@ -54,8 +54,7 @@ def test_vol_pstree_against_live_rocba(monkeypatch):
     # ---- Step 2: SSH+vol smoke check. ----
     try:
         sift_vm.get_vol_version()
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
-            OSError) as exc:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
         pytest.skip(f"SSH/vol unavailable on SIFT VM at {real_host}: {exc}")
 
     # ---- Step 3: find the registered Rocba entry. ----
@@ -64,7 +63,8 @@ def test_vol_pstree_against_live_rocba(monkeypatch):
     doc = yaml.safe_load(ON_DISK_CASE_YAML.read_text(encoding="utf-8")) or {}
     rocba = next(
         (
-            entry for entry in doc.get("evidence", [])
+            entry
+            for entry in doc.get("evidence", [])
             if entry.get("original_filename") == "Rocba-Memory.raw"
             and entry.get("artifact_class") == "memory_image"
         ),
@@ -76,21 +76,16 @@ def test_vol_pstree_against_live_rocba(monkeypatch):
 
     # ---- Step 4: snapshot the audit log. ----
     if ON_DISK_AUDIT_LOG.exists():
-        before_lines = ON_DISK_AUDIT_LOG.read_text(
-            encoding="utf-8"
-        ).splitlines()
+        before_lines = ON_DISK_AUDIT_LOG.read_text(encoding="utf-8").splitlines()
     else:
         before_lines = []
     before_count = len(before_lines)
     expected_prev_hash = (
-        json.loads(before_lines[-1])["this_line_hash"]
-        if before_lines else "0" * 64
+        json.loads(before_lines[-1])["this_line_hash"] if before_lines else "0" * 64
     )
 
     # ---- Step 5: the real call. ----
-    result = vol_pstree(
-        rocba_evidence_id, case_dir=str(PROJECT_ROOT / "case-data")
-    )
+    result = vol_pstree(rocba_evidence_id, case_dir=str(PROJECT_ROOT / "case-data"))
 
     # ---- Step 6: result assertions. ----
     assert isinstance(result, PstreeResult)
@@ -101,8 +96,7 @@ def test_vol_pstree_against_live_rocba(monkeypatch):
     # 58. Lower bound stays conservative for portability across smaller
     # test images.
     assert len(result.processes) >= 5, (
-        f"too few top-level processes: {len(result.processes)} "
-        "— expected roots/orphans + System"
+        f"too few top-level processes: {len(result.processes)} — expected roots/orphans + System"
     )
 
     # Sanity bound. Rocba observed 29.5s; 120s gives ~4× headroom.
@@ -114,10 +108,7 @@ def test_vol_pstree_against_live_rocba(monkeypatch):
     # PID 4 is always "System" on Windows, and it must be at the top
     # level (PPID 0). If pstree silently nested it under something,
     # the parent-child reconstruction is broken.
-    system_top = [
-        p for p in result.processes
-        if p.pid == 4 and p.image_file_name == "System"
-    ]
+    system_top = [p for p in result.processes if p.pid == 4 and p.image_file_name == "System"]
     assert len(system_top) == 1, (
         f"PID 4 (System) must be a top-level node; found {len(system_top)} "
         f"in the top-level list of {len(result.processes)}"
@@ -143,8 +134,7 @@ def test_vol_pstree_against_live_rocba(monkeypatch):
 
     # Reproducibility metadata captured.
     assert re.match(r"^\d+\.\d+", result.volatility_version), (
-        f"volatility_version should look like a dotted version; "
-        f"got {result.volatility_version!r}"
+        f"volatility_version should look like a dotted version; got {result.volatility_version!r}"
     )
 
     # ---- Step 7: audit chain assertions. ----

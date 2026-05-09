@@ -57,9 +57,7 @@ class TestBuildRecords:
         records = build_records(bundle)
         # Fixture has 5 active + 1 revoked + 1 deprecated +
         # 1 course-of-action + 1 malware. Keep only the 5 active.
-        assert {r.technique_id for r in records} == {
-            "T1003", "T1014", "T1027", "T1036", "T1055"
-        }
+        assert {r.technique_id for r in records} == {"T1003", "T1014", "T1027", "T1036", "T1055"}
 
     def test_records_sorted_by_technique_id(self):
         records = build_records(_load_fixture())
@@ -106,9 +104,7 @@ class TestAttackUrl:
         # serves the file only at the percent-encoded form.
         url = attack_url()
         assert "%26" in url, f"& must be %26-encoded in {url}"
-        assert "&" not in url.split("//", 1)[1], (
-            "no raw & should survive the encoding step"
-        )
+        assert "&" not in url.split("//", 1)[1], "no raw & should survive the encoding step"
         assert ATTACK_TAG.replace("&", "%26") in url
 
 
@@ -168,6 +164,7 @@ class TestBuildIndexFiles:
 
     def test_faiss_index_has_one_vector_per_record(self, built_index):
         import faiss
+
         records, out, _ = built_index
         index = faiss.read_index(str(out / _INDEX_FILENAME))
         assert index.ntotal == len(records)

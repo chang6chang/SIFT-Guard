@@ -103,9 +103,7 @@ class Retriever:
             )
 
         self.index = faiss.read_index(str(index_path))
-        self.records: list[dict[str, Any]] = json.loads(
-            records_path.read_text(encoding="utf-8")
-        )
+        self.records: list[dict[str, Any]] = json.loads(records_path.read_text(encoding="utf-8"))
         if len(self.records) != self.index.ntotal:
             raise RuntimeError(
                 f"index/records mismatch: {self.index.ntotal} vectors "
@@ -164,9 +162,7 @@ class Retriever:
             # search — the user typed a plausible ID we don't have,
             # and a related technique is more useful than nothing.
 
-        emb = self.model.encode(
-            [normalized_query], normalize_embeddings=True
-        ).astype(np.float32)
+        emb = self.model.encode([normalized_query], normalize_embeddings=True).astype(np.float32)
 
         # Pull more candidates than k so we have spares to fill the
         # gap left by the exact-ID hit (and any future dedup logic).
@@ -197,9 +193,7 @@ def search(
 
     Reloads the model on every call. Use `Retriever(...).search(...)`
     directly when issuing more than one query."""
-    return Retriever(index_dir=index_dir, model_name=model_name).search(
-        query, k=k
-    )
+    return Retriever(index_dir=index_dir, model_name=model_name).search(query, k=k)
 
 
 __all__ = ["DEFAULT_EMBEDDING_MODEL", "Retriever", "search"]

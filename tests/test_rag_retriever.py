@@ -59,8 +59,7 @@ class TestRetrievalSemantics:
         results = retriever.search("T1055", k=5)
         assert results, "expected at least one result"
         assert results[0].technique_id == "T1055", (
-            f"top result for 'T1055' must be T1055; got "
-            f"{[r.technique_id for r in results]}"
+            f"top result for 'T1055' must be T1055; got {[r.technique_id for r in results]}"
         )
         # Exact-ID short-circuit assigns score 1.0 — see retriever
         # module-level comment on _TECHNIQUE_ID_RE for why pure vector
@@ -72,13 +71,9 @@ class TestRetrievalSemantics:
         )
         # The remaining slots come from vector search — no duplicates.
         ids = [r.technique_id for r in results]
-        assert len(set(ids)) == len(ids), (
-            f"vector backfill leaked the exact-ID hit back in: {ids}"
-        )
+        assert len(set(ids)) == len(ids), f"vector backfill leaked the exact-ID hit back in: {ids}"
 
-    def test_id_shaped_query_for_missing_id_falls_through_to_vector(
-        self, retriever
-    ):
+    def test_id_shaped_query_for_missing_id_falls_through_to_vector(self, retriever):
         # T9000 isn't in the fixture. The retriever must not raise; it
         # must fall through to vector search and return semantically
         # similar techniques. This is the real-world failure mode —
@@ -125,16 +120,12 @@ class TestRetrievalSemantics:
 
 
 class TestRetrieverContract:
-    def test_search_returns_RagRecord_instances_with_score_filled(
-        self, retriever
-    ):
+    def test_search_returns_RagRecord_instances_with_score_filled(self, retriever):
         results = retriever.search("masquerading", k=2)
         assert all(isinstance(r, RagRecord) for r in results)
         for r in results:
             assert r.score is not None, "score must be filled by the retriever"
-            assert r.citation_url.startswith(
-                "https://attack.mitre.org/techniques/"
-            )
+            assert r.citation_url.startswith("https://attack.mitre.org/techniques/")
             assert r.license == "CC-BY 4.0"
 
     def test_k_capped_to_index_size(self, retriever):
@@ -158,9 +149,7 @@ class TestRetrieverContract:
 
 
 class TestIndexVersionGuard:
-    def test_constructing_with_mismatched_model_refuses_loudly(
-        self, index_dir
-    ):
+    def test_constructing_with_mismatched_model_refuses_loudly(self, index_dir):
         # Index was built with all-MiniLM-L6-v2; passing a different
         # model name must refuse rather than silently produce
         # meaningless cosine scores against a different embedding

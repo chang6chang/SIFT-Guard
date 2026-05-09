@@ -99,9 +99,7 @@ def append_finding_entry(
         finding=finding.model_dump(mode="json"),
         prev_finding_hash=prev_finding_hash,
     )
-    this_finding_hash = FindingChainEntry.compute_this_finding_hash(
-        **chained_fields
-    )
+    this_finding_hash = FindingChainEntry.compute_this_finding_hash(**chained_fields)
 
     entry = FindingChainEntry(
         line_number=line_number,
@@ -154,9 +152,7 @@ def read_finding_ids(case_dir: Path | str) -> set[str]:
     return ids
 
 
-def read_finding_state(
-    case_dir: Path | str, finding_id: str
-) -> tuple[str, str] | None:
+def read_finding_state(case_dir: Path | str, finding_id: str) -> tuple[str, str] | None:
     """Return `(state, confidence)` of the most-recent record for
     `finding_id`, last-write-wins across DRAFT and UPDATE entries.
 

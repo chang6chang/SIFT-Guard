@@ -143,12 +143,8 @@ def _build_prompt(
         lines.append(json.dumps(findings_summary, indent=2))
 
     role_intros = {
-        "process_analyst": (
-            "Analyze the registered Windows memory image for process anomalies."
-        ),
-        "network_analyst": (
-            "Analyze the registered Windows memory image for network anomalies."
-        ),
+        "process_analyst": ("Analyze the registered Windows memory image for process anomalies."),
+        "network_analyst": ("Analyze the registered Windows memory image for network anomalies."),
         "disk_analyst": (
             "Analyze the registered Windows disk image for filesystem, "
             "execution, event-log, and registry anomalies."
@@ -169,10 +165,7 @@ def _build_prompt(
         # context at the top of the prompt — separate from the
         # structured key/value lines the agent parses for tool calls.
         host_text = host_label or host_id
-        intro = (
-            f"You are analyzing evidence from host: {host_text} "
-            f"({host_id}).\n" + intro
-        )
+        intro = f"You are analyzing evidence from host: {host_text} ({host_id}).\n" + intro
     if agent == "validator" and host_grouped_findings is not None:
         # The cross-host extension is communicated to the validator
         # at run-time (in-prompt) rather than pinned in
@@ -185,10 +178,10 @@ def _build_prompt(
             "on different hosts that share a load-bearing indicator "
             "(an IP address, a binary hash, a synchronized timestamp, "
             "a named MITRE ATT&CK technique), emit a correlation with "
-            "`correlation_type=\"cross_host\"`, list every involved "
+            '`correlation_type="cross_host"`, list every involved '
             "host_id in `host_ids`, and capture the shared indicator "
             "in `shared_indicator` (e.g. "
-            "`{\"type\": \"ip\", \"value\": \"10.3.58.42\"}`). "
+            '`{"type": "ip", "value": "10.3.58.42"}`). '
             "Cross-host correlations are independent-source corroborations "
             "and feed the same R3 strong-corroboration promotion path."
         )
