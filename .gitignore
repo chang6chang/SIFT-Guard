@@ -44,9 +44,11 @@ secrets/
 # RAG corpus + index (large, regenerable from rag/ingest_attack.py)
 rag/data/
 
-# Extractions and audit logs (per-case, regenerable, can be huge)
-extractions/
-audit/
+# Per-case generated logs and extractions under case-data/
+# (regenerable, can be huge). Scoped so docs/execution-logs/audit/ —
+# the redacted submission deliverable — is not silently excluded.
+case-data/audit/
+case-data/extractions/
 
 # Claude Code local state
 .claude/state/
