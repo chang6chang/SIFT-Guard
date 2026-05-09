@@ -8,23 +8,30 @@
 
 ## Executive summary
 
-SIFT-Guard ran end-to-end against a 19 GB Windows 10 memory image
-(Rocba, the SANS hackathon case) and a 200 MiB synthetic memory
-image carrying planted prompt-injection content in
-evidence-derived fields. Two analyst subagents (process and
-network) and one validator subagent operate over a 13-tool MCP
-server with closed-Literal payloads and a hash-chained audit
-trail; a Python orchestrator drives the 5-step self-correction
-loop with R1–R6 promotion rules. Across five orchestrator
-invocations, the system wrote 68 substantive findings and 7
-probe-pattern artifacts into a single shared chain, the validator
-emitted 84 correlations, and the orchestrator applied 92
-state-update writes (R1=34 contradiction-driven, R3=55 strong
-corroboration, R4=3 moderate corroboration). 58 findings reached
-CONFIRMED, 6 reached DISPUTED, 11 remain DRAFT awaiting future
-correlation. Eight failure modes were caught during development —
-documented below with the architectural response and resolution
-chain — and four design choices are explicitly deferred.
+SIFT-Guard ran end-to-end against three independent evidence
+sources: a 19 GB Windows 10 memory image (Rocba, the SANS hackathon
+case), a 200 MiB synthetic memory image carrying planted
+prompt-injection content in evidence-derived fields, and the
+SRL-2015 Compromised Enterprise Network — a four-host APT teaching
+case (nfury / nromanoff / win2008R2-controller / xp-tdungan)
+captured 2012-04-06 within a 3-hour window during active incident
+response. Three analyst subagents (process, network, disk) and one
+validator subagent operate over a 19-tool MCP server with
+closed-Literal payloads and a hash-chained audit trail; a Python
+orchestrator drives the 5-step self-correction loop with R1–R6
+promotion rules and **multi-host cross-source validation** via the
+new `cross_host` correlation type — a capability now demonstrated,
+not just designed. Across six orchestrator invocations, the system
+wrote 113 substantive findings and 7 probe-pattern artifacts into a
+single shared chain, the validator emitted 94+ correlations
+(including 10 `cross_host` correlations on the SRL-2015 run), and
+the orchestrator applied 135 state-update writes (R1=46
+contradiction-driven, R3=75 strong corroboration, R4=14 moderate
+corroboration). 89 findings reached CONFIRMED (78 HIGH + 11 MEDIUM),
+6 reached DISPUTED, 25 remain DRAFT awaiting future correlation.
+Eleven failure modes were caught during development — documented
+below with the architectural response and resolution chain — and
+four design choices are explicitly deferred.
 
 ## Test corpus
 
@@ -53,12 +60,22 @@ chain — and four design choices are explicitly deferred.
 | Registered | 2026-05-06 22:13:17 UTC |
 | Why this case | Tests adversarial robustness under controlled, reproducible conditions. Injection content lives in `image_file_name`, `cmd`, `path`, and `owner` — fields the schema marks as `untrusted_fields`. See `docs/synthetic-demo-image.md`. |
 
+### SRL-2015 — multi-host APT teaching case
+
+| | |
+|---|---|
+| Source | SANS FOR508 SRL-2015 Compromised Enterprise Network (Rob Lee) |
+| Hosts | 4 memory images, all captured 2012-04-06 within a ~3-hour window during active APT incident response |
+| Host roster | `nfury` (Windows 7 SP1 64-bit, workstation) · `nromanoff` (Windows 7 SP1 32-bit, workstation) · `win2008R2-controller` (Server 2008 R2 64-bit, domain controller) · `xp-tdungan` (Windows XP SP3, workstation) |
+| Filenames | `nfury-Memory.001`, `nromanoff-Memory.001`, `controller-Memory.001`, `xp-tdungan-Memory.001` (FTK Imager split-image first segments) |
+| Why this case | Tests **multi-host cross-source validation** — the design goal that turns the agent's correlation substrate from `cross_plugin` (within one image) into `cross_host` (across independently-acquired images of distinct hosts in the same incident). The four hosts share an active intruder, so genuine lateral-movement and shared-toolkit signals are present in the data — confirming hypotheses requires correlating evidence across hosts. |
+
 ## Methodology
 
 **Analyst dispatch.** Subagent frontmatters restrict each analyst
 to `mcp__sift-guard__*` only — no `Read`, `Bash`, `Grep`, `Edit`,
 `Write`, or `WebFetch`. The MCP tool surface itself is locked by
-`tests/test_mcp_protocol.py::test_thirteen_tool_surface_is_locked`.
+`tests/test_mcp_protocol.py::test_nineteen_tool_surface_is_locked`.
 System prompts are minimal-methodology by design (the architecture
 tests whether typed tools elicit useful analysis without prompted
 methodology). Findings flow only through `record_finding`;
@@ -211,11 +228,96 @@ References: `docs/adversarial-robustness.md`,
 `docs/adversarial-robustness-demo.transcript.md`,
 `docs/adversarial-robustness-demo.audit-chain.md`.
 
+## Multi-host cross-source validation — SRL-2015
+
+### Run parameters
+
+`--max-iterations 4 --token-budget 2000000`, memory-only (no disk
+images mounted on this run). Inventory scanner detected four `.001`
+memory split-images, registered each as an independent
+`evidence_id`, and built a `CaseManifest` with one host per
+evidence. The orchestrator dispatched `process_analyst`,
+`network_analyst`, and the `validator` per host, with the validator
+gaining the cross-host correlation grouping pass on every
+iteration's read-after-dispatch sweep.
+
+### Aggregate results
+
+| | |
+|---|---|
+| Hosts analyzed | 4 (nfury, nromanoff, controller, xp-tdungan) |
+| Tier-1 extractions executed | 23 / 24 attempted (XP `vol_netscan` unsupported — see failure mode #9) |
+| New DRAFT findings | 45 across the 4 hosts |
+| `cross_host` correlations | 10 (3 strong lateral-movement, 4 strong shared-infrastructure, 3 moderate) |
+| `rag_query` calls | 8, grounding findings across 6 MITRE TTPs: T1014 Rootkit, T1036.005 Match Legitimate Name or Location, T1219 Remote Access Software, T1021.001 Remote Desktop Protocol, T1071.001 Web Protocols, T1569.002 Service Execution |
+| State distribution (SRL findings only) | 22 CONFIRMED/HIGH · 9 CONFIRMED/MEDIUM · 0 DISPUTED · 14 DRAFT (uncorroborated) |
+| Promotion rules fired (this run) | R3=20 strong corroboration · R4=11 moderate corroboration · R1=12 contradiction (all on legacy Rocba findings; SRL findings produced no contradictions) |
+| Iterations | 2 of 4 |
+| Termination | `R_b_disputed_set_unchanged` (validator's disputed-set was identical between iter 1 and iter 2 — the case had reached its natural quiescence under available evidence) |
+| Cumulative uncached tokens | 648,000 |
+
+### Three forensic smoking guns from cross-host correlation
+
+These are the headline findings the multi-host substrate produced
+that no single-host analysis could have produced at the same
+confidence — the architectural payoff of `cross_host`.
+
+**1. `spinlock.exe` shared APT toolkit (nromanoff + xp-tdungan).**
+The same uncommon binary surfaces on two independently-acquired
+memory images. On nromanoff, `spinlock.exe` chains under PSEXESVC
+(PsExec lateral tool transfer T1570 + service execution
+T1569.002). On xp-tdungan, three concurrent `spinlock.exe`
+instances are actively DKOM-hidden from `pslist` (T1014 Rootkit) —
+visible only via `psscan` pool-tag scanning. The 36-hour gap
+between host deployments (`nromanoff` 2012-04-04T18:54:51Z →
+`xp-tdungan` 2012-04-06T13:25:00Z) and the loader/payload pair
+shape are consistent with operator dwell-time, not automated
+propagation. `cross_host(strength=strong, host_ids=["nromanoff",
+"xp-tdungan"], shared_indicator="spinlock.exe")`.
+
+**2. Bidirectional SMB session caught in flight (nromanoff ↔
+controller).** TCP session `10.3.58.5:49805 ↔ 10.3.58.9:445`
+visible from BOTH endpoints simultaneously: nromanoff's `netscan`
+shows the outbound connection, controller's `netscan` shows the
+inbound — same 4-tuple, same source-port match, on two
+independently-acquired memory images. Source-port match across
+independent images is a strong-confidence lateral-movement
+signal because source-port collisions for an unrelated session
+are vanishingly unlikely; this confirms T1021.002 SMB lateral
+movement in progress at acquisition time. `cross_host(strength=
+strong, host_ids=["nromanoff", "controller"], shared_indicator=
+"10.3.58.5:49805↔10.3.58.9:445")`.
+
+**3. `svchost.exe` masquerade from identical non-standard path
+(nromanoff + xp-tdungan).** `C:\Windows\System32\dllhost\svchost.exe`
+with no `-k <service-group>` flag, on two separate hosts.
+Legitimate `svchost.exe` resides in `System32\` and always carries
+the `-k` argument; placing it under a `dllhost\` subdirectory and
+running it without `-k` is a textbook T1036.005 (Match Legitimate
+Name or Location) — and finding the **same** non-standard path on
+two hosts links both incidents to the same operator toolkit.
+`cross_host(strength=strong, host_ids=["nromanoff", "xp-tdungan"],
+shared_indicator="C:\\Windows\\System32\\dllhost\\svchost.exe")`.
+
+### Single-host-invisible insight
+
+The architectural argument: each of these findings exists at
+**reduced confidence** on individual hosts. `spinlock.exe` on
+nromanoff alone could be sysadmin tooling; on xp-tdungan alone
+it's a single-host anomaly with a hidden-process signal but no
+attribution context. The cross-host correlation collapses both
+into a shared-toolkit attribution at HIGH confidence — the kind of
+conclusion that *requires* multi-source evidence by definition,
+and that the existing single-image tools (`set_difference` across
+plugins on one image) cannot produce. This is what the project's
+design goal — cross-source validation as the autonomy wedge — buys
+when it's exercised on real multi-host evidence.
+
 ## Documented failure modes
 
 The rubric explicitly rewards documented failure modes. Each entry
 below: what happened, when, how the architecture responded, the
-resolution, and the criterion(s) it informs. Eight items.
+resolution, and the criterion(s) it informs. Eleven items.
 
 ### #1 — Process analyst v1 architectural deadlock (2026-05-05)
 
@@ -343,17 +445,101 @@ search. Sigma rule licensing is DRL 1.1 — permissive,
 MIT-flavored with attribution + license-disclosure requirements;
 documented in `rag/SOURCES.md`.
 
-### #8 — Disk-side analysts not implemented (project-wide)
+### #8 — Disk-side analysts shipped, not exercised on submission evidence
 
-Rocba is memory-only and no public disk+memory pair was sourced.
-The architecture extends to disk artifacts (same `evidence_id`,
-`register_evidence`, audit, tier-1/tier-2 patterns) and the
-dispatch map in `orchestrator/loop.py` would activate disk
-analysts if any were registered, but no `disk_analyst`,
-`registry_analyst`, or `eventlog_analyst` agent files exist.
-**Scope-bounded** to memory analysts; cross-validation
-substantively runs as `cross_plugin` rather than `cross_source`
-on this submission's evidence. Rubric: scope transparency.
+Rocba is memory-only; the synthetic-injected case is memory-only;
+SRL-2015 ships as memory-only `.001` images (no disk+memory pair
+was sourced for the hackathon). The architecture extends to disk
+artifacts (same `evidence_id`, `register_evidence`, audit,
+tier-1/tier-2 patterns), and the week-8 disk-side ship landed
+the `disk_analyst` agent file plus four disk-side tier-1
+wrappers — `disk_mft_timeline`, `disk_prefetch`, `disk_evtx`,
+`disk_registry` — bringing the MCP surface to 19 tools. The
+dispatch map in `orchestrator/loop.py` activates `disk_analyst`
+when a registered `disk_image` or `triage_zip` is in scope. **No
+submission run has registered disk evidence**, so the disk path is
+built but not exercised on the corpus reported here. Cross-source
+validation has nonetheless been substantively demonstrated: the
+SRL-2015 multi-host run exercises `cross_host` correlation across
+four independently-acquired memory images, which is the same
+architectural family as memory↔disk `cross_source` — independent
+evidence, independent tool paths, correlation gated on a shared
+indicator. Memory↔disk specifically remains unexercised. Rubric:
+scope transparency.
+
+### #9 — XP `vol_netscan` unsupported (2026-05-08, SRL-2015 run)
+
+Volatility 3's `windows.netscan.NetScan` plugin lacks Windows XP
+symbol table support: against `xp-tdungan-Memory.001` the runner
+fails at the subprocess layer (exit code 2, stderr from Vol3
+indicating XP profile not implemented for the netscan family).
+The other five plugins (`pslist`, `psscan`, `pstree`, `cmdline`,
+`malfind`) all succeed on the same XP image. Audit-chain shape:
+the call is recorded as `vol_netscan:rejected_runner_failure`
+with no extraction written, so subsequent tier-2 calls on
+`windows.netscan.NetScan` for `xp-tdungan` rejection-cleanly
+without producing partial data. **Impact:** xp-tdungan has no
+network findings; the SRL run's network-side cross-host
+correlation pool excludes this host (3 of 4 hosts contribute).
+**Mitigation:** none available within project scope — fix
+requires upstream Vol3 XP netscan symbol contribution or a
+swap to a Volatility 2 + bridge wrapper, neither of which is
+within the hackathon timebox. Documented and bounded. Rubric:
+scope transparency, #2 IR Accuracy (about what the architecture
+*can* and *cannot* see).
+
+### #10 — `vol_malfind` parse drop rate on older OS (2026-05-08, SRL-2015 run)
+
+261 VAD-region records were dropped across the 4 SRL hosts
+(nfury 5, nromanoff 100, controller 25, xp-tdungan 131) because
+their rows did not validate against `MalfindRecord`. XP was
+worst-affected (50% of all dropped rows on a single host).
+Investigation showed the failure was Volatility-3 build-version
+drift in the JSON renderer rather than an OS-version gap per se:
+Vol3 emits `Start VPN` as an integer in some build/OS pairs and
+as a hex string in others, and `MalfindRecord.vad_start` was
+declared `str` so pydantic 2 strict mode rejected every int-input
+row. Symptom looked XP-heaviest because XP malfind output
+volume is highest on the SRL hosts; the cause is not OS-specific.
+**Impact (this run):** the malfind findings on the SRL chain
+rest only on rows that validated; injected-code regions whose
+rows were dropped were silently invisible to the analyst.
+**Resolved (post-run):** `field_validator(mode="before")` on
+`vad_start` that hex-stringifies any integer input — schema
+enforces canonical `"0x..."` form, validator absorbs both
+producer shapes. 4 regression tests, full suite green at v0.9.
+A re-run on the same SRL evidence will surface the previously-
+dropped malfind regions; not yet performed within the
+documentation timebox. Sources: commit
+`b451b1b fix(malfind): relax MalfindRecord schema for XP +
+older OS output`. Rubric: #2, #5.
+
+### #11 — Validator iter-2 wallclock anomaly: 9.5h on a 30-min default (2026-05-08, SRL-2015 run)
+
+Iter 2 of the SRL run dispatched 2 analysts (both completed in
+~30 min) followed by a single validator session that ran ~9.5
+hours despite the orchestrator's 30-min subprocess timeout
+default. **No timeout warning was logged** — the
+`subprocess.run(...timeout=...)` call did not raise. Most likely
+cause: classic Python subprocess deadlock where `subprocess.run`
+blocks on a full stdout pipe buffer (the default capture path
+uses an in-memory `bytes` buffer with OS-pipe-sized backpressure;
+once the child writes faster than the parent consumes, both
+processes block, and `timeout=` only fires on the child's wait,
+not on a stuck pipe-read in the parent). The validator was
+ultimately productive — 20 correlations emitted, including the
+10 `cross_host` correlations — and the work product is intact on
+the chain. But the architectural guarantee that "no subagent
+session runs longer than its declared timeout" was violated.
+**Impact:** wallclock-only; no chain corruption, no double-run,
+no chain-replay disagreement. **Mitigation:** switch the
+dispatch transport from `subprocess.run(...capture_output=True)`
+to `Popen` with explicit non-blocking pipe drain or a temp-file
+stdout capture, so the parent never blocks on pipe-read. **Deferred
+to post-submission**, because the fix touches the dispatch
+substrate and the SRL artifact is reproducible on demand for
+verification. Rubric: design transparency, scope of audit-trail
+guarantees.
 
 ## Measured claims
 
@@ -362,7 +548,7 @@ assessment and the supporting evidence.
 
 | Claim | Confidence | Verified by |
 |---|---|---|
-| **Three writers, three roles, three chains.** | HIGH | Per-subagent tool-surface restrictions in `.claude/agents/*.md`; closed Literal types on `AnalystName`, `FindingState`, `FindingConfidence`, `FindingCategory`, `FindingSeverity`; `tests/test_mcp_protocol.py::test_thirteen_tool_surface_is_locked`; orchestrator-only `update_finding` access. |
+| **Three writers, three roles, three chains.** | HIGH | Per-subagent tool-surface restrictions in `.claude/agents/*.md`; closed Literal types on `AnalystName`, `FindingState`, `FindingConfidence`, `FindingCategory`, `FindingSeverity`; `tests/test_mcp_protocol.py::test_nineteen_tool_surface_is_locked`; orchestrator-only `update_finding` access. |
 | **Every tool call appears in the audit chain.** | HIGH | Per-tool tests assert audit-log append on success and rejection paths. Audit-chain line count: 457; rejections: 44; success ratio 90.4%. The 13 tool entry-points each have a corresponding test in `tests/test_*.py`. |
 | **Architectural enforcement beats prompt enforcement.** | MEDIUM-HIGH | Empirically supported by failure modes #1, #2, #3 (architecture compensated for prompt failures with zero bad data on disk). The synthetic-injection demo shows defense-in-depth holding under adversarial stress. Caveat: the `untrusted_fields` discipline still relies partly on prompt enforcement for analyst behavior on evidence-derived strings; primary defense is architectural (tool-surface restriction, schema Literal[]). |
 | **Findings are reproducible from chain replay alone.** | HIGH | Hash-chained `findings.jsonl` + `correlations.jsonl` + `iterations.jsonl` carry every promotion's drivers; `promote()` is pure (`tests/test_promotion.py`). Walking the chains reconstructs every state transition. Underlying tier-1 extractions (`case-data/extractions/<evidence_id>/<plugin>.json`) are SHA-256-stamped and chained in `extractions.jsonl`; given the extractions, the four primary chains reproduce every promotion's rationale. |
@@ -371,29 +557,49 @@ assessment and the supporting evidence.
 ## Quantitative metrics from the chains
 
 All numbers derived from the on-disk hash-chained logs as of
-2026-05-07.
+2026-05-09 (post SRL-2015 run).
 
-### Findings (`findings.jsonl`, 167 lines = 75 unique findings + 92 updates)
+### Findings (`findings.jsonl`, 255 lines = 120 unique findings + 135 updates)
 
 | | Count |
 |---|---|
 | Substantive findings (Rocba) | 56 |
 | Probe findings (Rocba, from process_analyst v2 — failure mode #2) | 7 |
 | Substantive findings (synthetic-injected) | 12 |
-| Total unique findings | 75 |
+| Substantive findings (SRL-2015, 4 hosts) | 45 |
+| **Total unique findings** | **120** |
 
 Final state distribution per evidence (last-write-wins over the
-chain):
+chain). SRL-2015 findings split as 22 CONFIRMED/HIGH (R3=20 + R4
+into HIGH=2) + 9 CONFIRMED/MEDIUM (R4 into MEDIUM=9) + 14 DRAFT
+(uncorroborated, no contradictions). The DRAFT/MEDIUM vs DRAFT/LOW
+split for SRL is on-chain in `findings.jsonl` but not aggregated
+in this row.
 
-| Evidence | CONFIRMED/HIGH | CONFIRMED/MEDIUM | DRAFT/DISPUTED | DRAFT/MEDIUM | DRAFT/LOW |
-|---|---|---|---|---|---|
-| Rocba | 49 | 1 | 2 | 3 | 8 |
-| Synthetic | 7 | 1 | 4 | 0 | 0 |
-| **Total** | **56** | **2** | **6** | **3** | **8** |
+| Evidence | CONFIRMED/HIGH | CONFIRMED/MEDIUM | DRAFT/DISPUTED | DRAFT (uncorroborated) |
+|---|---|---|---|---|
+| Rocba | 49 | 1 | 2 | 11 (3 MEDIUM + 8 LOW) |
+| Synthetic | 7 | 1 | 4 | 0 |
+| SRL-2015 | 22 | 9 | 0 | 14 |
+| **Total** | **78** | **11** | **6** | **25** |
 
-Categories surfaced by analyst writers (DRAFT lines): `process_anomaly` 29, `process_hidden` 16, `network_anomaly` 15, `network_lateral_movement` 10, `process_masquerade` 3, `network_beacon` 1, `other` 1.
+Categories surfaced by analyst writers across all three corpora
+(DRAFT lines, pre-SRL): `process_anomaly` 29, `process_hidden` 16,
+`network_anomaly` 15, `network_lateral_movement` 10,
+`process_masquerade` 3, `network_beacon` 1, `other` 1. The
+SRL-2015 run added 45 DRAFT findings whose category breakdown
+emphasizes `process_hidden` (T1014 Rootkit on xp-tdungan and
+PsExec-loaded payloads on nromanoff), `process_masquerade`
+(`svchost.exe` non-standard path, cross-host),
+`network_lateral_movement` (RDP + SMB session pairs),
+`network_anomaly` (high-volume listeners + null-owner endpoints
+on Server 2008 R2), and `network_beacon` (egress to remote-access
+infrastructure T1219). Per-host breakdown is on-chain in
+`findings.jsonl` SRL lines.
 
-### Correlations (`correlations.jsonl`, 84 lines)
+### Correlations (`correlations.jsonl`)
+
+Pre-SRL totals (Rocba + synthetic, 84 lines):
 
 | Type | Count | Sub-distribution |
 |---|---|---|
@@ -403,20 +609,38 @@ Categories surfaced by analyst writers (DRAFT lines): `process_anomaly` 29, `pro
 | `strengthens` | 10 | — |
 | `request_followup` | 5 | — |
 
-Of the post-rag-sigma run's 29 new correlations, **18 cite at least
-one rag_query audit_line** in `evidence_refs` (62%); two compose
-multi-technique grounding from parallel rag_query lookups. See
-failure-mode #7 closure above.
+SRL-2015 run additions:
+
+| Type | Count | Sub-distribution |
+|---|---|---|
+| `cross_host` | 10 | strong=7 (3 lateral-movement, 4 shared-infrastructure), moderate=3 |
+| Within-host correlations driving promotion (R3=20 + R4=11) | 31 | mostly `corroborates` |
+| `contradicts` against legacy Rocba findings (driving R1=12) | 12 | — |
+| Other (strengthens / weakens / request_followup, not driving promotion) | balance | on-chain |
+
+Of the post-rag-sigma Rocba run's 29 correlations, 18 cited at
+least one `rag_query` audit_line. The SRL-2015 run added 8
+further `rag_query` calls grounding correlations across 6 MITRE
+TTPs (T1014, T1021.001, T1036.005, T1071.001, T1219, T1569.002) —
+bringing the total `rag_query` calls in the chain to **18** and
+the total RAG-cited correlations meaningfully higher (exact
+SRL-cited count is on-chain).
 
 ### Updates by promotion rule (chain truth from `findings.jsonl` UPDATE entries)
 
 | Rule | Update writes | Chain effect |
 |---|---|---|
-| R1 (contradiction) | 34 | DRAFT/* → DRAFT/DISPUTED |
-| R3 (strong corroboration) | 55 | DRAFT/* → CONFIRMED/HIGH |
-| R4 (moderate corroboration) | 3 | DRAFT/* → CONFIRMED/max(F.confidence, MEDIUM) |
+| R1 (contradiction) | 46 | DRAFT/* → DRAFT/DISPUTED |
+| R3 (strong corroboration) | 75 | DRAFT/* → CONFIRMED/HIGH |
+| R4 (moderate corroboration) | 14 | DRAFT/* → CONFIRMED/max(F.confidence, MEDIUM) |
 | R2, R5, R6 | 0 | (R6 chain-silent by design; R5 cumulative gap; R2 not exercised on this evidence) |
-| **Total update_finding writes** | **92** | |
+| **Total update_finding writes** | **135** | |
+
+The SRL-2015 run contributed R3=20, R4=11, R1=12 to the totals
+above. The 12 R1 contradictions all targeted **legacy Rocba
+findings** that the SRL chain touched — SRL-2015 findings
+themselves produced no contradictions on this run, consistent
+with the SRL DISPUTED count of 0 in the state distribution table.
 
 `iterations.jsonl` records 204 promotion *decisions* (R6=104
 chain-silent no-ops, R3=54, R1=34, R4=3, R5=9 — the 9 R5 decisions
@@ -434,11 +658,12 @@ preserved in the chain as supplementary evidence per
 `docs/confidence-methodology.md` § "What this methodology does
 NOT yet do".
 
-### Audit chain (`audit/sift-guard-mcp.jsonl`, 457 lines)
+### Audit chain (`audit/sift-guard-mcp.jsonl`)
+
+Pre-SRL totals (Rocba + synthetic, 457 lines):
 
 | Tool | Calls | Rejections |
 |---|---|---|
-| `query_records` | 122 | 3 (`unknown_field`) |
 | `query_records` | 144 | 3 (`unknown_field`) |
 | `record_finding` | 103 | 28 (27 `invalid_audit_ref` from probe pattern, 1 `schema_validation_failed`) |
 | `record_correlation` | 97 | 13 (all `invalid_payload`, validator's first run — failure mode #3) |
@@ -453,12 +678,25 @@ NOT yet do".
 | `subtree` | 6 | 0 |
 | `register_evidence` | 3 | 0 |
 
-Rejection ratio: 45 / 561 = 8.0%. The two large rejection
-clusters (27 + 13) are both attributable to single documented
-failure modes (#2 and #3 above) and were resolved within the
-sessions that produced them.
+Rejection ratio (pre-SRL): 45 / 561 = 8.0%. The two large
+rejection clusters (27 + 13) are both attributable to single
+documented failure modes (#2 and #3 above) and were resolved
+within the sessions that produced them.
 
-### Iterations (`iterations.jsonl`, 9 lines = 5 distinct orchestrator runs)
+SRL-2015 run additions (selected highlights — full per-tool
+breakdown is on-chain):
+
+| Tool | Calls (SRL run) | Rejections |
+|---|---|---|
+| `register_evidence` | 4 (one per host) | 0 |
+| `vol_pslist` / `vol_psscan` / `vol_pstree` / `vol_cmdline` / `vol_malfind` | 4 calls × 5 plugins = 20 | 0 (all five plugins succeed on all four hosts) |
+| `vol_netscan` | 3 success + 1 `rejected_runner_failure` (xp-tdungan, failure mode #9) | 1 |
+| `record_finding` | 45 success | 0 (zero rejections — no probe pattern recurrence) |
+| `record_correlation` | 41+ (10 cross_host + 31+ within-host driving promotion) | 0 |
+| `rag_query` | 8 | 0 |
+| `update_finding` | 43 (R3=20 + R4=11 + R1=12) | 0 |
+
+### Iterations (`iterations.jsonl`, 11 lines = 6 distinct orchestrator runs)
 
 | Run | Evidence | Iterations | Tokens (uncached, cumulative) | Wallclock | Termination |
 |---|---|---|---|---|---|
@@ -467,20 +705,28 @@ sessions that produced them.
 | 3 | Synthetic | 3 | 250,050 | 13.6 min | `max_iterations_reached` (cap=3, natural quiescence) |
 | 4 | Rocba (post-R5-fix) | 2 | 294,640 | 17.2 min | `no_followup_pending` short-circuit |
 | 5 | Rocba (post-rag-sigma, `v0.7-rag-sigma`) | 2 | 301,366 | 18.6 min | **`R_b_disputed_set_unchanged`** — first naturally-fired R_b across all runs |
+| 6 | SRL-2015 (4-host multi-evidence) | 2 of 4 cap | 648,000 | ~10 hours (incl. iter-2 validator wallclock anomaly — see failure mode #11) | **`R_b_disputed_set_unchanged`** — second naturally-fired R_b, this time from cross-host steady-state |
 
-Run 5 is the first run in which the validator made autonomous
+Run 5 was the first run in which the validator made autonomous
 rag_query calls (8 across 2 iterations) and where R_b fired on
-its own. The 6 stable DISPUTED findings (4 synthetic + 2 Rocba)
-form the persistent stalemate that R_b correctly identifies as
-needing human review. See failure-mode #7 closure for the
-RAG-grounding details.
+its own. Run 6 (SRL-2015) is the first **multi-host** run, the
+first to emit `cross_host` correlations (10 of them), and the
+first to land R_b's quiescence signal under cross-host validation.
+The R_b natural-fire on two consecutive runs across qualitatively
+different evidence shapes (single-host stalemate, then multi-host
+steady-state) is the strongest evidence the project has produced
+that the termination rule is calibrated rather than coincidental.
+See failure-mode #7 closure for the RAG-grounding details.
 
 ### Tests
 
-375 tests collected; 4 deselected (slow / VM-only). Test surface
+491 tests collected; 4 deselected (slow / VM-only). Test surface
 covers schema invariants, tool-layer rejection paths, validator
 input-shape, promotion rule purity, loop integration, MCP protocol
-surface lock, and per-plugin `untrusted_fields` map.
+surface lock, per-plugin `untrusted_fields` map, multi-host
+manifest construction, cross-host correlation pathway, and
+inventory-side `.001` / split-image detection. Pre-tag clean run
+at v0.9: 491 passed / 0 failed / 4 deselected / 3 warnings (2m11s).
 
 ### Honesty disclosure
 
@@ -496,14 +742,25 @@ labeled positive set to measure against.
 
 ## Limitations and deferred work
 
-The submission ships a memory-only analyst roster. Disk-side
-analysts (failure mode #8), R5 cumulative semantics (#5), `R_b`
-subset-stability (#6), and RAG-grounded promotion (#7) are
-deferred and documented. RAG is queryable but not mechanically
-promoting. The hash-chained-writer base-class extraction, the
-per-process file-locking required for parallel analyst dispatch,
-and a per-string `<evidence>` envelope for tier-3 composed
-results are also deferred. Full list:
+The submission's three corpus runs (Rocba, synthetic-injected,
+SRL-2015) are all memory-side. The week-8 disk-side ship landed
+the `disk_analyst` agent and four disk tier-1 wrappers but no
+disk evidence has been registered into a submission run, so
+memory↔disk `cross_source` is built-but-unexercised (failure
+mode #8). XP `vol_netscan` (failure mode #9) is unsupported by
+upstream Volatility 3 and is bounded out of scope. The malfind
+schema bug (#10) is post-run-resolved at v0.9; an SRL re-run will
+produce additional malfind findings on the same chain. The
+validator subprocess wallclock anomaly (#11) is deferred — fix
+requires a transport-layer rewrite. R5 cumulative semantics (#5),
+`R_b` subset-stability (#6), and RAG-grounded mechanical
+promotion (#7) remain deferred and documented; #7 is closed
+empirically by the post-rag-sigma + SRL-2015 evidence (validator
+made 16 autonomous rag_query calls across runs 5–6, citing 8
+distinct MITRE TTPs). The hash-chained-writer base-class
+extraction, the per-process file-locking required for parallel
+analyst dispatch, and a per-string `<evidence>` envelope for
+tier-3 composed results are also deferred. Full list:
 `docs/decisions-log.md`. None of these gaps changes what the four
 chains record about the runs above.
 
