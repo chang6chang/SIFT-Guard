@@ -37,7 +37,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 from mcp import ClientSession, StdioServerParameters
@@ -49,6 +49,25 @@ from orchestrator.dispatch import (
     dispatch_analyst,
     dispatch_validator,
 )
+
+
+# Coarse-grained event hook for run-time observers (the sift-guard
+# CLI's real-time progress display, primarily). The callback is
+# invoked synchronously between dispatches; it receives a
+# kebab-string event name and a free-form payload dict. Keep
+# callbacks fast — they run on the loop's main thread.
+ProgressCallback = Callable[[str, dict[str, Any]], None]
+
+
+def _emit(on_progress: ProgressCallback | None, event: str, payload: dict[str, Any]) -> None:
+    if on_progress is None:
+        return
+    try:
+        on_progress(event, payload)
+    except Exception:  # noqa: BLE001
+        # Progress callbacks are observers; their exceptions must
+        # never bring down the loop. Log and continue.
+        logger.exception("on_progress callback raised on event %s; suppressing", event)
 from orchestrator.iterations_log import (
     IterationChainEntry,
     IterationPayload,
@@ -755,6 +774,7 @@ def _step_analyze_multi_host(
     pending_host_ids: list[str] | None,
     pending_focus: dict[str, dict[str, Any]] | None,
     dispatch_fn,
+    on_progress: ProgressCallback | None = None,
 ) -> list[str]:
     """Per-host sequential analyst dispatch.
 
@@ -792,9 +812,37 @@ def _step_analyze_multi_host(
                     host.host_id,
                     ef.evidence_id,
                 )
+                _emit(
+                    on_progress,
+                    "host_skip",
+                    {
+                        "host_id": host.host_id,
+                        "host_label": host.host_label,
+                        "evidence_id": ef.evidence_id,
+                        "evidence_type": ef.evidence_type,
+                    },
+                )
                 continue
             for agent in analysts:
                 focus = pending_focus.get(agent) if pending_focus else None
+                _emit(
+                    on_progress,
+                    "analyze_start",
+                    {
+                        "host_id": host.host_id,
+                        "host_label": host.host_label,
+                        "analyst": agent,
+                        "evidence_id": ef.evidence_id,
+                        "focused": focus is not None,
+                    },
+                )
+                pre_dispatch_findings_count = len(
+                    {
+                        e.finding.finding_id
+                        for e in _read_findings_chain(case_dir)
+                        if isinstance(e.finding, DraftFinding)
+                    }
+                )
                 result = dispatch_fn(
                     agent=agent,
                     evidence_id=ef.evidence_id,
@@ -815,6 +863,29 @@ def _step_analyze_multi_host(
                         host.host_id,
                         result.stop_reason,
                     )
+                post_dispatch_findings_count = len(
+                    {
+                        e.finding.finding_id
+                        for e in _read_findings_chain(case_dir)
+                        if isinstance(e.finding, DraftFinding)
+                    }
+                )
+                _emit(
+                    on_progress,
+                    "analyze_done",
+                    {
+                        "host_id": host.host_id,
+                        "host_label": host.host_label,
+                        "analyst": agent,
+                        "evidence_id": ef.evidence_id,
+                        "findings_added": post_dispatch_findings_count
+                        - pre_dispatch_findings_count,
+                        "tokens_uncached": result.tokens_uncached,
+                        "duration_ms": result.duration_ms,
+                        "succeeded": result.succeeded,
+                        "stop_reason": result.stop_reason,
+                    },
+                )
         dispatched_host_ids.append(host.host_id)
     findings_after_chain = _read_findings_chain(case_dir)
     findings_after = {
@@ -832,6 +903,7 @@ def _step_correlate_multi_host(
     case_id: str,
     manifest: CaseManifest,
     dispatch_fn,
+    on_progress: ProgressCallback | None = None,
 ) -> list[CorrelationChainEntry]:
     """Cross-host CORRELATE. Single validator dispatch over all
     hosts' DRAFT findings, framed as host-grouped blocks. The
@@ -849,9 +921,23 @@ def _step_correlate_multi_host(
     correlations_before = {e.correlation.correlation_id for e in _read_correlations_chain(case_dir)}
     host_grouped = _build_findings_summary_grouped_by_host(case_dir, manifest)
     total_drafts = sum(len(b["findings"]) for b in host_grouped)
+    host_count_with_drafts = sum(1 for b in host_grouped if b["findings"])
     if total_drafts == 0:
         logger.info("step_correlate (multi-host): no DRAFT findings; skipping validator")
+        _emit(
+            on_progress,
+            "correlate_skip",
+            {"reason": "no_draft_findings"},
+        )
         return []
+    _emit(
+        on_progress,
+        "correlate_start",
+        {
+            "draft_findings": total_drafts,
+            "host_count": host_count_with_drafts,
+        },
+    )
 
     # Choose a representative evidence_id for the validator's
     # prompt envelope. Prefer a memory image (the validator's tool
@@ -887,7 +973,25 @@ def _step_correlate_multi_host(
     correlations_after = {e.correlation.correlation_id for e in correlations_chain}
     new_ids = correlations_after - correlations_before
     state.validator_correlation_ids_added = sorted(new_ids)
-    return [e for e in correlations_chain if e.correlation.correlation_id in new_ids]
+    new_entries = [e for e in correlations_chain if e.correlation.correlation_id in new_ids]
+    cross_host_count = sum(
+        1
+        for e in new_entries
+        if getattr(e.correlation, "correlation_type", None) == "cross_host"
+    )
+    _emit(
+        on_progress,
+        "correlate_done",
+        {
+            "correlations_added": len(new_entries),
+            "cross_host": cross_host_count,
+            "tokens_uncached": result.tokens_uncached,
+            "duration_ms": result.duration_ms,
+            "succeeded": result.succeeded,
+            "stop_reason": result.stop_reason,
+        },
+    )
+    return new_entries
 
 
 def _next_iter_multi_host_plan(
@@ -950,6 +1054,7 @@ def run_loop_multi_host(
     dispatch_validator_fn=dispatch_validator,
     update_finding_fn=_call_update_finding,
     case_cwd: Path | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> LoopOutcome:
     """Multi-evidence variant of `run_loop`.
 
@@ -988,11 +1093,21 @@ def run_loop_multi_host(
         if pending_host_ids is not None and not pending_host_ids:
             logger.info("iter %d: no host pending; terminating", iteration_number)
             termination_reason = "no_followup_pending"
+            _emit(on_progress, "terminate", {"reason": "no_followup_pending"})
             break
 
         state = _IterationState(
             iteration_number=iteration_number,
             started_at=datetime.now(tz=timezone.utc),
+        )
+        _emit(
+            on_progress,
+            "iteration_start",
+            {
+                "iteration": iteration_number,
+                "max_iterations": max_iterations,
+                "pending_host_ids": list(pending_host_ids) if pending_host_ids else None,
+            },
         )
 
         dispatched_host_ids = _step_analyze_multi_host(
@@ -1004,6 +1119,7 @@ def run_loop_multi_host(
             pending_host_ids=pending_host_ids,
             pending_focus=pending_focus,
             dispatch_fn=dispatch_analyst_fn,
+            on_progress=on_progress,
         )
 
         new_correlations = _step_correlate_multi_host(
@@ -1013,6 +1129,7 @@ def run_loop_multi_host(
             case_id=manifest.case_id,
             manifest=manifest,
             dispatch_fn=dispatch_validator_fn,
+            on_progress=on_progress,
         )
 
         _step_promote(
@@ -1021,6 +1138,18 @@ def run_loop_multi_host(
             case_cwd=case_cwd,
             iterations_so_far=iteration_number - 1,
             update_fn=update_finding_fn,
+        )
+        rule_counts: dict[str, int] = {}
+        for prom in state.promotions:
+            rule_counts[prom.promotion_rule] = rule_counts.get(prom.promotion_rule, 0) + 1
+        _emit(
+            on_progress,
+            "promote",
+            {
+                "rule_counts": rule_counts,
+                "applied": sum(1 for p in state.promotions if p.applied),
+                "total": len(state.promotions),
+            },
         )
 
         cumulative_tokens += state.tokens_uncached
@@ -1047,6 +1176,16 @@ def run_loop_multi_host(
 
         next_host_ids, next_focus, consumed = _next_iter_multi_host_plan(new_correlations, manifest)
         state.followup_consumed = consumed
+        _emit(
+            on_progress,
+            "plan",
+            {
+                "decision": termination.decision,
+                "next_host_ids": next_host_ids,
+                "followups_consumed": len(consumed),
+                "next_focus_analysts": sorted(next_focus.keys()) if next_focus else [],
+            },
+        )
 
         completed_at = datetime.now(tz=timezone.utc)
         payload = IterationPayload(
@@ -1066,6 +1205,19 @@ def run_loop_multi_host(
         entry = append_iteration_entry(case_dir, payload)
         iteration_records.append(entry)
 
+        _emit(
+            on_progress,
+            "iteration_done",
+            {
+                "iteration": iteration_number,
+                "tokens_uncached": state.tokens_uncached,
+                "cumulative_tokens_uncached": cumulative_tokens,
+                "findings_added": len(state.analyst_finding_ids_added),
+                "correlations_added": len(state.validator_correlation_ids_added),
+                "promotions_applied": sum(1 for p in state.promotions if p.applied),
+            },
+        )
+
         if termination.decision == "terminate":
             if termination.R_a_zero_unresolved:
                 termination_reason = "R_a_zero_unresolved"
@@ -1075,6 +1227,7 @@ def run_loop_multi_host(
                 termination_reason = "R_c_token_budget_exceeded"
             else:
                 termination_reason = "max_iterations_reached"
+            _emit(on_progress, "terminate", {"reason": termination_reason})
             break
 
         prior_disputed = _disputed_set(case_dir)
@@ -1092,6 +1245,7 @@ __all__ = [
     "ARTIFACT_TO_ANALYSTS",
     "LoopOutcome",
     "MANIFEST_TYPE_TO_ANALYSTS",
+    "ProgressCallback",
     "TOKEN_BUDGET_MULTI_BASE",
     "TOKEN_BUDGET_PER_HOST",
     "TOKEN_BUDGET_UNCACHED",
