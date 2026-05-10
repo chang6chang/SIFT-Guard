@@ -40,7 +40,7 @@ ON_DISK_AUDIT_LOG = PROJECT_ROOT / "case-data" / "audit" / "sift-guard-mcp.jsonl
 @pytest.mark.integration
 def test_vol_pstree_against_live_rocba(monkeypatch):
     """Real SSH, real Volatility 3, real Rocba memory image, real chain."""
-    from server.runners import sift_vm
+    from server.runners import ssh_remote as sift_vm
     from server.schemas import AuditLogEntry, ProcessTreeRecord, PstreeResult
     from server.tools.memory import vol_pstree
 

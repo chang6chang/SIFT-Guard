@@ -57,7 +57,7 @@ def test_vol_pslist_against_live_rocba(monkeypatch):
     # Imports inside the test: this file is collected on every default
     # pytest run (the marker only excludes execution, not collection),
     # and we want module-level collection to be a stdlib-only no-op.
-    from server.runners import sift_vm
+    from server.runners import ssh_remote as sift_vm
     from server.schemas import AuditLogEntry, PslistResult
     from server.tools.memory import vol_pslist
 

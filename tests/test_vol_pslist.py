@@ -1,7 +1,7 @@
 """Unit tests for `server.tools.memory.vol_pslist`.
 
-No real SSH. ``server.tools.memory.run_vol_plugin`` and
-``server.tools.memory.get_vol_version`` are mocked at the
+No real Volatility invocation. ``server.tools.memory.run_vol_plugin``
+and ``server.tools.memory.get_vol_version`` are mocked at the
 ``server.tools.memory`` namespace where memory.py looked them up.
 
 The audit-chain test (``TestAuditChain``) reads the actual on-disk
@@ -24,7 +24,7 @@ import yaml
 
 from server.extractions import load_extraction
 from server.schemas import ArtifactClass, EvidenceRecord
-from server.tools.memory import translate_to_vm_path, vol_pslist
+from server.tools.memory import vol_pslist
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -135,34 +135,6 @@ def _bad_record_json() -> str:
 
 
 # ---------------------------------------------------------------------------
-# translate_to_vm_path
-# ---------------------------------------------------------------------------
-
-
-class TestTranslateToVmPath:
-    def test_happy_path(self):
-        assert (
-            translate_to_vm_path(
-                "/home/galvarino/case-data/evidence/Foo.raw",
-                "/home/galvarino/case-data/evidence",
-                "/mnt/rocba",
-            )
-            == "/mnt/rocba/Foo.raw"
-        )
-
-    def test_outside_host_prefix_rejected(self):
-        with pytest.raises(ValueError) as exc_info:
-            translate_to_vm_path(
-                "/etc/passwd",
-                "/home/galvarino/case-data/evidence",
-                "/mnt/rocba",
-            )
-        # Sanitized: the offending path must not appear in the message.
-        assert "/etc/passwd" not in str(exc_info.value)
-        assert "expected host prefix" in str(exc_info.value)
-
-
-# ---------------------------------------------------------------------------
 # evidence resolution + artifact_class gate
 # ---------------------------------------------------------------------------
 
@@ -239,10 +211,10 @@ class TestVolPslistRejectionAudit:
         assert entry["line_number"] == 1
         assert entry["prev_line_hash"] == _GENESIS_PREV_HASH
 
-    def test_path_translation_failed_writes_rejection_chain_line(self, tmp_path: Path):
+    def test_path_outside_evidence_writes_rejection_chain_line(self, tmp_path: Path):
         # `absolute_path` lives outside the case_dir/evidence/ tree, so
-        # `translate_to_vm_path`'s host-prefix check fires after both
-        # the evidence-resolution and artifact-class gates have passed.
+        # the path-confinement check fires after both the
+        # evidence-resolution and artifact-class gates have passed.
         # Should be unreachable under a normal `register_evidence`
         # flow (path-confinement blocks it at registration time), but
         # we still record the probe — defense in depth, and the
@@ -254,14 +226,14 @@ class TestVolPslistRejectionAudit:
 
         # Sanitized: the offending path is not echoed back to the agent.
         assert "/tmp/Foo.raw" not in str(exc_info.value)
-        assert "expected host prefix" in str(exc_info.value)
+        assert "case evidence directory" in str(exc_info.value)
 
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
         assert audit_path.exists(), "rejection must extend the chain"
         lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
         entry = lines[0]
-        assert entry["tool_name"] == "vol_pslist:rejected_path_translation_failed"
+        assert entry["tool_name"] == "vol_pslist:rejected_path_outside_evidence_dir"
         assert entry["evidence_id"] == VALID_EVIDENCE_ID
         assert entry["line_number"] == 1
         assert entry["prev_line_hash"] == _GENESIS_PREV_HASH
@@ -342,10 +314,10 @@ class TestVolPslistHappyPath:
         assert records[2]["image_file_name"] == "smss.exe"
 
         # The runner was called with the pinned plugin name and the
-        # translated VM path — not the host path.
-        plugin_arg, vm_path_arg = mock_run.call_args.args[:2]
+        # registered evidence path on disk.
+        plugin_arg, image_path_arg = mock_run.call_args.args[:2]
         assert plugin_arg == "windows.pslist.PsList"
-        assert vm_path_arg == "/mnt/rocba/Rocba-Memory.raw"
+        assert image_path_arg == str(case_dir / "evidence" / "Rocba-Memory.raw")
 
         # Extractions chain line was created with matching hash.
         chain_path = case_dir / "extractions.jsonl"
