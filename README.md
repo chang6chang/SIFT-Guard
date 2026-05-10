@@ -19,6 +19,32 @@ orchestrator owns the promotion rules; analyst subagents can be
 re-dispatched with focus context across iterations until the
 finding set converges.
 
+## Quick start
+
+```bash
+# 1. Install everything (Volatility 3 + symbol packs + Claude Code +
+#    SIFT-Guard) on a fresh SIFT VM or any Ubuntu 22.04+ host.
+sudo ./setup-sift-guard.sh
+
+# 2. Authenticate Claude Code (one-time, opens a browser).
+#    Max-subscription users are billed by subscription — no API key.
+claude login
+
+# 3. Drop evidence in a folder and analyze.
+sift-guard analyze /path/to/evidence/folder --output-dir ./results
+
+# 4. Read the report.
+cat results/report.md
+```
+
+`sift-guard analyze` scans the directory, copies evidence into the
+case directory (`chmod 444`, SHA-256 audited), runs the OS / symbol
+pre-flight, drives the multi-host self-correction loop with
+real-time progress on stdout, and emits `report.md` + `report.json`
+on completion. See [`sift-guard analyze --help`](#cli-reference) for
+flags. To preview the live output without burning tokens, run
+`sift-guard mock-run`.
+
 ## Architecture
 
 ```mermaid
