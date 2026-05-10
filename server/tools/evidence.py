@@ -26,7 +26,16 @@ from server.audit import append_audit_entry
 from server.schemas import ArtifactClass, EvidenceRecord
 
 
-_DISK_EXTENSIONS = {".e01", ".aff4", ".vhdx", ".dd"}
+_DISK_EXTENSIONS = {
+    ".e01",
+    ".aff4",
+    ".vhdx",
+    ".vhd",
+    ".dd",
+    ".vmdk",
+    ".qcow2",
+    ".vdi",
+}
 _MEMORY_SIZE_THRESHOLD = 100 * 1024 * 1024  # 100 MB
 
 _REGF_MAGIC = b"regf"
@@ -34,19 +43,27 @@ _EVTX_MAGIC = b"ElfFile\x00"
 _PCAP_MAGIC_BE = b"\xa1\xb2\xc3\xd4"
 _PCAP_MAGIC_LE = b"\xd4\xc3\xb2\xa1"
 _ZIP_MAGIC = b"PK\x03\x04"
+_VHDX_MAGIC = b"vhdxfile"
+_VMDK_MAGIC = b"KDMV"
+_QCOW2_MAGIC = b"QFI\xfb"
+_VDI_TEXT_MAGIC = b"<<< Oracle VM VirtualBox Disk Image >>>"
 
 _CHUNK_SIZE = 64 * 1024
 _CASE_FILENAME = "CASE.yaml"
 _FILE_MODE = 0o444
 
 
-def _stream_sha256_and_magic(path: Path) -> tuple[str, bytes]:
-    """Return (sha256_hex, first_16_bytes) in a single pass over the file.
+_MAGIC_PROBE_BYTES = 64
 
-    Streaming matters: Rocba-Memory.raw is 19 GB. Loading whole files into
-    memory would OOM on any reasonable host. The first chunk size (64 KiB)
-    is comfortably larger than every magic-byte signature we recognize, so
-    one read suffices for both classification and hashing.
+
+def _stream_sha256_and_magic(path: Path) -> tuple[str, bytes]:
+    """Return (sha256_hex, first_64_bytes) in a single pass over the file.
+
+    Streaming matters: Rocba-Memory.raw is 19 GB. Loading whole files
+    into memory would OOM on any reasonable host. 64 bytes is enough
+    to cover every magic we currently recognize — including VDI's
+    39-byte ``"<<< Oracle VM VirtualBox Disk Image >>>"`` text header
+    — and still fits inside the first 64 KiB chunk.
     """
     hasher = hashlib.sha256()
     magic_bytes = b""
@@ -56,7 +73,7 @@ def _stream_sha256_and_magic(path: Path) -> tuple[str, bytes]:
             if not chunk:
                 break
             if not magic_bytes:
-                magic_bytes = chunk[:16]
+                magic_bytes = chunk[:_MAGIC_PROBE_BYTES]
             hasher.update(chunk)
     return hasher.hexdigest(), magic_bytes
 
@@ -73,6 +90,13 @@ def _detect_artifact_class(path: Path, size_bytes: int, magic: bytes) -> Artifac
         return ArtifactClass.PCAP
     if extension == ".zip" and magic.startswith(_ZIP_MAGIC):
         return ArtifactClass.TRIAGE_ZIP
+    if (
+        magic.startswith(_VHDX_MAGIC)
+        or magic.startswith(_VMDK_MAGIC)
+        or magic.startswith(_QCOW2_MAGIC)
+        or magic.startswith(_VDI_TEXT_MAGIC)
+    ):
+        return ArtifactClass.DISK_IMAGE
 
     # Extension-only classification (no reliable magic for these on disk).
     if extension in _DISK_EXTENSIONS:
