@@ -10,6 +10,23 @@ dependencies = [
 ]
 license = { text = "MIT" }
 
+[project.scripts]
+sift-guard = "sift_guard.cli:main"
+
+[tool.setuptools]
+# Explicit package list — the repo has multiple top-level packages
+# (orchestrator, server, etc.), which trips setuptools' auto-discovery
+# heuristic. Listing them keeps `pip install -e .` deterministic and
+# registers the `sift-guard` console script.
+packages = [
+    "orchestrator",
+    "reporting",
+    "server",
+    "server.runners",
+    "server.tools",
+    "sift_guard",
+]
+
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
