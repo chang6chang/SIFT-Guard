@@ -9,13 +9,13 @@ Tier-1 tools (`vol_pslist`, `vol_psscan`, `vol_pstree`, `vol_netscan`,
      (evidence_id, plugin_name) pair, return a recomputed summary
      with `cached=True` and audit `<tool>:cached` (no Volatility
      run, no extractions.jsonl line).
-  4. Otherwise, translate the host-side absolute_path to the VM-side
-     path under SIFT_VM_EVIDENCE_PREFIX, capture the Volatility
-     version, invoke the SSH-based runner, parse the output,
-     persist a typed result to `case-data/extractions/<evidence_id>/
-     <plugin_name>.json`, write the .sha256 sidecar, append a chain
-     line to `case-data/extractions.jsonl`, and audit `<tool>` with
-     the summary as output.
+  4. Otherwise, validate the registered absolute_path lives under
+     `<case_dir>/evidence/`, capture the Volatility version, invoke
+     the local subprocess runner against that path, parse the
+     output, persist a typed result to `case-data/extractions/
+     <evidence_id>/<plugin_name>.json`, write the .sha256 sidecar,
+     append a chain line to `case-data/extractions.jsonl`, and
+     audit `<tool>` with the summary as output.
   5. In both branches, return a small (≤10 KB) Summary model carrying
      an `ExtractionRef` plus distribution / shape signal — never the
      full record set. Tier-2 tools compose narrowed answers from the
@@ -47,8 +47,8 @@ slightly tighter shape):
   - ``_log_hash_mismatch`` — special case of rejection for
     cache-integrity failures, emits a distinct ``:hash_mismatch``
     audit suffix per the cache contract
-  - ``_resolve_and_translate`` — resolution + artifact-class +
-    path-translation gate shared across all tier-1 entrypoints
+  - ``_resolve_and_validate`` — resolution + artifact-class +
+    path-confinement gate shared across all tier-1 entrypoints
   - ``_serve_cached`` / ``_serve_fresh`` — shared cache-hit /
     cache-miss bodies; each public tool is now a thin dispatcher
   - ``_compute_*_summary`` — per-plugin summary computers; pslist
@@ -73,8 +73,7 @@ from server.extractions import (
     load_extraction,
     write_extraction,
 )
-from server.runners.sift_vm import (
-    SIFT_VM_EVIDENCE_PREFIX,
+from server.runners.local import (
     get_vol_version,
     parse_cmdline_json,
     parse_malfind_json,
@@ -164,7 +163,7 @@ class _RejectionReason(StrEnum):
 
     EVIDENCE_NOT_FOUND = "evidence_not_found"
     WRONG_ARTIFACT_CLASS = "wrong_artifact_class"
-    PATH_TRANSLATION_FAILED = "path_translation_failed"
+    PATH_OUTSIDE_EVIDENCE_DIR = "path_outside_evidence_dir"
     # Cache-read tampering: stored .json bytes do not match the
     # extractions chain entry's recorded sha256, or the .sha256
     # sidecar disagrees with the chain. Audited under the
@@ -187,24 +186,23 @@ class _RejectionRecord(BaseModel):
     evidence_id: str
 
 
-def translate_to_vm_path(host_path: str, host_prefix: str, vm_prefix: str) -> str:
-    """Translate a host-side absolute path to its VM-side equivalent.
+def _validate_path_under_evidence(absolute_path: str, evidence_root: Path) -> None:
+    """Confirm `absolute_path` lives under `<case_dir>/evidence/`.
 
-    Replaces ``host_prefix`` with ``vm_prefix`` and enforces a
-    boundary: ``/foo/bar-other/file`` does NOT satisfy the prefix
-    ``/foo/bar``. The next character after the matched prefix must be
-    a separator (or the path exactly equals the prefix).
+    `register_evidence` enforces this confinement at registration
+    time, so a registered evidence_id should never resolve to a
+    path outside the tree. The check here is defense-in-depth
+    against a hand-edited CASE.yaml.
 
-    Sanitized: refuses without echoing the offending path back, per
-    the 2026-05-05 MCP error-message sanitization rule.
+    Sanitized: the rejection message never echoes the offending
+    path, per the 2026-05-05 MCP error-message sanitization rule.
     """
-    host_prefix = host_prefix.rstrip("/")
-    vm_prefix = vm_prefix.rstrip("/")
-    if host_path == host_prefix:
-        return vm_prefix
-    if not host_path.startswith(host_prefix + "/"):
-        raise ValueError("evidence path is not under the expected host prefix")
-    return vm_prefix + host_path[len(host_prefix) :]
+    evidence_root = evidence_root.resolve()
+    candidate = Path(absolute_path).resolve()
+    try:
+        candidate.relative_to(evidence_root)
+    except ValueError:
+        raise ValueError("evidence path is not under the case evidence directory")
 
 
 def _resolve_evidence(evidence_id: str, case_dir: Path) -> EvidenceRecord | None:
@@ -275,16 +273,21 @@ def _log_hash_mismatch(
     )
 
 
-def _resolve_and_translate(
+def _resolve_and_validate(
     case_dir_path: Path, evidence_id: str, tool_name: str
 ) -> tuple[EvidenceRecord, str]:
-    """Resolution + artifact-class + path-translation gate.
+    """Resolution + artifact-class + path-confinement gate.
 
-    Returns ``(EvidenceRecord, vm_path)`` on success. On any failure
-    audits the rejection and raises a sanitized ``ValueError`` whose
-    message does NOT echo the offending evidence_id back at the agent.
-    Three rejection paths share this body — same byte-identical
-    behavior as the pre-refactor per-tool inline blocks.
+    Returns ``(EvidenceRecord, image_path)`` on success. On any
+    failure audits the rejection and raises a sanitized
+    ``ValueError`` whose message does NOT echo the offending
+    evidence_id back at the agent. Three rejection paths share
+    this body.
+
+    `image_path` is the registered absolute_path — local to the
+    host running the MCP server, since the local runner does not
+    cross any host/VM boundary. The path-confinement check is
+    defense-in-depth against hand-edited ``CASE.yaml``.
     """
     record = _resolve_evidence(evidence_id, case_dir_path)
     if record is None:
@@ -305,22 +308,19 @@ def _resolve_and_translate(
         )
         raise ValueError("evidence is not a memory image")
 
-    host_prefix = str(case_dir_path / "evidence")
+    evidence_root = case_dir_path / "evidence"
     try:
-        vm_path = translate_to_vm_path(record.absolute_path, host_prefix, SIFT_VM_EVIDENCE_PREFIX)
+        _validate_path_under_evidence(record.absolute_path, evidence_root)
     except ValueError:
-        # Triggered only if CASE.yaml's absolute_path is outside
-        # case_dir/evidence/ — should be impossible under normal
-        # register_evidence flow, but we still record the probe.
         _log_tool_rejection(
             case_dir_path,
             tool_name,
-            _RejectionReason.PATH_TRANSLATION_FAILED,
+            _RejectionReason.PATH_OUTSIDE_EVIDENCE_DIR,
             evidence_id,
         )
         raise
 
-    return record, vm_path
+    return record, record.absolute_path
 
 
 # ---------------------------------------------------------------------------
@@ -527,7 +527,7 @@ def _serve_cached(
 def _serve_fresh(
     case_dir_path: Path,
     evidence_id: str,
-    vm_path: str,
+    image_path: str,
     plugin_name: PluginName,
     tool_name: str,
     list_field_name: str,
@@ -549,10 +549,10 @@ def _serve_fresh(
     volatility_version = get_vol_version()
     invoked_at = datetime.now(tz=timezone.utc)
     if timeout_seconds is None:
-        stdout, command_string, runtime_seconds = run_vol_plugin(plugin_name, vm_path)
+        stdout, command_string, runtime_seconds = run_vol_plugin(plugin_name, image_path)
     else:
         stdout, command_string, runtime_seconds = run_vol_plugin(
-            plugin_name, vm_path, timeout_seconds=timeout_seconds
+            plugin_name, image_path, timeout_seconds=timeout_seconds
         )
     raw_rows = parser(stdout)
 
@@ -635,7 +635,7 @@ def vol_pslist(evidence_id: str, case_dir: str = "case-data") -> PslistSummary:
     line to ``extractions.jsonl``.
     """
     case_dir_path = Path(case_dir).resolve()
-    _, vm_path = _resolve_and_translate(case_dir_path, evidence_id, _PSLIST_TOOL_NAME)
+    _, image_path = _resolve_and_validate(case_dir_path, evidence_id, _PSLIST_TOOL_NAME)
 
     def summary_fn(ref: ExtractionRef, records: list[dict]) -> PslistSummary:
         return _compute_process_summary(ref, records, PslistSummary)
@@ -653,7 +653,7 @@ def vol_pslist(evidence_id: str, case_dir: str = "case-data") -> PslistSummary:
     return _serve_fresh(
         case_dir_path,
         evidence_id,
-        vm_path,
+        image_path,
         _PSLIST_PLUGIN,
         _PSLIST_TOOL_NAME,
         "processes",
@@ -677,7 +677,7 @@ def vol_psscan(evidence_id: str, case_dir: str = "case-data") -> PsscanSummary:
     (Rocba: 6m36s observed). Runner timeout bumped to 900 s.
     """
     case_dir_path = Path(case_dir).resolve()
-    _, vm_path = _resolve_and_translate(case_dir_path, evidence_id, _PSSCAN_TOOL_NAME)
+    _, image_path = _resolve_and_validate(case_dir_path, evidence_id, _PSSCAN_TOOL_NAME)
 
     def summary_fn(ref: ExtractionRef, records: list[dict]) -> PsscanSummary:
         return _compute_process_summary(ref, records, PsscanSummary)
@@ -695,7 +695,7 @@ def vol_psscan(evidence_id: str, case_dir: str = "case-data") -> PsscanSummary:
     return _serve_fresh(
         case_dir_path,
         evidence_id,
-        vm_path,
+        image_path,
         _PSSCAN_PLUGIN,
         _PSSCAN_TOOL_NAME,
         "processes",
@@ -724,7 +724,7 @@ def vol_pstree(evidence_id: str, case_dir: str = "case-data") -> PstreeSummary:
     (Rocba: 29.5 s observed). Runner default timeout (300 s) is sufficient.
     """
     case_dir_path = Path(case_dir).resolve()
-    _, vm_path = _resolve_and_translate(case_dir_path, evidence_id, _PSTREE_TOOL_NAME)
+    _, image_path = _resolve_and_validate(case_dir_path, evidence_id, _PSTREE_TOOL_NAME)
 
     summary_fn: Callable[[ExtractionRef, list[dict]], PstreeSummary] = _compute_pstree_summary
 
@@ -741,7 +741,7 @@ def vol_pstree(evidence_id: str, case_dir: str = "case-data") -> PstreeSummary:
     return _serve_fresh(
         case_dir_path,
         evidence_id,
-        vm_path,
+        image_path,
         _PSTREE_PLUGIN,
         _PSTREE_TOOL_NAME,
         "processes",
@@ -764,7 +764,7 @@ def vol_netscan(evidence_id: str, case_dir: str = "case-data") -> NetscanSummary
     (Rocba: 8m57s observed). Runner timeout bumped to 1200 s.
     """
     case_dir_path = Path(case_dir).resolve()
-    _, vm_path = _resolve_and_translate(case_dir_path, evidence_id, _NETSCAN_TOOL_NAME)
+    _, image_path = _resolve_and_validate(case_dir_path, evidence_id, _NETSCAN_TOOL_NAME)
 
     summary_fn: Callable[[ExtractionRef, list[dict]], NetscanSummary] = _compute_netscan_summary
 
@@ -781,7 +781,7 @@ def vol_netscan(evidence_id: str, case_dir: str = "case-data") -> NetscanSummary
     return _serve_fresh(
         case_dir_path,
         evidence_id,
-        vm_path,
+        image_path,
         _NETSCAN_PLUGIN,
         _NETSCAN_TOOL_NAME,
         "connections",
@@ -809,7 +809,7 @@ def vol_cmdline(evidence_id: str, case_dir: str = "case-data") -> CmdLineSummary
     timeout.
     """
     case_dir_path = Path(case_dir).resolve()
-    _, vm_path = _resolve_and_translate(case_dir_path, evidence_id, _CMDLINE_TOOL_NAME)
+    _, image_path = _resolve_and_validate(case_dir_path, evidence_id, _CMDLINE_TOOL_NAME)
 
     summary_fn: Callable[[ExtractionRef, list[dict]], CmdLineSummary] = _compute_cmdline_summary
 
@@ -826,7 +826,7 @@ def vol_cmdline(evidence_id: str, case_dir: str = "case-data") -> CmdLineSummary
     return _serve_fresh(
         case_dir_path,
         evidence_id,
-        vm_path,
+        image_path,
         _CMDLINE_PLUGIN,
         _CMDLINE_TOOL_NAME,
         "processes",
@@ -857,7 +857,7 @@ def vol_malfind(evidence_id: str, case_dir: str = "case-data") -> MalfindSummary
     default.
     """
     case_dir_path = Path(case_dir).resolve()
-    _, vm_path = _resolve_and_translate(case_dir_path, evidence_id, _MALFIND_TOOL_NAME)
+    _, image_path = _resolve_and_validate(case_dir_path, evidence_id, _MALFIND_TOOL_NAME)
 
     summary_fn: Callable[[ExtractionRef, list[dict]], MalfindSummary] = _compute_malfind_summary
 
@@ -874,7 +874,7 @@ def vol_malfind(evidence_id: str, case_dir: str = "case-data") -> MalfindSummary
     return _serve_fresh(
         case_dir_path,
         evidence_id,
-        vm_path,
+        image_path,
         _MALFIND_PLUGIN,
         _MALFIND_TOOL_NAME,
         "detections",
@@ -886,7 +886,6 @@ def vol_malfind(evidence_id: str, case_dir: str = "case-data") -> MalfindSummary
 
 
 __all__ = [
-    "translate_to_vm_path",
     "vol_cmdline",
     "vol_malfind",
     "vol_netscan",

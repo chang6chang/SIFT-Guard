@@ -674,7 +674,7 @@ class TestSchemaIntrospectionGuard:
                 if ret is None:
                     continue
                 # Only count BaseModel-derived returns; primitives and
-                # helpers (translate_to_vm_path → str) are out of scope.
+                # helpers (e.g. plain str returns) are out of scope.
                 if hasattr(ret, "model_fields"):
                     types.add(ret)
         return types

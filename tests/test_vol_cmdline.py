@@ -207,10 +207,10 @@ class TestVolCmdlineHappyPath:
         assert "svchost.exe -k netsvcs" in records[2]["cmdline"]
 
         # The runner was called with the pinned plugin name and the
-        # translated VM path — not the host path.
-        plugin_arg, vm_path_arg = mock_run.call_args.args[:2]
+        # registered evidence path on disk.
+        plugin_arg, image_path_arg = mock_run.call_args.args[:2]
         assert plugin_arg == "windows.cmdline.CmdLine"
-        assert vm_path_arg == "/mnt/rocba/Rocba-Memory.raw"
+        assert image_path_arg == str(case_dir / "evidence" / "Rocba-Memory.raw")
 
         # Extractions chain line was created with matching hash.
         chain_path = case_dir / "extractions.jsonl"

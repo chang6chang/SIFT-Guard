@@ -209,7 +209,7 @@ class TestVolPsscanRejectionAudit:
         assert entry["line_number"] == 1
         assert entry["prev_line_hash"] == _GENESIS_PREV_HASH
 
-    def test_path_translation_failed_writes_rejection_chain_line(self, tmp_path: Path):
+    def test_path_outside_evidence_writes_rejection_chain_line(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path, absolute_path="/tmp/Foo.raw")
 
         with pytest.raises(ValueError) as exc_info:
@@ -217,14 +217,14 @@ class TestVolPsscanRejectionAudit:
 
         # Sanitized: the offending path is not echoed back to the agent.
         assert "/tmp/Foo.raw" not in str(exc_info.value)
-        assert "expected host prefix" in str(exc_info.value)
+        assert "case evidence directory" in str(exc_info.value)
 
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
         assert audit_path.exists(), "rejection must extend the chain"
         lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
         entry = lines[0]
-        assert entry["tool_name"] == "vol_psscan:rejected_path_translation_failed"
+        assert entry["tool_name"] == "vol_psscan:rejected_path_outside_evidence_dir"
         assert entry["evidence_id"] == VALID_EVIDENCE_ID
         assert entry["line_number"] == 1
         assert entry["prev_line_hash"] == _GENESIS_PREV_HASH
@@ -305,9 +305,9 @@ class TestVolPsscanHappyPath:
         # The runner was called with the pinned plugin name AND the
         # bumped 900s timeout — psscan is ~30-50× slower than pslist
         # and the runner's 300s default would time out.
-        plugin_arg, vm_path_arg = mock_run.call_args.args[:2]
+        plugin_arg, image_path_arg = mock_run.call_args.args[:2]
         assert plugin_arg == "windows.psscan.PsScan"
-        assert vm_path_arg == "/mnt/rocba/Rocba-Memory.raw"
+        assert image_path_arg == str(case_dir / "evidence" / "Rocba-Memory.raw")
         assert mock_run.call_args.kwargs.get("timeout_seconds") == 900, (
             "vol_psscan must override run_vol_plugin's 300s default — "
             "psscan against Rocba was 6m36s observed"

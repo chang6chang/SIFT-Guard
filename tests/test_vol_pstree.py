@@ -209,17 +209,17 @@ class TestVolPstreeRejectionAudit:
         entry = lines[0]
         assert entry["tool_name"] == "vol_pstree:rejected_wrong_artifact_class"
 
-    def test_path_translation_failed_writes_rejection_chain_line(self, tmp_path: Path):
+    def test_path_outside_evidence_writes_rejection_chain_line(self, tmp_path: Path):
         case_dir = _make_case_dir(tmp_path, absolute_path="/tmp/Foo.raw")
         with pytest.raises(ValueError) as exc_info:
             vol_pstree(VALID_EVIDENCE_ID, case_dir=str(case_dir))
         assert "/tmp/Foo.raw" not in str(exc_info.value)
-        assert "expected host prefix" in str(exc_info.value)
+        assert "case evidence directory" in str(exc_info.value)
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
         lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
         entry = lines[0]
-        assert entry["tool_name"] == "vol_pstree:rejected_path_translation_failed"
+        assert entry["tool_name"] == "vol_pstree:rejected_path_outside_evidence_dir"
 
 
 # ---------------------------------------------------------------------------
@@ -323,9 +323,9 @@ class TestVolPstreeHappyPath:
 
         # Runner was called with the pinned plugin name and translated
         # VM path (no host path leaks).
-        plugin_arg, vm_path_arg = mock_run.call_args.args[:2]
+        plugin_arg, image_path_arg = mock_run.call_args.args[:2]
         assert plugin_arg == "windows.pstree.PsTree"
-        assert vm_path_arg == "/mnt/rocba/Rocba-Memory.raw"
+        assert image_path_arg == str(case_dir / "evidence" / "Rocba-Memory.raw")
 
 
 # ---------------------------------------------------------------------------

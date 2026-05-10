@@ -249,9 +249,9 @@ class TestVolMalfindHappyPath:
         assert third["disassembly"] is None
 
         # Runner called with the pinned plugin name and translated VM path.
-        plugin_arg, vm_path_arg = mock_run.call_args.args[:2]
+        plugin_arg, image_path_arg = mock_run.call_args.args[:2]
         assert plugin_arg == "windows.malfind.Malfind"
-        assert vm_path_arg == "/mnt/rocba/Rocba-Memory.raw"
+        assert image_path_arg == str(case_dir / "evidence" / "Rocba-Memory.raw")
 
         # Extractions chain line written with matching hash + record count.
         chain_path = case_dir / "extractions.jsonl"
@@ -343,7 +343,7 @@ class TestParseMalfindIntegerStartVpn:
     record validates."""
 
     def test_int_start_vpn_round_trips_via_parser(self):
-        from server.runners.sift_vm import parse_malfind_json
+        from server.runners.local import parse_malfind_json
 
         raw = json.dumps(
             [

@@ -1,12 +1,13 @@
-"""Unit tests for `server.runners.sift_vm`.
+"""Unit tests for `server.runners.local`.
 
-Real SSH calls are out of scope here — those are integration tests
-against a live SIFT VM, marked ``@pytest.mark.integration`` and skipped
-by default per pyproject.toml's pytest config. These unit tests mock
+Real `vol` invocation is out of scope here — those are integration
+tests against a live SIFT install, marked
+``@pytest.mark.integration`` and skipped by default per
+pyproject.toml's pytest config. These unit tests mock
 ``subprocess.run`` and exercise:
 
   - the ``plugin_name`` regex (positive + negative cases)
-  - the ``image_path_in_vm`` prefix check
+  - ``resolve_vol_bin`` env-var override + missing-binary error
   - the ``parse_volatility_json`` PascalCase → snake_case mapping
     (shared by pslist and psscan; pstree has its own
     ``parse_pstree_json`` because of the recursive shape), including
@@ -23,20 +24,50 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Pin SIFT_VM_HOST before importing the module so module-load-time
-# detection is bypassed. Without this, the import would shell out to
-# `ip route show` on the test runner — fine on WSL2, not portable.
-os.environ.setdefault("SIFT_VM_HOST", "test.invalid")
-
-from server.runners.sift_vm import (  # noqa: E402  (intentional post-env import)
-    SIFT_VM_EVIDENCE_PREFIX,
+from server.runners.local import (
+    SIFT_VOL_PATH_ENV,
+    VolNotFoundError,
     parse_volatility_json,
+    resolve_vol_bin,
     run_vol_plugin,
 )
 
 
 PSLIST_FIXTURE = Path(__file__).parent / "fixtures" / "vol_pslist_sample.json"
-VALID_IMAGE_PATH = f"{SIFT_VM_EVIDENCE_PREFIX}/Rocba-Memory.raw"
+VALID_IMAGE_PATH = "/case-data/evidence/Rocba-Memory.raw"
+
+
+# ---------------------------------------------------------------------------
+# resolve_vol_bin
+# ---------------------------------------------------------------------------
+
+
+class TestResolveVolBin:
+    def test_env_var_override_resolves_to_executable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        fake_vol = tmp_path / "vol"
+        fake_vol.write_text("#!/bin/sh\nexit 0\n")
+        os.chmod(fake_vol, 0o755)
+        monkeypatch.setenv(SIFT_VOL_PATH_ENV, str(fake_vol))
+        assert resolve_vol_bin() == str(fake_vol)
+
+    def test_env_var_override_rejects_non_executable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        not_a_binary = tmp_path / "not-vol"
+        not_a_binary.write_text("hello")
+        os.chmod(not_a_binary, 0o644)
+        monkeypatch.setenv(SIFT_VOL_PATH_ENV, str(not_a_binary))
+        with pytest.raises(VolNotFoundError):
+            resolve_vol_bin()
+
+    def test_missing_vol_raises_friendly_error(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv(SIFT_VOL_PATH_ENV, raising=False)
+        with patch("server.runners.local.shutil.which", return_value=None):
+            with pytest.raises(VolNotFoundError) as exc_info:
+                resolve_vol_bin()
+        assert "vol" in str(exc_info.value).lower()
 
 
 # ---------------------------------------------------------------------------
@@ -60,10 +91,15 @@ class TestPluginNameRegex:
             "windows.malfind.Malfind",
         ],
     )
-    def test_accepts_valid_plugin_names(self, name: str):
-        # Mock subprocess.run so no real SSH happens; we only want to
-        # confirm the regex let the call through to subprocess.
-        with patch("server.runners.sift_vm.subprocess.run") as mock_run:
+    def test_accepts_valid_plugin_names(self, name: str, monkeypatch: pytest.MonkeyPatch):
+        # Mock subprocess.run so no real vol invocation happens; we
+        # only want to confirm the regex let the call through to
+        # subprocess. The vol-binary resolver is also mocked so the
+        # test does not depend on a real install.
+        with (
+            patch("server.runners.local.resolve_vol_bin", return_value="/usr/bin/vol"),
+            patch("server.runners.local.subprocess.run") as mock_run,
+        ):
             mock_run.return_value = MagicMock(stdout="[]", returncode=0)
             stdout, command_string, runtime_seconds = run_vol_plugin(name, VALID_IMAGE_PATH)
         assert stdout == "[]"
@@ -74,6 +110,9 @@ class TestPluginNameRegex:
         # The plugin name must appear as the LAST argv element — no
         # shell, no string interpolation, just argv.
         assert argv[-1] == name
+        assert argv[0] == "/usr/bin/vol"
+        assert argv[1] == "-f"
+        assert argv[2] == VALID_IMAGE_PATH
 
     @pytest.mark.parametrize(
         "name",
@@ -87,25 +126,12 @@ class TestPluginNameRegex:
     )
     def test_rejects_malformed_plugin_names(self, name: str):
         # subprocess must NOT be called for any rejected input.
-        with patch("server.runners.sift_vm.subprocess.run") as mock_run:
+        with (
+            patch("server.runners.local.resolve_vol_bin", return_value="/usr/bin/vol"),
+            patch("server.runners.local.subprocess.run") as mock_run,
+        ):
             with pytest.raises(ValueError):
                 run_vol_plugin(name, VALID_IMAGE_PATH)
-            assert mock_run.call_count == 0
-
-
-# ---------------------------------------------------------------------------
-# image_path_in_vm prefix check
-# ---------------------------------------------------------------------------
-
-
-class TestImagePathPrefix:
-    def test_path_outside_prefix_rejected(self):
-        # `/etc/passwd` is the canonical out-of-bounds probe — outside
-        # SIFT_VM_EVIDENCE_PREFIX, so the runner must refuse to even
-        # construct the SSH command.
-        with patch("server.runners.sift_vm.subprocess.run") as mock_run:
-            with pytest.raises(ValueError):
-                run_vol_plugin("windows.pslist.PsList", "/etc/passwd")
             assert mock_run.call_count == 0
 
 
