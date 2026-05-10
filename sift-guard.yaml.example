@@ -1,0 +1,58 @@
+# sift-guard.yaml — example configuration.
+#
+# Every key is optional; missing values fall back to the runtime
+# defaults baked into the local runner. Copy this file to
+# `sift-guard.yaml` and edit. CLI flags always win over config
+# values.
+#
+# Discovery order, first match wins:
+#   1. --config <path>
+#   2. ./sift-guard.yaml          (or .yml)
+#   3. ~/.config/sift-guard.yaml
+#   4. /etc/sift-guard.yaml
+
+volatility:
+  # Absolute path to the `vol` binary. Omit to auto-detect via PATH.
+  # path: /usr/bin/vol
+  # Python interpreter that imports `volatility3` (used to capture
+  # the PACKAGE_VERSION constant on each tool call). Omit to
+  # auto-detect from vol's shebang.
+  # python: /opt/volatility3/bin/python3
+  # Directory holding the Volatility 3 symbol packs (windows.zip /
+  # linux.zip / mac.zip unpacked). Sets VOLATILITY3_SYMBOL_DIRS for
+  # the runner.
+  symbols_dir: /opt/volatility3/volatility3/symbols/
+
+disk_tools:
+  # SIFT 2026.1 ships these on PATH; uncomment + edit only if your
+  # install differs. Each maps to one SIFT_DISK_*_BIN env var.
+  # log2timeline: /usr/bin/log2timeline.py
+  # psort: /usr/bin/psort.py
+  # evtx_dump: /usr/bin/evtx_dump.py
+  # regripper: /usr/bin/rip.pl
+  # ewfmount: /usr/bin/ewfmount
+  # guestmount: /usr/bin/guestmount
+  # prefetch_cmd: pf2json
+  # In CI / dev environments without privileged mount access, point
+  # this at a directory the operator pre-mounted read-only. The
+  # disk-side tools then skip every shell-out and use this path.
+  # premounted_path: /mnt/sift_disk
+
+analysis:
+  # Hard cap on loop iterations. Default 6.
+  max_iterations: 6
+  # Total uncached-token budget (R_c termination). Default heuristic:
+  # 500K base + 250K per host, capped at 5M.
+  token_budget: 2000000
+  # Claude model ID for analyst / validator subagents. Sets
+  # ANTHROPIC_MODEL.
+  model: claude-sonnet-4-20250514
+
+output:
+  # Where the case directory lives. Omit to use
+  # ./results-<UTC-timestamp>/ for each run.
+  # dir: ./results
+  # Whether to render report.md / report.json after the loop.
+  generate_report: true
+  # markdown | json | both
+  report_format: both

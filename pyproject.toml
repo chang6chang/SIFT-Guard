@@ -1,7 +1,7 @@
 [project]
 name = "sift-guard"
 version = "0.1.0"
-description = "Autonomous DFIR agent with cross-validation. SANS Find Evil! 2026."
+description = "Turnkey autonomous DFIR agent with cross-validation. Runs locally on a SIFT-Workstation-class host."
 requires-python = ">=3.11"
 dependencies = [
     "mcp",
@@ -9,6 +9,9 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 license = { text = "MIT" }
+
+[project.scripts]
+sift-guard = "sift_guard.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -25,6 +28,20 @@ rag = [
     "faiss-cpu==1.13.2",
 ]
 
+[tool.setuptools]
+# Explicit package list — the repo has multiple top-level packages
+# (orchestrator, server, etc.), which trips setuptools' auto-discovery
+# heuristic. Listing them here keeps `pip install -e .` deterministic
+# and registers the `sift-guard` console script.
+packages = [
+    "orchestrator",
+    "reporting",
+    "server",
+    "server.runners",
+    "server.tools",
+    "sift_guard",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
@@ -34,6 +51,6 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 pythonpath = ["."]
 markers = [
-    "integration: tests that need a live SIFT VM over SSH (skipped by default; run with `pytest -m integration`)",
+    "integration: tests that need a live Volatility install (skipped by default; run with `pytest -m integration`)",
 ]
 addopts = ["-m", "not integration"]
