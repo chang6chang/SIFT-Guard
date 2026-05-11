@@ -20,6 +20,7 @@ sift-guard = "sift_guard.cli:main"
 # registers the `sift-guard` console script.
 packages = [
     "orchestrator",
+    "rag",
     "reporting",
     "server",
     "server.runners",
