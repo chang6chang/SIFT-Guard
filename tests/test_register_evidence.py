@@ -245,3 +245,113 @@ class TestPathConfinement:
         assert stat.S_IMODE(target.stat().st_mode) == original_target_mode
         assert not _audit_path(case_dir).exists()
         assert not _case_yaml(case_dir).exists()
+
+
+class TestRegisterEvidenceInPlace:
+    """``confine_to_evidence_dir=False`` — the orchestrator-internal
+    code path used by ``sift-guard analyze --no-copy``. The MCP-exposed
+    register_evidence still enforces confinement (the kwarg defaults
+    to True); only the CLI's own pre-flight bypasses it."""
+
+    def test_registers_path_outside_evidence_dir(self, tmp_path: Path, case_dir: Path):
+        # Source file lives outside <case_dir>/evidence/.
+        source = tmp_path / "outside-source.dat"
+        source.write_bytes(secrets.token_bytes(64 * 1024))
+        expected_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+
+        record = register_evidence(
+            str(source),
+            case_dir=str(case_dir),
+            confine_to_evidence_dir=False,
+        )
+
+        assert record.absolute_path == str(source.resolve())
+        assert record.sha256 == expected_sha
+        # Original gets chmod 444 even though it lives outside the
+        # case dir — the "register" contract is the same.
+        assert stat.S_IMODE(source.stat().st_mode) == 0o444
+
+    def test_default_still_rejects_outside_paths(self, tmp_path: Path, case_dir: Path):
+        """The default value of confine_to_evidence_dir must remain True
+        so the MCP tool can't be tricked into registering arbitrary files."""
+        source = tmp_path / "outside-source.dat"
+        source.write_bytes(b"x")
+        with pytest.raises(PermissionError):
+            register_evidence(str(source), case_dir=str(case_dir))
+
+
+class TestRegisterEvidenceIdempotency:
+    """Re-running ``sift-guard analyze`` against the same case_dir
+    must not re-hash already-registered evidence. Skip is gated on
+    BOTH (a) file mode 0o444 AND (b) CASE.yaml has a matching entry."""
+
+    def test_second_call_skips_rehash_and_returns_existing_record(
+        self, fixture_file: Path, case_dir: Path, monkeypatch
+    ):
+        first = register_evidence(str(fixture_file), case_dir=str(case_dir))
+
+        # Spy on the hasher — second call must NOT recompute.
+        from server.tools import evidence as evidence_module
+
+        rehash_called = {"count": 0}
+        original_hasher = evidence_module._stream_sha256_and_magic
+
+        def counting_hasher(*args, **kwargs):
+            rehash_called["count"] += 1
+            return original_hasher(*args, **kwargs)
+
+        monkeypatch.setattr(evidence_module, "_stream_sha256_and_magic", counting_hasher)
+
+        second = register_evidence(str(fixture_file), case_dir=str(case_dir))
+
+        assert second.evidence_id == first.evidence_id
+        assert second.sha256 == first.sha256
+        assert rehash_called["count"] == 0, (
+            "second registration must not re-hash a file with mode 0o444 + CASE.yaml entry"
+        )
+
+    def test_skip_writes_audit_entry(
+        self, fixture_file: Path, case_dir: Path
+    ):
+        register_evidence(str(fixture_file), case_dir=str(case_dir))
+        register_evidence(str(fixture_file), case_dir=str(case_dir))
+
+        audit_lines = [
+            json.loads(line)
+            for line in _audit_path(case_dir).read_text().splitlines()
+            if line.strip()
+        ]
+        # First line: full register_evidence. Second line:
+        # register_evidence:idempotent_skip — the skip path must still
+        # extend the audit chain so it's not an unrecorded probe.
+        tool_names = [entry["tool_name"] for entry in audit_lines]
+        assert tool_names == [
+            "register_evidence",
+            "register_evidence:idempotent_skip",
+        ]
+
+    def test_skip_does_not_fire_without_case_yaml_entry(
+        self, tmp_path: Path, case_dir: Path, monkeypatch
+    ):
+        """File already chmod 444 but NEVER registered (no CASE.yaml
+        entry yet). Should NOT skip — the chmod alone isn't enough."""
+        path = case_dir / "evidence" / "preexisting.dat"
+        path.write_bytes(secrets.token_bytes(32 * 1024))
+        path.chmod(0o444)
+
+        from server.tools import evidence as evidence_module
+
+        rehash_called = {"count": 0}
+        original = evidence_module._stream_sha256_and_magic
+
+        def counting(*args, **kwargs):
+            rehash_called["count"] += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(evidence_module, "_stream_sha256_and_magic", counting)
+
+        register_evidence(str(path), case_dir=str(case_dir))
+
+        assert rehash_called["count"] == 1, (
+            "first registration must hash even when file is already 0o444"
+        )

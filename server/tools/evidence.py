@@ -108,36 +108,100 @@ def _write_case_yaml(case_yaml_path: Path, doc: dict) -> None:
         yaml.safe_dump(doc, f, default_flow_style=False, sort_keys=False)
 
 
-def register_evidence(filepath: str, case_dir: str = "case-data") -> EvidenceRecord:
+def _find_existing_evidence_entry(
+    doc: dict, absolute_path: str
+) -> EvidenceRecord | None:
+    """Return the CASE.yaml entry whose ``absolute_path`` matches, or None.
+
+    Used by the idempotency skip path so a re-run of
+    ``register_evidence`` against the same file doesn't re-hash
+    50 GB of evidence. The match is exact-string on the resolved
+    absolute path — same comparator the caller uses when writing
+    the entry, so the round-trip is stable.
+    """
+    for entry in doc.get("evidence", []) or []:
+        if entry.get("absolute_path") == absolute_path:
+            try:
+                return EvidenceRecord.model_validate(entry)
+            except Exception:
+                return None
+    return None
+
+
+def register_evidence(
+    filepath: str,
+    case_dir: str = "case-data",
+    *,
+    confine_to_evidence_dir: bool = True,
+) -> EvidenceRecord:
     """Register one piece of evidence into the case directory.
 
     Sequence:
-      0. confine `filepath` to <case_dir>/evidence/ (sanitized rejection)
+      0. (optional, default on) confine ``filepath`` to
+         ``<case_dir>/evidence/`` (sanitized rejection)
       1. resolve and validate the path
-      2. stream-hash sha256 and capture magic bytes in one pass
-      3. detect artifact class
-      4. mint UUID4 evidence_id
-      5. chmod the file to 0o444
-      6. append to (or create) CASE.yaml
-      7. append a hash-chained line to the audit log
-      8. return the EvidenceRecord
+      2. idempotency skip — if CASE.yaml already has an entry whose
+         ``absolute_path`` matches and the file is mode 0o444 on disk,
+         return the recorded EvidenceRecord without recomputing the
+         SHA-256. Saves ~30 s per 16 GB image on a re-run.
+      3. stream-hash sha256 and capture magic bytes in one pass
+      4. detect artifact class
+      5. mint UUID4 evidence_id
+      6. chmod the file to 0o444
+      7. append to (or create) CASE.yaml
+      8. append a hash-chained line to the audit log
+      9. return the EvidenceRecord
+
+    ``confine_to_evidence_dir`` defaults to True — what the MCP-exposed
+    tool enforces. Path confinement is a defense-in-depth check
+    against prompt-injection-driven registration of arbitrary host
+    files (CLAUDE.md "Ground truth isolation" rule 3). The orchestrator's
+    own ``--no-copy`` flow sets it to False so the original evidence
+    path (under ``/mnt/rocba/...`` or similar) is registered directly
+    instead of forcing a 50 GB copy into ``<case_dir>/evidence/``.
     """
-    # Step 0 — path confinement. Resolve both sides (symlinks are
-    # followed) and refuse anything that is not under <case_dir>/evidence/.
+    # Step 0 — path confinement (defense-in-depth).
     # Sanitized message: never echo the offending path back to the agent
     # (decisions-log 2026-05-05, MCP error-message sanitization rule).
     case_dir_path = Path(case_dir).resolve(strict=False)
-    evidence_root = (case_dir_path / "evidence").resolve(strict=False)
     path = Path(filepath).resolve(strict=False)
-    try:
-        path.relative_to(evidence_root)
-    except ValueError:
-        raise PermissionError("Path outside evidence directory rejected")
+    if confine_to_evidence_dir:
+        evidence_root = (case_dir_path / "evidence").resolve(strict=False)
+        try:
+            path.relative_to(evidence_root)
+        except ValueError:
+            raise PermissionError("Path outside evidence directory rejected")
 
     if not path.exists():
         raise FileNotFoundError(f"Evidence path does not exist: {path}")
     if not path.is_file():
         raise ValueError(f"Evidence path is not a regular file: {path}")
+
+    # Step 2 — idempotency skip. Re-running `sift-guard analyze`
+    # against an already-registered case (same case_dir, same
+    # evidence files) should not pay the SHA-256 cost again. We
+    # gate on TWO conditions so a stray chmod 444 on a foreign file
+    # can't trick us into trusting an arbitrary CASE.yaml hit:
+    #   (a) CASE.yaml already has an entry with this absolute_path.
+    #   (b) The file is currently mode 0o444 — the post-registration
+    #       state this function itself leaves files in.
+    # Either one alone is insufficient; both together mean the file
+    # was registered through this code path previously and remains
+    # untouched on disk.
+    case_yaml_path = case_dir_path / _CASE_FILENAME
+    existing_doc = _load_case_yaml(case_yaml_path) if case_yaml_path.exists() else {}
+    existing_record = _find_existing_evidence_entry(existing_doc, str(path))
+    current_mode = path.stat().st_mode & 0o777
+    if existing_record is not None and current_mode == _FILE_MODE:
+        # Audit the skip so the chain still records every call.
+        append_audit_entry(
+            case_dir=case_dir_path,
+            tool_name="register_evidence:idempotent_skip",
+            evidence_id=existing_record.evidence_id,
+            input_args={"filepath": str(path), "case_dir": str(case_dir_path)},
+            output=existing_record,
+        )
+        return existing_record
 
     size_bytes = path.stat().st_size
     sha256, magic = _stream_sha256_and_magic(path)
@@ -160,8 +224,7 @@ def register_evidence(filepath: str, case_dir: str = "case-data") -> EvidenceRec
 
     case_dir_path.mkdir(parents=True, exist_ok=True)
 
-    case_yaml_path = case_dir_path / _CASE_FILENAME
-    doc = _load_case_yaml(case_yaml_path)
+    doc = existing_doc
     if not doc:
         doc = {
             "case_id": case_dir_path.name,

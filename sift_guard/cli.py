@@ -145,6 +145,38 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip the per-image OS + symbol-pack pre-flight probe.",
     )
+
+    # Evidence staging mode — mutually exclusive. Default (neither
+    # flag set) is in-place: chmod 444 the original, symlink it into
+    # the case dir. The --copy form is the original behavior (deep
+    # copy into the case dir).
+    staging = analyze.add_mutually_exclusive_group()
+    staging.add_argument(
+        "--no-copy",
+        dest="staging_mode",
+        action="store_const",
+        const="symlink",
+        help="(DEFAULT) Register evidence in place. The originals are "
+        "chmod 444'd (read-only) and symlinks under "
+        "<output-dir>/evidence/<host>/ point to them. Faster "
+        "(no copy) and no disk-space doubling — but the original "
+        "files become read-only. Required when the source files "
+        "are larger than the available scratch space.",
+    )
+    staging.add_argument(
+        "--copy",
+        dest="staging_mode",
+        action="store_const",
+        const="copy",
+        help="Copy every evidence file into <output-dir>/evidence/<host>/ "
+        "before registration. The originals are NOT modified. Use "
+        "this when the source files are on read-only media you "
+        "cannot chmod, or when you want a self-contained case dir. "
+        "Slow on large cases — SRL-2015 (~50 GB) takes 10-20 min "
+        "to stage.",
+    )
+    analyze.set_defaults(staging_mode="symlink")
+
     analyze.add_argument(
         "--no-parallel",
         action="store_true",
@@ -219,9 +251,9 @@ def _resolve_case_dir(cli_output_dir: Path | None) -> Path:
 def _stage_evidence(evidence_dir: Path, case_dir: Path) -> int:
     """Copy recognized evidence files into ``case_dir/evidence/<host>/``.
 
-    Re-running with the same evidence_dir is idempotent: existing
-    identical files at the destination (size + name match) are left
-    alone.
+    Used by the ``--copy`` staging mode. Re-running with the same
+    evidence_dir is idempotent: existing identical files at the
+    destination (size + name match) are left alone.
     """
     triples = scan_evidence_directory(evidence_dir)
     target_root = case_dir / "evidence"
@@ -239,6 +271,113 @@ def _stage_evidence(evidence_dir: Path, case_dir: Path) -> int:
             shutil.copy2(path, dest)
             staged += 1
     return staged
+
+
+def _stage_evidence_symlinks(evidence_dir: Path, case_dir: Path) -> int:
+    """Symlink recognized evidence files into ``case_dir/evidence/<host>/``.
+
+    The ``--no-copy`` (default) staging mode. Source files are NOT
+    moved or copied. ``register_evidence`` is the step that
+    chmod 444's the originals; this function only sets up the
+    case-directory tree shape so operators can browse it and so
+    downstream readers (e.g. the report's source-of-truth list)
+    have a place to point at.
+
+    Symlink targets are the resolved absolute paths of the source
+    files — relative symlinks would break when the case dir is
+    moved relative to the evidence root. Returns the count of
+    symlinks created plus existing-and-correct symlinks left in
+    place.
+    """
+    triples = scan_evidence_directory(evidence_dir)
+    target_root = case_dir / "evidence"
+    target_root.mkdir(parents=True, exist_ok=True)
+
+    staged = 0
+    for host_id, _label, files in triples:
+        host_dir = target_root / host_id
+        host_dir.mkdir(parents=True, exist_ok=True)
+        for path, _evtype, _size in files:
+            dest = host_dir / path.name
+            source_resolved = path.resolve()
+            if dest.is_symlink():
+                if Path(os.readlink(dest)) == source_resolved:
+                    staged += 1
+                    continue
+                dest.unlink()
+            elif dest.exists():
+                # Operator manually placed a file there. Leave it
+                # alone — symlink mode shouldn't clobber real files.
+                logger.warning(
+                    "skipping symlink for %s — destination exists as a regular file",
+                    dest,
+                )
+                continue
+            dest.symlink_to(source_resolved)
+            staged += 1
+    return staged
+
+
+def _build_manifest_from_originals(
+    evidence_dir: Path, case_dir: Path
+) -> CaseManifest:
+    """Scan the source ``evidence_dir`` and register each file in place.
+
+    The ``--no-copy`` companion to ``_build_manifest_from_case_dir``.
+    Differences:
+      - Scans the source tree (where originals live) rather than
+        ``case_dir/evidence/``.
+      - Calls ``register_evidence`` with
+        ``confine_to_evidence_dir=False`` so the source path is
+        accepted even though it sits outside ``case_dir/evidence/``.
+      - ``register_evidence`` chmod 444's the original (so the agent
+        can't accidentally modify it) and records the source path
+        as the canonical ``absolute_path``.
+
+    Symlinks under ``case_dir/evidence/`` should already exist from
+    ``_stage_evidence_symlinks``; this function does not create
+    them. Manifest ``file_path`` is the ORIGINAL absolute path,
+    which is what every downstream tool needs to read the file.
+    """
+    grouped = scan_evidence_directory(evidence_dir)
+    case_id = case_dir.name
+
+    hosts: list[HostEvidence] = []
+    for host_id, host_label, files in grouped:
+        evidence_files: list[EvidenceFile] = []
+        for path, evtype, size in files:
+            try:
+                record = register_evidence(
+                    str(path),
+                    case_dir=str(case_dir),
+                    confine_to_evidence_dir=False,
+                )
+            except (FileNotFoundError, ValueError, PermissionError, OSError) as exc:
+                logger.warning("register_evidence failed for %s: %s", path.name, exc)
+                continue
+            evidence_files.append(
+                EvidenceFile(
+                    evidence_id=record.evidence_id,
+                    file_path=record.absolute_path,
+                    evidence_type=evtype,
+                    os_guess=None,
+                    file_size_bytes=size,
+                )
+            )
+        if evidence_files:
+            hosts.append(
+                HostEvidence(
+                    host_id=host_id,
+                    host_label=host_label,
+                    evidence_files=evidence_files,
+                )
+            )
+
+    return CaseManifest(
+        case_id=case_id,
+        hosts=hosts,
+        created_at=datetime.now(tz=timezone.utc),
+    )
 
 
 def _build_manifest_from_case_dir(case_dir: Path) -> CaseManifest:
@@ -354,8 +493,25 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     case_dir.mkdir(parents=True, exist_ok=True)
     print(f"[{_hms()}] case directory: {case_dir}")
 
-    print(f"[{_hms()}] Scanning {evidence_dir}…", flush=True)
-    staged = _stage_evidence(evidence_dir, case_dir)
+    staging_mode = args.staging_mode  # "symlink" (default) | "copy"
+
+    if staging_mode == "copy":
+        print(f"[{_hms()}] Scanning {evidence_dir} and copying into case dir…", flush=True)
+        staged = _stage_evidence(evidence_dir, case_dir)
+        scan_target = case_dir / "evidence"
+    else:
+        print(
+            f"[{_hms()}] Scanning {evidence_dir} and creating symlinks under case dir "
+            "(--no-copy default; originals will be chmod 444'd)…",
+            flush=True,
+        )
+        staged = _stage_evidence_symlinks(evidence_dir, case_dir)
+        # In symlink mode we preview against the source tree so the
+        # inventory table's file paths are the originals the operator
+        # actually wrote on disk — easier to verify by eye than the
+        # symlink shape inside case_dir/evidence/.
+        scan_target = evidence_dir
+
     if staged == 0:
         print(
             f"error: no recognized evidence files found under {evidence_dir}",
@@ -363,7 +519,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         )
         return 3
 
-    preview_groups = scan_evidence_directory(case_dir / "evidence")
+    preview_groups = scan_evidence_directory(scan_target)
     if not preview_groups:
         print("error: scan turned up no evidence after staging", file=sys.stderr)
         return 3
@@ -407,7 +563,10 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         time.sleep(_DEFAULT_REVIEW_WAIT_SECONDS)
 
     print(f"[{_hms()}] Registering evidence (sha256 + chmod 444 + audit chain)…")
-    manifest = _build_manifest_from_case_dir(case_dir)
+    if staging_mode == "copy":
+        manifest = _build_manifest_from_case_dir(case_dir)
+    else:
+        manifest = _build_manifest_from_originals(evidence_dir, case_dir)
     if not manifest.hosts:
         print("error: no evidence registered successfully", file=sys.stderr)
         return 3
