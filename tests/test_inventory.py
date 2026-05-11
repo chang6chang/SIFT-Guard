@@ -189,6 +189,60 @@ class TestNonEvidenceFiltering:
         assert "session.mans" not in all_paths
         assert "nfury-memory.raw" in all_paths
 
+    def test_baseline_memory_subdir_is_skipped(self, tmp_path: Path):
+        """SRL-2015's FOR508 baseline images live under
+        `baseline-memory/`, not `baseline/`. The directory token
+        rule must match by substring or these clean reference
+        images get registered as evidence and waste analyst time."""
+        evidence_dir = tmp_path / "evidence"
+        baseline_memory = evidence_dir / "baseline-memory"
+        baseline_memory.mkdir(parents=True)
+        (baseline_memory / "Win7SP1x86-baseline.img").write_bytes(b"\x00" * 16)
+        (baseline_memory / "XPSP3x86-baseline.img").write_bytes(b"\x00" * 16)
+        # A real evidence file at top-level so the result set is
+        # non-empty.
+        (evidence_dir / "nfury-memory.raw").write_bytes(b"\x00" * 16)
+        result = scan_evidence_directory(evidence_dir)
+        all_paths = [p.name for _, _, files in result for p, _, _ in files]
+        assert "Win7SP1x86-baseline.img" not in all_paths
+        assert "XPSP3x86-baseline.img" not in all_paths
+        assert "nfury-memory.raw" in all_paths
+
+    def test_baseline_in_filename_is_skipped(self, tmp_path: Path):
+        """Files with `baseline` in their name are skipped even when
+        they sit at the top level of the evidence tree (operator
+        moved them out of `baseline-memory/`). Case-insensitive."""
+        evidence_dir = tmp_path / "evidence"
+        evidence_dir.mkdir()
+        # Three baseline variants, mixed casing.
+        (evidence_dir / "Win7SP1x86-baseline.img").write_bytes(b"\x00" * 16)
+        (evidence_dir / "win10-BASELINE.raw").write_bytes(b"\x00" * 16)
+        (evidence_dir / "Baseline-memory.raw").write_bytes(b"\x00" * 16)
+        # A real evidence file so the result set is non-empty.
+        (evidence_dir / "nfury-memory.raw").write_bytes(b"\x00" * 16)
+        result = scan_evidence_directory(evidence_dir)
+        all_paths = [p.name for _, _, files in result for p, _, _ in files]
+        assert "Win7SP1x86-baseline.img" not in all_paths
+        assert "win10-BASELINE.raw" not in all_paths
+        assert "Baseline-memory.raw" not in all_paths
+        assert "nfury-memory.raw" in all_paths
+
+    def test_precooked_substring_variant_is_skipped(self, tmp_path: Path):
+        """Substring match — `precooked-output/` trips the `precooked`
+        token even though the directory name doesn't match exactly.
+        Same shape as `baseline-memory/` for the `baseline` token."""
+        evidence_dir = tmp_path / "evidence"
+        sub = evidence_dir / "precooked-output"
+        sub.mkdir(parents=True)
+        (sub / "stale-memory.raw").write_bytes(b"\x00" * 16)
+        (evidence_dir / "nfury-memory.raw").write_bytes(b"\x00" * 16)
+        result = scan_evidence_directory(evidence_dir)
+        all_paths = [
+            str(p.relative_to(evidence_dir)) for _, _, files in result for p, _, _ in files
+        ]
+        assert not any("precooked-output" in p for p in all_paths)
+        assert "nfury-memory.raw" in [Path(p).name for p in all_paths]
+
 
 class TestSrlDatasetLayout:
     """End-to-end fixture matching the SRL-2015 / SANS Standard

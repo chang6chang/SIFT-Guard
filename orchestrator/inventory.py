@@ -125,11 +125,21 @@ _KNOWN_NON_EVIDENCE_EXTENSIONS: frozenset[str] = frozenset(
     }
 )
 
-# Directory components whose contents are conventionally NOT
-# evidence — DFIR cases place reference timelines, parsed CSVs,
-# and pristine baseline OS images here. The scanner skips any
-# file whose path includes one of these components.
-_NON_EVIDENCE_DIR_NAMES: frozenset[str] = frozenset({"baseline", "precooked"})
+# Tokens whose presence in any path component marks the file as
+# non-evidence. Substring match — `baseline/` and `baseline-memory/`
+# both trip the `baseline` token; `pre-cooked/` and `precooked/`
+# both trip the `precooked` token. DFIR cases place reference
+# timelines, parsed CSVs, and pristine baseline OS images under
+# directories with these tokens in the name.
+_NON_EVIDENCE_DIR_TOKENS: frozenset[str] = frozenset({"baseline", "precooked"})
+
+# Filename substring tokens that mark the file itself as non-evidence
+# even when it sits at the top level of the evidence tree. The SRL
+# FOR508 distribution places `Win7SP1x86-baseline.img` /
+# `XPSP3x86-baseline.img` directly under `baseline-memory/`; the
+# directory-token rule above catches the parent dir, this rule is the
+# belt-and-braces guard in case operators reorganize the tree.
+_NON_EVIDENCE_FILENAME_TOKENS: frozenset[str] = frozenset({"baseline"})
 
 
 # Magic-byte signatures (read from the first 16 bytes of the file).
@@ -240,11 +250,17 @@ def _detect_evidence_type_by_extension(path: Path) -> EvidenceType:
 
 def _is_under_non_evidence_dir(path: Path, evidence_root: Path) -> bool:
     """True iff any path component between `evidence_root` and `path`
-    is a known non-evidence directory name (`baseline/`,
-    `precooked/`).
+    contains a known non-evidence token as a substring.
+
+    Substring (not exact) match: SRL-2015 places its FOR508 baseline
+    memory images under `baseline-memory/`, not `baseline/`. An exact
+    match would let the directory through and the scanner would pick
+    up the clean OS images as evidence — wasting analyst time and
+    tokens on hosts with nothing to find. Same logic applies to any
+    `pre-cooked/` variant of the `precooked` token.
 
     Resolves both sides so symlink games can't smuggle a file
-    under a real `baseline/` into the scan output.
+    under a real baseline directory into the scan output.
     """
     try:
         rel = path.resolve().relative_to(evidence_root.resolve())
@@ -252,7 +268,25 @@ def _is_under_non_evidence_dir(path: Path, evidence_root: Path) -> bool:
         # Outside the scan root — let the caller handle it; this
         # check is not the path-confinement guard.
         return False
-    return any(seg.lower() in _NON_EVIDENCE_DIR_NAMES for seg in rel.parts)
+    return any(
+        any(token in seg.lower() for token in _NON_EVIDENCE_DIR_TOKENS)
+        for seg in rel.parts
+    )
+
+
+def _filename_matches_non_evidence_token(path: Path) -> bool:
+    """True iff the filename contains a known non-evidence token as a
+    case-insensitive substring.
+
+    SRL-2015's `Win7SP1x86-baseline.img` and `XPSP3x86-baseline.img`
+    trip this rule on the `baseline` token. The directory rule
+    catches the same files via the `baseline-memory/` parent dir,
+    but this filename rule is the belt-and-braces guard for when
+    operators reorganize the tree and leave the files at the top
+    level of an otherwise-real evidence directory.
+    """
+    name_lower = path.name.lower()
+    return any(token in name_lower for token in _NON_EVIDENCE_FILENAME_TOKENS)
 
 
 def _refine_evidence_type_by_magic(path: Path, ext_guess: EvidenceType) -> EvidenceType:
@@ -327,13 +361,17 @@ def _scan_directory(
 
     Filtering rules, in order:
       1. Skip non-files (directories, symlinks-to-directories, etc.).
-      2. Skip files under known non-evidence subdirectories
-         (`baseline/`, `precooked/`).
-      3. Log + skip files with known non-evidence extensions
+      2. Skip files whose path includes a non-evidence directory
+         token (`baseline`, `precooked` — matched as substrings so
+         `baseline-memory/` and `pre-cooked/` are also caught).
+      3. Skip files whose filename includes a non-evidence filename
+         token (`baseline` — for `Win7SP1x86-baseline.img` style
+         reference images that may sit at the top level).
+      4. Log + skip files with known non-evidence extensions
          (`.mans`, `.csv`, `.dump`, `.xlsx`, `.body`, `.ioc`,
          `.txt`) — informational, since the membership check in
-         step 4 would skip them silently anyway.
-      4. Skip files whose extension is outside `_ALL_SCANNED_EXTENSIONS`.
+         step 5 would skip them silently anyway.
+      5. Skip files whose extension is outside `_ALL_SCANNED_EXTENSIONS`.
     """
     results: list[tuple[Path, EvidenceType, int]] = []
     for path in sorted(evidence_dir.rglob("*")):
@@ -343,6 +381,12 @@ def _scan_directory(
             logger.debug(
                 "skipping %s — under non-evidence directory",
                 path.relative_to(evidence_dir),
+            )
+            continue
+        if _filename_matches_non_evidence_token(path):
+            logger.debug(
+                "skipping %s — filename matches non-evidence token",
+                path.name,
             )
             continue
         ext = path.suffix.lower()
