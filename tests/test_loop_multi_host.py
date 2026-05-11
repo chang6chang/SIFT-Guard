@@ -111,7 +111,11 @@ def _make_case_dir_with_two_hosts(tmp_path: Path) -> tuple[Path, CaseManifest]:
 
 
 def _ok_dispatch(agent: str, **kwargs) -> DispatchResult:
-    """Minimal-cost succeeded dispatch result for analyst mocking."""
+    """Minimal-cost succeeded dispatch result for analyst mocking.
+
+    Includes ``mcp_server_status={"sift-guard": "connected"}`` so the
+    new MCP-attach guard in ``DispatchResult.succeeded`` is satisfied.
+    Tests for the fail-closed path live in ``test_dispatch.py``."""
     return DispatchResult(
         agent=agent,
         session_id="sid",
@@ -126,6 +130,7 @@ def _ok_dispatch(agent: str, **kwargs) -> DispatchResult:
         output_tokens=0,
         tokens_uncached=0,
         final_text="",
+        mcp_server_status={"sift-guard": "connected"},
         raw_events=[],
     )
 

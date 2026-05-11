@@ -58,12 +58,102 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# MCP-config path resolution. Claude Code subagents discover MCP
+# servers from ``.mcp.json`` in the launch cwd. The orchestrator's
+# default cwd is ``case_dir.parent`` (e.g. ``~/results/``), which
+# never contains the SIFT-Guard config — so without an explicit
+# ``--mcp-config`` flag the subagent has no MCP tools and silently
+# falls back to the default Bash/Read/Write surface, improvising
+# instead of calling ``record_finding``. We resolve the config
+# location explicitly:
+#
+#   1. ``SIFT_GUARD_MCP_CONFIG`` env var (operator override).
+#   2. ``$REPO_ROOT/.mcp.json`` (works when running from a checkout).
+#   3. ``/opt/sift-guard/.mcp.json`` (the installed location written
+#      by setup-sift-guard.sh).
+#
+# ``resolve_mcp_config_path`` returns the first hit or None;
+# ``dispatch_subagent`` includes the flag iff a path is found.
+_DEFAULT_INSTALL_MCP_CONFIG = Path("/opt/sift-guard/.mcp.json")
+_REPO_ROOT_MCP_CONFIG = Path(__file__).resolve().parent.parent / ".mcp.json"
+
+
+def resolve_mcp_config_path() -> Path | None:
+    """Return the path to the MCP-server config, or None when no
+    candidate exists. See module-level comment for resolution order."""
+    env = os.environ.get("SIFT_GUARD_MCP_CONFIG")
+    if env:
+        candidate = Path(env)
+        if candidate.exists():
+            return candidate
+        logger.warning(
+            "SIFT_GUARD_MCP_CONFIG=%s does not exist; falling through to defaults",
+            env,
+        )
+    if _REPO_ROOT_MCP_CONFIG.exists():
+        return _REPO_ROOT_MCP_CONFIG
+    if _DEFAULT_INSTALL_MCP_CONFIG.exists():
+        return _DEFAULT_INSTALL_MCP_CONFIG
+    return None
+
+
+class MCPServerNotAttachedError(RuntimeError):
+    """Raised when a subagent's stream-json shows the sift-guard MCP
+    server did NOT attach. The agent would still run — with the
+    default Bash/Read/Write surface — but it would never see
+    ``record_finding`` / ``vol_pslist`` / etc. Failing the dispatch
+    is the architectural guardrail (failure-closed, per CLAUDE.md
+    "Architectural guardrails > prompt guardrails")."""
+
+
+def _extract_mcp_server_status(events: list[dict[str, Any]]) -> dict[str, str]:
+    """Walk the stream-json events and return ``{server_name: status}``.
+
+    Claude Code emits a ``system`` / ``init`` event near the top of
+    every session with an ``mcp_servers`` field listing each
+    configured server's connection status. We tolerate a few
+    historical shapes (``mcpServers`` camelCase, top-level
+    ``servers`` list with ``{name, status}`` dicts) so a Claude
+    Code version bump doesn't silently break the check.
+    """
+    for event in events:
+        if event.get("type") not in ("system", "init", "system_init"):
+            continue
+        # Shape 1: {"type": "system", "mcp_servers": [{"name": "...", "status": "connected"}]}
+        for key in ("mcp_servers", "mcpServers"):
+            servers = event.get(key)
+            if isinstance(servers, list):
+                return {
+                    s["name"]: s.get("status", "unknown")
+                    for s in servers
+                    if isinstance(s, dict) and "name" in s
+                }
+            if isinstance(servers, dict):
+                return {
+                    name: (info.get("status", "unknown") if isinstance(info, dict) else "unknown")
+                    for name, info in servers.items()
+                }
+        # Shape 2: nested under "subtype" payload (rarer).
+        nested = event.get("subtype")
+        if isinstance(nested, dict):
+            for key in ("mcp_servers", "mcpServers"):
+                servers = nested.get(key)
+                if isinstance(servers, list):
+                    return {
+                        s["name"]: s.get("status", "unknown")
+                        for s in servers
+                        if isinstance(s, dict) and "name" in s
+                    }
+    return {}
 
 
 @dataclass
@@ -81,10 +171,29 @@ class DispatchResult:
     output_tokens: int
     tokens_uncached: int
     final_text: str
+    # MCP-server attach status as reported by the subagent's
+    # stream-json ``system`` init event. Empty dict means the event
+    # was missing or unparseable (treated as not-attached).
+    mcp_server_status: dict[str, str] = field(default_factory=dict)
     raw_events: list[dict[str, Any]] = field(default_factory=list)
 
     @property
+    def sift_guard_mcp_attached(self) -> bool:
+        """True iff the subagent reported the sift-guard MCP server as
+        connected. False when the init event is missing the entry or
+        when its status is anything other than ``connected``."""
+        return self.mcp_server_status.get("sift-guard") == "connected"
+
+    @property
     def succeeded(self) -> bool:
+        # Fail-closed on MCP-attach: a run with no sift-guard MCP is
+        # not a successful analyst dispatch even when stop_reason
+        # says end_turn. The 2026-05-12 SRL-2015 incident burned a
+        # full multi-hour run on eight subagents whose MCP attach
+        # was missing; surfacing the failure here is the architectural
+        # guardrail that prevents a repeat.
+        if not self.sift_guard_mcp_attached:
+            return False
         return self.stop_reason in ("end_turn", "tool_use", "stop_sequence")
 
 
@@ -259,7 +368,7 @@ def dispatch_subagent(
     All three propagate as DispatchResult.succeeded == False; the
     caller decides how to react.
     """
-    cmd = [
+    cmd: list[str] = [
         "claude",
         "-p",
         "--agent",
@@ -271,9 +380,29 @@ def dispatch_subagent(
         "bypassPermissions",
         "--max-budget-usd",
         str(max_budget_usd),
-        prompt,
     ]
-    logger.info("dispatching subagent %s (cwd=%s)", agent, cwd)
+    # Pass --mcp-config explicitly so the subagent loads the sift-guard
+    # MCP server regardless of cwd. Without this, the subagent's
+    # frontmatter ``tools:`` allow-list refers to names that don't
+    # exist (the MCP server isn't loaded), the allow-list silently
+    # fails open, and the agent improvises with Bash/Write — writing
+    # findings to .md files instead of calling record_finding.
+    mcp_config = resolve_mcp_config_path()
+    if mcp_config is not None:
+        cmd.extend(["--mcp-config", str(mcp_config)])
+    else:
+        logger.warning(
+            "no .mcp.json located; subagent %s will start without sift-guard MCP "
+            "tools and will be flagged as not-attached after dispatch",
+            agent,
+        )
+    cmd.append(prompt)
+    logger.info(
+        "dispatching subagent %s (cwd=%s, mcp_config=%s)",
+        agent,
+        cwd,
+        mcp_config,
+    )
 
     try:
         proc = subprocess.run(
@@ -311,6 +440,24 @@ def dispatch_subagent(
             proc.returncode,
         )
 
+    # Architectural guardrail: confirm the sift-guard MCP server
+    # actually attached. Without it the subagent has no
+    # `record_finding`/`vol_*`/`disk_*` tools and the run silently
+    # produces zero findings (the 2026-05-12 SRL-2015 incident).
+    # We fail-closed: the dispatch is marked unsucceeded so the
+    # orchestrator can warn and stop rather than burn tokens on
+    # eight subagents that won't write anything.
+    server_status = _extract_mcp_server_status(events)
+    sift_status = server_status.get("sift-guard")
+    if sift_status != "connected":
+        logger.error(
+            "subagent %s started without sift-guard MCP attached "
+            "(mcp_servers=%s); marking dispatch unsucceeded so "
+            "findings-less runs surface immediately",
+            agent,
+            server_status or "<no init event>",
+        )
+
     usage = final.get("usage", {}) if final else {}
     input_tok = int(usage.get("input_tokens", 0))
     cc_tok = int(usage.get("cache_creation_input_tokens", 0))
@@ -331,6 +478,7 @@ def dispatch_subagent(
         output_tokens=out_tok,
         tokens_uncached=input_tok + cc_tok + out_tok,
         final_text=_extract_final_text(events),
+        mcp_server_status=server_status,
         raw_events=events,
     )
 

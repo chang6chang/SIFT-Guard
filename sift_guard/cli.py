@@ -46,6 +46,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from orchestrator.inventory import format_inventory_table, scan_evidence_directory
+from orchestrator.dispatch import resolve_mcp_config_path
 from orchestrator.loop import (
     DEFAULT_PARALLEL_MAX_WORKERS,
     _default_multi_host_token_budget,
@@ -492,6 +493,29 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     case_dir = _resolve_case_dir(args.output_dir)
     case_dir.mkdir(parents=True, exist_ok=True)
     print(f"[{_hms()}] case directory: {case_dir}")
+
+    # Belt-and-braces MCP-config plumbing. The orchestrator's
+    # dispatch passes --mcp-config explicitly, so this is not the
+    # primary mechanism — but if a future Claude Code release ever
+    # changes the precedence to prefer cwd-discovery over the flag,
+    # we don't want to silently regress into the 2026-05-12 SRL
+    # failure where subagents started without the sift-guard MCP
+    # server. Copying (not symlinking — Claude Code reads it as a
+    # config file, ownership and read-permission matter) the file
+    # into <case_dir>/.mcp.json mirrors what `setup-sift-guard.sh`
+    # writes into the install dir.
+    mcp_config = resolve_mcp_config_path()
+    if mcp_config is not None:
+        case_mcp = case_dir / ".mcp.json"
+        if not case_mcp.exists() or case_mcp.read_bytes() != mcp_config.read_bytes():
+            shutil.copyfile(mcp_config, case_mcp)
+        print(f"[{_hms()}] MCP config:     {mcp_config} → {case_mcp}")
+    else:
+        print(
+            f"[{_hms()}] WARNING: no MCP config found "
+            "(SIFT_GUARD_MCP_CONFIG / repo / /opt/sift-guard) — analysts will "
+            "be unable to call sift-guard tools and the run will abort early."
+        )
 
     staging_mode = args.staging_mode  # "symlink" (default) | "copy"
 
