@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import shutil
 import sys
 import time
@@ -109,9 +110,10 @@ def _parser() -> argparse.ArgumentParser:
         "--output-dir",
         type=Path,
         default=None,
-        help="Where to put the case directory. Default: "
-        "./results-<UTC-timestamp>/. Evidence files are COPIED here "
-        "and chmod 444'd; originals are never modified.",
+        help="Where to put the case directory. Default precedence: "
+        "--output-dir > $SIFT_GUARD_OUTPUT_DIR/results-<ts>/ > "
+        "./results-<ts>/. Evidence files are COPIED here and chmod "
+        "444'd; originals are never modified.",
     )
     analyze.add_argument(
         "--max-iterations",
@@ -185,10 +187,32 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+_OUTPUT_DIR_ENV = "SIFT_GUARD_OUTPUT_DIR"
+
+
 def _resolve_case_dir(cli_output_dir: Path | None) -> Path:
+    """Resolve where the case directory lands.
+
+    Precedence:
+
+      1. ``--output-dir`` on the command line — explicit operator
+         choice always wins.
+      2. ``$SIFT_GUARD_OUTPUT_DIR`` env var — typically set to
+         ``$HOME/sift-guard-results`` by ``setup-sift-guard.sh``'s
+         ``/etc/profile.d/sift-guard.sh``. We append a timestamped
+         subdir so multiple runs don't collide.
+      3. ``./results-<UTC-timestamp>`` in the current working
+         directory — the original default. Foot-gun on the SIFT VM
+         (running from ``/opt/sift-guard`` would land a root-owned
+         dir there); the env-var default in (2) is what setup
+         installs to avoid that.
+    """
     if cli_output_dir is not None:
         return cli_output_dir.resolve()
     timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    env_base = os.environ.get(_OUTPUT_DIR_ENV)
+    if env_base:
+        return (Path(env_base) / f"results-{timestamp}").resolve()
     return (Path.cwd() / f"results-{timestamp}").resolve()
 
 
