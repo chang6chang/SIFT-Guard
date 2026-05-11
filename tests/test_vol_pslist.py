@@ -240,6 +240,53 @@ class TestVolPslistRejectionAudit:
         assert len(entry["this_line_hash"]) == 64
         assert all(c in "0123456789abcdef" for c in entry["this_line_hash"])
 
+    def test_runner_failure_logs_runner_failed_with_remediation(
+        self, tmp_path: Path
+    ):
+        """When run_vol_plugin raises CalledProcessError (SSH refused
+        in split-VM mode, or vol exited non-zero locally), the audit
+        chain captures error_class + command_shape + remediation —
+        not just a generic ':rejected'. Agent still sees a sanitized
+        ValueError."""
+        import subprocess
+
+        case_dir = _make_case_dir(tmp_path)
+        fake_exc = subprocess.CalledProcessError(returncode=1, cmd=["vol", "..."])
+
+        captured: list[dict] = []
+        from server.tools import memory as memory_module
+        original_append = memory_module.append_audit_entry
+
+        def capturing_append(*args, **kwargs):
+            captured.append(
+                {
+                    "tool_name": kwargs.get("tool_name"),
+                    "output": kwargs.get("output"),
+                }
+            )
+            return original_append(*args, **kwargs)
+
+        with (
+            patch("server.tools.memory.get_vol_version", return_value="2.27.0"),
+            patch("server.tools.memory.run_vol_plugin", side_effect=fake_exc),
+            patch.object(memory_module, "append_audit_entry", side_effect=capturing_append),
+        ):
+            with pytest.raises(ValueError) as exc_info:
+                vol_pslist(VALID_EVIDENCE_ID, case_dir=str(case_dir))
+
+        assert "Volatility runner failure" in str(exc_info.value)
+        runner_failed = next(
+            c for c in captured if c["tool_name"] == "vol_pslist:runner_failed"
+        )
+        payload = runner_failed["output"].model_dump()
+        assert payload["error_class"] == "subprocess.CalledProcessError"
+        # Command shape mentions the plugin name (server-controlled
+        # enum) but never the registered absolute_path or evidence_id.
+        assert "windows.pslist.PsList" in payload["command_shape"]
+        assert VALID_EVIDENCE_ID not in payload["command_shape"]
+        # Remediation hint is non-empty and matches the exception type.
+        assert "vol exited non-zero" in payload["remediation"]
+
 
 # ---------------------------------------------------------------------------
 # happy path

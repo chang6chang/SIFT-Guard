@@ -40,6 +40,7 @@ The agent cannot construct a path through this surface.
 
 from __future__ import annotations
 
+import subprocess
 from collections import Counter
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -142,6 +143,87 @@ class _RejectionRecord(BaseModel):
     evidence_id: str
 
 
+class _RunnerFailureRecord(BaseModel):
+    """Audit payload for a disk-runner subprocess failure.
+
+    Same shape as the memory-tool variant: error_class +
+    command_shape + remediation. Captured separately from
+    ``_RejectionRecord`` so operators can grep runner failures
+    (``:runner_failed``) independently of policy rejections
+    (``:rejected_*``). The agent still sees a generic sanitized
+    ValueError; the detail lives only in the audit chain.
+    """
+
+    error_class: str
+    command_shape: str
+    remediation: str
+    evidence_id: str
+
+
+def _remediation_for_disk_exc(exc: BaseException) -> str:
+    """One-line operator hint matched against a disk-runner exception."""
+    from server.runners.disk_mount import MountError, MountVerificationError
+
+    if isinstance(exc, MountVerificationError):
+        return (
+            "post-mount /proc/mounts did not show a read-only entry; "
+            "verify the chosen fallback (ewfmount / mount / guestmount) "
+            "completed cleanly and remount manually if needed"
+        )
+    if isinstance(exc, MountError):
+        return (
+            "every fallback tier failed (ewfmount → sudo → guestmount); "
+            "check `groups` for fuse membership, `/etc/sudoers.d/sift-guard`, "
+            "and `which guestmount`"
+        )
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return (
+            "disk subprocess exceeded budget; raise the per-tool timeout "
+            "or rerun against a smaller image"
+        )
+    if isinstance(exc, subprocess.CalledProcessError):
+        return (
+            "disk subprocess exited non-zero; rerun the command shape "
+            "manually against the same image to capture the underlying error"
+        )
+    if isinstance(exc, FileNotFoundError):
+        return (
+            "disk binary not on PATH; install plaso / python-evtx / RegRipper / "
+            "ewf-tools per the disk_analyst's dependency list"
+        )
+    if isinstance(exc, OSError):
+        return "OS-level failure invoking disk binary; check permissions and disk space"
+    return "see audit chain for command shape"
+
+
+def _log_runner_failure(
+    case_dir: Path,
+    tool_name: str,
+    evidence_id: str,
+    exc: BaseException,
+    *,
+    command_shape: str,
+) -> None:
+    """Append one runner-failure line to the audit chain.
+
+    Distinct tool_name suffix (``:runner_failed``) from
+    ``:rejected_*`` so the post-mortem grep is unambiguous.
+    """
+    record = _RunnerFailureRecord(
+        error_class=f"{type(exc).__module__}.{type(exc).__name__}",
+        command_shape=command_shape,
+        remediation=_remediation_for_disk_exc(exc),
+        evidence_id=evidence_id,
+    )
+    append_audit_entry(
+        case_dir=case_dir,
+        tool_name=f"{tool_name}:runner_failed",
+        evidence_id=evidence_id,
+        input_args={"evidence_id": evidence_id},
+        output=record,
+    )
+
+
 def _resolve_evidence(evidence_id: str, case_dir: Path) -> EvidenceRecord | None:
     """Look up an evidence_id in CASE.yaml.
 
@@ -228,12 +310,26 @@ def _resolve_and_mount(
 
     try:
         mount_path = mount_disk_image(evidence_id, record.absolute_path)
-    except MountError:
+    except MountError as exc:
+        # Two audit lines: the legacy `:rejected_mount_failed` (kept
+        # for backward-compat with downstream grep tooling that
+        # operators may already have wired) and the new
+        # `:runner_failed` entry that carries the error class +
+        # remediation hint. Either is sufficient for post-mortem;
+        # together they're greppable from the JSONL by ``tool_name``
+        # filtering.
         _log_tool_rejection(
             case_dir_path,
             tool_name,
             _RejectionReason.MOUNT_FAILED,
             evidence_id,
+        )
+        _log_runner_failure(
+            case_dir_path,
+            tool_name,
+            evidence_id,
+            exc,
+            command_shape="mount_disk_image (ewfmount / mount / guestmount fallback chain)",
         )
         raise ValueError("disk-image mount failed")
 
@@ -436,7 +532,17 @@ def _serve_fresh(
     persists the typed result, recomputes the summary, audits the
     success line."""
     invoked_at = datetime.now(tz=timezone.utc)
-    stdout, command_string, runtime_seconds, tool_version = runner(mount_path)
+    try:
+        stdout, command_string, runtime_seconds, tool_version = runner(mount_path)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, RuntimeError) as exc:
+        _log_runner_failure(
+            case_dir_path,
+            tool_name,
+            evidence_id,
+            exc,
+            command_shape=f"{runner.__name__} (mount_path resolved)",
+        )
+        raise ValueError("disk runner failure")
     raw_rows = parser(stdout)
 
     validated: list[BaseModel] = []

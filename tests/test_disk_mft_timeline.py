@@ -125,8 +125,55 @@ class TestDiskMftRejectionAudit:
 
         audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
         lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
-        assert len(lines) == 1
-        assert lines[0]["tool_name"] == ("disk_mft_timeline:rejected_mount_failed")
+        # Two entries: the legacy :rejected_mount_failed line (kept
+        # for backward-compat with operator grep tooling) plus the
+        # richer :runner_failed line that carries error_class +
+        # remediation hint.
+        assert len(lines) == 2
+        tool_names = {entry["tool_name"] for entry in lines}
+        assert "disk_mft_timeline:rejected_mount_failed" in tool_names
+        assert "disk_mft_timeline:runner_failed" in tool_names
+
+    def test_runner_failure_includes_error_class_and_remediation(self, tmp_path: Path):
+        """Post-mortems should not require reading the source: the
+        :runner_failed audit entry must include error_class +
+        command_shape + remediation. Verified by reading back the
+        persisted output (the entry's output_hash covers the model
+        but the harness can also patch the writer to capture the
+        raw payload)."""
+        from server.runners.disk_mount import MountError
+
+        case_dir = _make_case_dir(tmp_path)
+
+        captured: list[dict] = []
+        from server.tools import disk as disk_module
+        original_append = disk_module.append_audit_entry
+
+        def capturing_append(*args, **kwargs):
+            captured.append(
+                {
+                    "tool_name": kwargs.get("tool_name"),
+                    "output": kwargs.get("output"),
+                }
+            )
+            return original_append(*args, **kwargs)
+
+        with (
+            patch("server.tools.disk.mount_disk_image", side_effect=MountError("kaboom")),
+            patch.object(disk_module, "append_audit_entry", side_effect=capturing_append),
+        ):
+            with pytest.raises(ValueError):
+                disk_mft_timeline(VALID_EVIDENCE_ID, case_dir=str(case_dir))
+
+        runner_failed = next(
+            c for c in captured if c["tool_name"] == "disk_mft_timeline:runner_failed"
+        )
+        payload = runner_failed["output"].model_dump()
+        assert payload["error_class"].endswith("MountError")
+        assert "ewfmount" in payload["command_shape"] or "mount" in payload["command_shape"]
+        assert payload["remediation"]
+        # Sanitized: no echo of the absolute evidence path or full exc text.
+        assert "kaboom" not in payload["remediation"]
 
 
 # ---------------------------------------------------------------------------

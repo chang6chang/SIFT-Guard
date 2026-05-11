@@ -58,6 +58,7 @@ slightly tighter shape):
 from __future__ import annotations
 
 import os
+import subprocess
 from collections import Counter
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -194,6 +195,82 @@ class _RejectionRecord(BaseModel):
 
     reason: _RejectionReason
     evidence_id: str
+
+
+class _RunnerFailureRecord(BaseModel):
+    """Audit payload for a Volatility runner subprocess failure.
+
+    Distinct from ``_RejectionRecord``: rejections are policy-level
+    refusals (wrong artifact class, evidence not registered) while
+    runner failures are subprocess-level failures (vol exited
+    non-zero, ssh refused the connection, the binary wasn't on
+    PATH). Captures enough detail so a post-mortem doesn't need
+    to read the source code:
+
+      - ``error_class``: fully-qualified exception name (e.g.
+        ``subprocess.CalledProcessError``,
+        ``subprocess.TimeoutExpired``).
+      - ``command_shape``: argv[0] plus a generic argv suffix —
+        the binary name, never the registered evidence path or
+        the agent-supplied evidence_id.
+      - ``remediation``: one-line operator hint matched against
+        the error class.
+
+    Agent-facing exception remains a generic sanitized ValueError;
+    the detail lives only in the audit chain.
+    """
+
+    error_class: str
+    command_shape: str
+    remediation: str
+    evidence_id: str
+
+
+def _remediation_for_runner_exc(exc: BaseException) -> str:
+    """Return a one-line operator hint matched against the exception class.
+
+    Defined as a free function (not a method on _RunnerFailureRecord)
+    so the helper can be unit-tested without instantiating the
+    pydantic model.
+    """
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "vol runtime exceeded budget; raise the per-plugin timeout or rerun against a smaller image"
+    if isinstance(exc, subprocess.CalledProcessError):
+        return "vol exited non-zero; in split-VM mode check SSH to SIFT_VM_HOST, in local mode rerun vol -f <image> --help to capture the error"
+    if isinstance(exc, FileNotFoundError):
+        return "vol binary not on PATH; set SIFT_VOL_PATH or install volatility3 (pip install volatility3)"
+    if isinstance(exc, OSError):
+        return "OS-level failure invoking vol; check permissions and disk space"
+    return "see audit chain for command shape and runner identity"
+
+
+def _log_runner_failure(
+    case_dir: Path,
+    tool_name: str,
+    evidence_id: str,
+    exc: BaseException,
+    *,
+    command_shape: str,
+) -> None:
+    """Append one runner-failure line to the audit chain.
+
+    The tool_name is ``<tool_name>:runner_failed`` — distinct from
+    ``:rejected_*`` so operators can grep for runner failures
+    independently of policy rejections.
+    """
+    record = _RunnerFailureRecord(
+        error_class=f"{type(exc).__module__}.{type(exc).__name__}",
+        command_shape=command_shape,
+        remediation=_remediation_for_runner_exc(exc),
+        evidence_id=evidence_id,
+    )
+    append_audit_entry(
+        case_dir=case_dir,
+        tool_name=f"{tool_name}:runner_failed",
+        evidence_id=evidence_id,
+        input_args={"evidence_id": evidence_id},
+        output=record,
+    )
 
 
 def _validate_path_under_evidence(absolute_path: str, evidence_root: Path) -> None:
@@ -556,14 +633,40 @@ def _serve_fresh(
     pydantic), so for that plugin the granularity is per-top-level —
     a single corrupt descendant skips its entire subtree.
     """
-    volatility_version = get_vol_version()
-    invoked_at = datetime.now(tz=timezone.utc)
-    if timeout_seconds is None:
-        stdout, command_string, runtime_seconds = run_vol_plugin(plugin_name, image_path)
-    else:
-        stdout, command_string, runtime_seconds = run_vol_plugin(
-            plugin_name, image_path, timeout_seconds=timeout_seconds
+    try:
+        volatility_version = get_vol_version()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, RuntimeError) as exc:
+        _log_runner_failure(
+            case_dir_path,
+            tool_name,
+            evidence_id,
+            exc,
+            command_shape="vol (version probe)",
         )
+        raise ValueError("Volatility runner unavailable")
+
+    invoked_at = datetime.now(tz=timezone.utc)
+    try:
+        if timeout_seconds is None:
+            stdout, command_string, runtime_seconds = run_vol_plugin(plugin_name, image_path)
+        else:
+            stdout, command_string, runtime_seconds = run_vol_plugin(
+                plugin_name, image_path, timeout_seconds=timeout_seconds
+            )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, RuntimeError) as exc:
+        # Plugin name is server-controlled (typed enum), not agent-
+        # supplied — safe to include in the command shape. The image
+        # path is the registered absolute_path, which we deliberately
+        # omit (would echo agent-influenced state back into the audit
+        # log's input_args mirror).
+        _log_runner_failure(
+            case_dir_path,
+            tool_name,
+            evidence_id,
+            exc,
+            command_shape=f"vol -f <image> -r json {plugin_name}",
+        )
+        raise ValueError("Volatility runner failure")
     raw_rows = parser(stdout)
 
     validated: list[BaseModel] = []
