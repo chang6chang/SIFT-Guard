@@ -23,20 +23,26 @@ argument. The analyst subagent's prompt has a `# Focus context
 (optional)` section explaining the V5c-1 semantics: focus biases
 attention but does not constrain scope.
 
-# Sequential dispatch (not parallel)
+# Parallel dispatch (fcntl-protected chain writers)
 
-`server/audit.py` and the other chain writers explicitly state
-"single-process server: no file lock". Two subagents dispatched
-in parallel would each spawn their own MCP-server subprocess and
-both would race on the same audit/findings/correlations files,
-breaking the hash chain.
+The five hash-chained writers (audit, findings, correlations,
+extractions, iterations) all serialize their read-modify-write
+phase via ``server._chain_lock.chain_write_lock``, an
+``fcntl.flock``-backed sidecar mutex. This lets the orchestrator's
+ANALYZE step submit every analyst job to a ``ThreadPoolExecutor``;
+each thread spawns its own ``claude -p --agent <name>`` subprocess
+with its own MCP-server child, and those concurrent MCP servers
+contend for the chain locks rather than corrupting the chain.
 
-Until per-process file locking lands (out of scope for week 6),
-this wrapper runs subagents one at a time. The loop's ANALYZE step
-dispatches process_analyst, waits, then dispatches network_analyst.
-Wall-clock cost: ~16 min process + ~16 min network sequentially
-on Rocba's first iteration. The architecture supports parallel
-dispatch the moment the substrate gains locking.
+Expected ANALYZE wall-clock for the SRL-2015 4-host case
+(12 jobs at ~5-15 min each):
+
+  - Sequential:        12 jobs × ~10 min = ~120 min
+  - Parallel (this):   max single-job wall-clock ≈ 15-20 min
+
+CORRELATE / PROMOTE / PLAN / WRITE stay sequential — the validator
+needs the full DRAFT set before correlating, promotion is a single
+DAG pass, and the iteration record is one entry per loop turn.
 
 # Token accounting
 

@@ -40,6 +40,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+from server._chain_lock import chain_write_lock
 from server.schemas import (
     CorrelationChainEntry,
     CorroboratesCorrelation,
@@ -104,39 +105,41 @@ def append_correlation_entry(
     digest it for the audit-chain `output_hash` without re-reading the
     on-disk line — same convention as `findings_log.append_finding_entry`.
 
-    Single-process server: no file lock. If a future multi-process
-    design is needed, wrap this call in a writer-process queue rather
-    than layering fcntl into the public path — keeping the writer
-    trivial is what makes the chain easy to audit by hand.
+    Read-modify-write is wrapped in ``chain_write_lock`` to serialize
+    concurrent MCP-server processes; see ``server.audit`` for the
+    same pattern and the rationale.
     """
     case_dir_path = Path(case_dir).resolve()
     case_dir_path.mkdir(parents=True, exist_ok=True)
     correlations_path = case_dir_path / _CORRELATIONS_FILENAME
 
-    line_number, prev_correlation_hash = _read_chain_state(correlations_path)
-    timestamp = datetime.now(tz=timezone.utc)
+    with chain_write_lock(correlations_path):
+        line_number, prev_correlation_hash = _read_chain_state(correlations_path)
+        timestamp = datetime.now(tz=timezone.utc)
 
-    chained_fields = dict(
-        line_number=line_number,
-        timestamp=timestamp,
-        correlation=correlation.model_dump(mode="json"),
-        prev_correlation_hash=prev_correlation_hash,
-    )
-    this_correlation_hash = CorrelationChainEntry.compute_this_correlation_hash(**chained_fields)
+        chained_fields = dict(
+            line_number=line_number,
+            timestamp=timestamp,
+            correlation=correlation.model_dump(mode="json"),
+            prev_correlation_hash=prev_correlation_hash,
+        )
+        this_correlation_hash = CorrelationChainEntry.compute_this_correlation_hash(
+            **chained_fields
+        )
 
-    entry = CorrelationChainEntry(
-        line_number=line_number,
-        timestamp=timestamp,
-        correlation=correlation,
-        prev_correlation_hash=prev_correlation_hash,
-        this_correlation_hash=this_correlation_hash,
-    )
+        entry = CorrelationChainEntry(
+            line_number=line_number,
+            timestamp=timestamp,
+            correlation=correlation,
+            prev_correlation_hash=prev_correlation_hash,
+            this_correlation_hash=this_correlation_hash,
+        )
 
-    serialized = entry.model_dump_json()
-    with correlations_path.open("a", encoding="utf-8") as f:
-        f.write(serialized + "\n")
-        f.flush()
-        os.fsync(f.fileno())
+        serialized = entry.model_dump_json()
+        with correlations_path.open("a", encoding="utf-8") as f:
+            f.write(serialized + "\n")
+            f.flush()
+            os.fsync(f.fileno())
 
     return entry
 

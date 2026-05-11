@@ -43,6 +43,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+from server._chain_lock import chain_write_lock
 from server.schemas import ExtractionChainEntry
 
 _EXTRACTIONS_FILENAME = "extractions.jsonl"
@@ -101,50 +102,53 @@ def append_extraction_entry(
     the existing 3 lines stay byte-identical because we only call this
     function for *new* writes.
 
-    Single-process server: no file lock. If a future multi-process
-    design is needed, route extraction writes through a writer-process
-    queue rather than layering fcntl into this path.
+    Read-modify-write is wrapped in ``chain_write_lock`` to serialize
+    concurrent MCP-server processes; see ``server.audit`` for the
+    same pattern and the rationale.
     """
     case_dir_path = Path(case_dir).resolve()
     case_dir_path.mkdir(parents=True, exist_ok=True)
     extractions_path = case_dir_path / _EXTRACTIONS_FILENAME
 
-    line_number, prev_extraction_hash = _read_chain_state(extractions_path)
-    timestamp = datetime.now(tz=timezone.utc)
+    with chain_write_lock(extractions_path):
+        line_number, prev_extraction_hash = _read_chain_state(extractions_path)
+        timestamp = datetime.now(tz=timezone.utc)
 
-    chained_fields = dict(
-        line_number=line_number,
-        timestamp=timestamp,
-        evidence_id=evidence_id,
-        plugin_name=plugin_name,
-        extraction_id=extraction_id,
-        extraction_sha256=extraction_sha256,
-        record_count=record_count,
-        runtime_seconds=runtime_seconds,
-        audit_line=audit_line,
-        prev_extraction_hash=prev_extraction_hash,
-    )
-    this_extraction_hash = ExtractionChainEntry.compute_this_extraction_hash(**chained_fields)
+        chained_fields = dict(
+            line_number=line_number,
+            timestamp=timestamp,
+            evidence_id=evidence_id,
+            plugin_name=plugin_name,
+            extraction_id=extraction_id,
+            extraction_sha256=extraction_sha256,
+            record_count=record_count,
+            runtime_seconds=runtime_seconds,
+            audit_line=audit_line,
+            prev_extraction_hash=prev_extraction_hash,
+        )
+        this_extraction_hash = ExtractionChainEntry.compute_this_extraction_hash(
+            **chained_fields
+        )
 
-    entry = ExtractionChainEntry(
-        line_number=line_number,
-        timestamp=timestamp,
-        evidence_id=evidence_id,
-        plugin_name=plugin_name,
-        extraction_id=extraction_id,
-        extraction_sha256=extraction_sha256,
-        record_count=record_count,
-        runtime_seconds=runtime_seconds,
-        audit_line=audit_line,
-        prev_extraction_hash=prev_extraction_hash,
-        this_extraction_hash=this_extraction_hash,
-    )
+        entry = ExtractionChainEntry(
+            line_number=line_number,
+            timestamp=timestamp,
+            evidence_id=evidence_id,
+            plugin_name=plugin_name,
+            extraction_id=extraction_id,
+            extraction_sha256=extraction_sha256,
+            record_count=record_count,
+            runtime_seconds=runtime_seconds,
+            audit_line=audit_line,
+            prev_extraction_hash=prev_extraction_hash,
+            this_extraction_hash=this_extraction_hash,
+        )
 
-    serialized = entry.model_dump_json()
-    with extractions_path.open("a", encoding="utf-8") as f:
-        f.write(serialized + "\n")
-        f.flush()
-        os.fsync(f.fileno())
+        serialized = entry.model_dump_json()
+        with extractions_path.open("a", encoding="utf-8") as f:
+            f.write(serialized + "\n")
+            f.flush()
+            os.fsync(f.fileno())
 
     return entry
 

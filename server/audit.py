@@ -25,6 +25,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from server._chain_lock import chain_write_lock
 from server.schemas import AuditLogEntry
 
 _AUDIT_SUBDIR = "audit"
@@ -68,41 +69,44 @@ def append_audit_entry(
 ) -> AuditLogEntry:
     """Append one hash-chained record to the audit JSONL.
 
-    Single-process server: no file lock. If a future multi-process design
-    is needed, wrap this call in a writer-process queue rather than
-    layering fcntl into the public path — keeping the writer trivial is
-    what makes the chain easy to audit by hand.
+    Read-modify-write is wrapped in ``chain_write_lock`` so multiple
+    MCP-server processes (one per parallel subagent dispatch) cannot
+    race on the chain head. Pre-parallel-dispatch comment claimed
+    "single-process server: no file lock"; that constraint has been
+    relaxed by the orchestrator's switch to ThreadPoolExecutor-based
+    subagent dispatch in commit 0b473e7's successor.
     """
     case_dir_path = Path(case_dir).resolve()
     audit_dir = case_dir_path / _AUDIT_SUBDIR
     audit_dir.mkdir(parents=True, exist_ok=True)
     audit_path = audit_dir / _AUDIT_FILENAME
 
-    line_number, prev_line_hash = _read_chain_state(audit_path)
-    timestamp = datetime.now(tz=timezone.utc)
+    with chain_write_lock(audit_path):
+        line_number, prev_line_hash = _read_chain_state(audit_path)
+        timestamp = datetime.now(tz=timezone.utc)
 
-    canonical_input = json.dumps(input_args, sort_keys=True, default=str)
-    input_hash = hashlib.sha256(canonical_input.encode("utf-8")).hexdigest()
-    output_hash = hashlib.sha256(output.model_dump_json().encode("utf-8")).hexdigest()
+        canonical_input = json.dumps(input_args, sort_keys=True, default=str)
+        input_hash = hashlib.sha256(canonical_input.encode("utf-8")).hexdigest()
+        output_hash = hashlib.sha256(output.model_dump_json().encode("utf-8")).hexdigest()
 
-    chained_fields = dict(
-        line_number=line_number,
-        timestamp=timestamp,
-        tool_name=tool_name,
-        evidence_id=evidence_id,
-        input_hash=input_hash,
-        output_hash=output_hash,
-        prev_line_hash=prev_line_hash,
-    )
-    this_line_hash = AuditLogEntry.compute_this_line_hash(**chained_fields)
+        chained_fields = dict(
+            line_number=line_number,
+            timestamp=timestamp,
+            tool_name=tool_name,
+            evidence_id=evidence_id,
+            input_hash=input_hash,
+            output_hash=output_hash,
+            prev_line_hash=prev_line_hash,
+        )
+        this_line_hash = AuditLogEntry.compute_this_line_hash(**chained_fields)
 
-    entry = AuditLogEntry(**chained_fields, this_line_hash=this_line_hash)
+        entry = AuditLogEntry(**chained_fields, this_line_hash=this_line_hash)
 
-    serialized = entry.model_dump_json()
-    with audit_path.open("a", encoding="utf-8") as f:
-        f.write(serialized + "\n")
-        f.flush()
-        os.fsync(f.fileno())
+        serialized = entry.model_dump_json()
+        with audit_path.open("a", encoding="utf-8") as f:
+            f.write(serialized + "\n")
+            f.flush()
+            os.fsync(f.fileno())
 
     return entry
 

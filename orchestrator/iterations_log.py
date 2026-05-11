@@ -41,6 +41,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from server._chain_lock import chain_write_lock
+
 _ITERATIONS_FILENAME = "iterations.jsonl"
 _GENESIS_PREV_HASH = "0" * 64
 _HEX64_PATTERN = r"^[0-9a-f]{64}$"
@@ -179,37 +181,40 @@ def append_iteration_entry(case_dir: Path | str, payload: IterationPayload) -> I
     """Append one hash-chained record to
     `<case_dir>/iterations.jsonl`.
 
-    Single-process: no file lock. Same convention as the other three
-    chain writers.
+    Read-modify-write is wrapped in ``chain_write_lock`` for parity
+    with the other three chain writers (the orchestrator only writes
+    one iteration entry at a time, but the helper is cheap and the
+    consistency is worth more than the microseconds).
     """
     case_dir_path = Path(case_dir).resolve()
     case_dir_path.mkdir(parents=True, exist_ok=True)
     iterations_path = case_dir_path / _ITERATIONS_FILENAME
 
-    line_number, prev_iteration_hash = _read_chain_state(iterations_path)
-    timestamp = datetime.now(tz=timezone.utc)
+    with chain_write_lock(iterations_path):
+        line_number, prev_iteration_hash = _read_chain_state(iterations_path)
+        timestamp = datetime.now(tz=timezone.utc)
 
-    chained_fields = dict(
-        line_number=line_number,
-        timestamp=timestamp,
-        iteration=payload.model_dump(mode="json"),
-        prev_iteration_hash=prev_iteration_hash,
-    )
-    this_iteration_hash = IterationChainEntry.compute_this_iteration_hash(**chained_fields)
+        chained_fields = dict(
+            line_number=line_number,
+            timestamp=timestamp,
+            iteration=payload.model_dump(mode="json"),
+            prev_iteration_hash=prev_iteration_hash,
+        )
+        this_iteration_hash = IterationChainEntry.compute_this_iteration_hash(**chained_fields)
 
-    entry = IterationChainEntry(
-        line_number=line_number,
-        timestamp=timestamp,
-        iteration=payload,
-        prev_iteration_hash=prev_iteration_hash,
-        this_iteration_hash=this_iteration_hash,
-    )
+        entry = IterationChainEntry(
+            line_number=line_number,
+            timestamp=timestamp,
+            iteration=payload,
+            prev_iteration_hash=prev_iteration_hash,
+            this_iteration_hash=this_iteration_hash,
+        )
 
-    serialized = entry.model_dump_json()
-    with iterations_path.open("a", encoding="utf-8") as f:
-        f.write(serialized + "\n")
-        f.flush()
-        os.fsync(f.fileno())
+        serialized = entry.model_dump_json()
+        with iterations_path.open("a", encoding="utf-8") as f:
+            f.write(serialized + "\n")
+            f.flush()
+            os.fsync(f.fileno())
 
     return entry
 

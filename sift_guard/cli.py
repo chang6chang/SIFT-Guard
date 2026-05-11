@@ -45,7 +45,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from orchestrator.inventory import format_inventory_table, scan_evidence_directory
-from orchestrator.loop import _default_multi_host_token_budget, run_loop_multi_host
+from orchestrator.loop import (
+    DEFAULT_PARALLEL_MAX_WORKERS,
+    _default_multi_host_token_budget,
+    run_loop_multi_host,
+)
 from orchestrator.manifest import (
     CaseManifest,
     EvidenceFile,
@@ -138,6 +142,21 @@ def _parser() -> argparse.ArgumentParser:
         "--no-preflight",
         action="store_true",
         help="Skip the per-image OS + symbol-pack pre-flight probe.",
+    )
+    analyze.add_argument(
+        "--no-parallel",
+        action="store_true",
+        help="Disable parallel analyst dispatch. Falls back to the "
+        "legacy per-host-per-analyst sequential walk; useful for "
+        "debugging and for ordering-sensitive observation.",
+    )
+    analyze.add_argument(
+        "--parallel-max-workers",
+        type=int,
+        default=None,
+        help="Cap on simultaneously-running analyst subagents under "
+        "parallel mode. Default: 12 (covers a 4-host case at 3 "
+        "analysts/host with no queueing).",
     )
     analyze.add_argument(
         "--no-report",
@@ -393,9 +412,15 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     token_budget = args.token_budget
     if token_budget is None:
         token_budget = _default_multi_host_token_budget(len(manifest.hosts))
+    parallel = not args.no_parallel
+    parallel_max_workers = args.parallel_max_workers or DEFAULT_PARALLEL_MAX_WORKERS
+    parallel_str = (
+        f"parallel(max_workers={parallel_max_workers})" if parallel else "sequential"
+    )
     print(
         f"[{_hms()}] driving multi-host loop: "
-        f"max_iterations={args.max_iterations}, token_budget={token_budget:,}"
+        f"max_iterations={args.max_iterations}, token_budget={token_budget:,}, "
+        f"dispatch={parallel_str}"
     )
 
     display = ProgressDisplay(case_dir, verbose=args.verbose)
@@ -408,6 +433,8 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
             max_iterations=args.max_iterations,
             token_budget=token_budget,
             on_progress=display.on_event,
+            parallel=parallel,
+            parallel_max_workers=parallel_max_workers,
         )
     except Exception:
         logger.exception("loop crashed")

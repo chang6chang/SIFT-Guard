@@ -34,6 +34,8 @@ import asyncio
 import json
 import logging
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -120,6 +122,15 @@ MANIFEST_TYPE_TO_ANALYSTS: dict[str, list[str]] = {
 # per host. The `--token-budget` CLI flag overrides this.
 TOKEN_BUDGET_MULTI_BASE = 500_000
 TOKEN_BUDGET_PER_HOST = 250_000
+
+# Parallel analyst dispatch cap. Each in-flight analyst spawns a
+# `claude -p --agent <name>` subprocess plus its MCP-server child;
+# the limit prevents wide cases (12+ analyst-jobs per iteration) from
+# saturating CPU / RAM / Anthropic-side concurrency. 12 covers the
+# common 4-host case (4 × 3 analysts) without queueing; raise via the
+# `parallel_max_workers` argument to `run_loop_multi_host` for wider
+# cases.
+DEFAULT_PARALLEL_MAX_WORKERS = 12
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -775,34 +786,64 @@ def _step_analyze_multi_host(
     pending_focus: dict[str, dict[str, Any]] | None,
     dispatch_fn,
     on_progress: ProgressCallback | None = None,
+    parallel: bool = True,
+    parallel_max_workers: int = DEFAULT_PARALLEL_MAX_WORKERS,
 ) -> list[str]:
-    """Per-host sequential analyst dispatch.
+    """Analyst dispatch across hosts/evidence/analysts, optionally in parallel.
 
-    For each host:
-      - For each evidence_file:
-        - memory → process_analyst + network_analyst
-        - disk   → disk_analyst
-        - unknown → skip + warn (logger.warning)
-    `pending_host_ids` (when set) restricts the sweep to those hosts
-    only — the request_followup mechanism's targeted re-run path.
-    `pending_focus` is a per-analyst dict (the existing single-host
-    contract); applied to every host's dispatch this iteration. The
-    user spec doesn't yet wire per-host focus contexts; that's a
-    future-iteration extension.
+    Work plan: every (host, evidence_file, analyst) triple where the
+    analyst applies to the evidence_type. ``pending_host_ids`` (when
+    set) restricts the sweep to those hosts only — the
+    request_followup mechanism's targeted re-run path.
+    ``pending_focus`` is a per-analyst dict applied across hosts.
+
+    Parallelism:
+      - ``parallel=True`` (default) submits every job to a
+        ``ThreadPoolExecutor`` bounded by ``parallel_max_workers``.
+        Memory / disk analysts on the same host run alongside each
+        other; analysts on different hosts also run in parallel.
+        The hash-chained writers (audit, findings, correlations,
+        extractions, iterations) all serialize via
+        ``server._chain_lock`` so the chain integrity holds across
+        the concurrent MCP-server processes one-per-analyst spawns.
+      - ``parallel=False`` is the legacy sequential path — kept as a
+        fallback for the ``--no-parallel`` CLI flag and for tests
+        whose ordering assertions depend on deterministic dispatch.
+
+    Concurrency safety:
+      - ``state`` mutations (``dispatch_results.append``,
+        ``tokens_uncached +=``, ``analysts_dispatched.append``) live
+        under ``state_lock``.
+      - ``on_progress`` emissions live under ``emit_lock`` so the
+        callback can assume single-thread ordering even when
+        dispatch parallelism is wide.
+
+    Per-analyst ``findings_added`` in the ``analyze_done`` event is
+    *approximate* under parallel mode: the pre/post chain snapshot
+    around one analyst can see findings written by another that
+    finished in between. Iteration-level
+    ``state.analyst_finding_ids_added`` (computed at the end against
+    the iteration's start snapshot) remains exact.
 
     Returns the list of host_ids actually dispatched against (used
-    by the caller to build the iteration record's `manifest_summary`
-    block).
+    by the caller to build the iteration record's
+    ``manifest_summary`` block). Sorted for determinism even under
+    parallel completion order.
     """
     findings_before = {
         e.finding.finding_id
         for e in _read_findings_chain(case_dir)
         if isinstance(e.finding, DraftFinding)
     }
-    dispatched_host_ids: list[str] = []
+
+    # 1. Collect jobs + skip-events deterministically.
+    jobs: list[tuple[Any, Any, str, dict[str, Any] | None]] = []
+    skip_events: list[dict[str, Any]] = []
+    dispatched_host_ids_set: set[str] = set()
     for host in manifest.hosts:
         if pending_host_ids is not None and host.host_id not in pending_host_ids:
             continue
+        host_has_active_evidence = False
         for ef in host.evidence_files:
             analysts = MANIFEST_TYPE_TO_ANALYSTS.get(ef.evidence_type)
             if analysts is None:
@@ -812,87 +853,114 @@ def _step_analyze_multi_host(
                     host.host_id,
                     ef.evidence_id,
                 )
-                _emit(
-                    on_progress,
-                    "host_skip",
+                skip_events.append(
                     {
                         "host_id": host.host_id,
                         "host_label": host.host_label,
                         "evidence_id": ef.evidence_id,
                         "evidence_type": ef.evidence_type,
-                    },
+                    }
                 )
                 continue
+            host_has_active_evidence = True
             for agent in analysts:
                 focus = pending_focus.get(agent) if pending_focus else None
-                _emit(
-                    on_progress,
-                    "analyze_start",
-                    {
-                        "host_id": host.host_id,
-                        "host_label": host.host_label,
-                        "analyst": agent,
-                        "evidence_id": ef.evidence_id,
-                        "focused": focus is not None,
-                    },
-                )
-                pre_dispatch_findings_count = len(
-                    {
-                        e.finding.finding_id
-                        for e in _read_findings_chain(case_dir)
-                        if isinstance(e.finding, DraftFinding)
-                    }
-                )
-                result = dispatch_fn(
-                    agent=agent,
-                    evidence_id=ef.evidence_id,
-                    case_id=case_id,
-                    iteration_number=state.iteration_number,
-                    cwd=case_cwd,
-                    focus_context=focus,
-                    host_id=host.host_id,
-                    host_label=host.host_label,
-                )
-                state.dispatch_results.append(result)
-                state.analysts_dispatched.append(f"{agent}@{host.host_id}")
-                state.tokens_uncached += result.tokens_uncached
-                if not result.succeeded:
-                    logger.warning(
-                        "analyst %s on host %s did not complete cleanly (stop_reason=%s)",
-                        agent,
-                        host.host_id,
-                        result.stop_reason,
-                    )
-                post_dispatch_findings_count = len(
-                    {
-                        e.finding.finding_id
-                        for e in _read_findings_chain(case_dir)
-                        if isinstance(e.finding, DraftFinding)
-                    }
-                )
-                _emit(
-                    on_progress,
-                    "analyze_done",
-                    {
-                        "host_id": host.host_id,
-                        "host_label": host.host_label,
-                        "analyst": agent,
-                        "evidence_id": ef.evidence_id,
-                        "findings_added": post_dispatch_findings_count
-                        - pre_dispatch_findings_count,
-                        "tokens_uncached": result.tokens_uncached,
-                        "duration_ms": result.duration_ms,
-                        "succeeded": result.succeeded,
-                        "stop_reason": result.stop_reason,
-                    },
-                )
-        dispatched_host_ids.append(host.host_id)
+                jobs.append((host, ef, agent, focus))
+        if host_has_active_evidence:
+            dispatched_host_ids_set.add(host.host_id)
+
+    # 2. Emit skip events synchronously (no dispatch happens for these).
+    for payload in skip_events:
+        _emit(on_progress, "host_skip", payload)
+
+    # 3. Locks for state mutation + progress emission. Both are
+    # threading.Lock — fine-grained, contention is rare since
+    # each protected section is microseconds.
+    state_lock = threading.Lock()
+    emit_lock = threading.Lock()
+
+    def safe_emit(event: str, payload: dict[str, Any]) -> None:
+        with emit_lock:
+            _emit(on_progress, event, payload)
+
+    def _count_draft_finding_ids() -> int:
+        return len(
+            {
+                e.finding.finding_id
+                for e in _read_findings_chain(case_dir)
+                if isinstance(e.finding, DraftFinding)
+            }
+        )
+
+    def run_one_job(host, ef, agent, focus) -> None:
+        safe_emit(
+            "analyze_start",
+            {
+                "host_id": host.host_id,
+                "host_label": host.host_label,
+                "analyst": agent,
+                "evidence_id": ef.evidence_id,
+                "focused": focus is not None,
+            },
+        )
+        pre_dispatch_findings_count = _count_draft_finding_ids()
+        result = dispatch_fn(
+            agent=agent,
+            evidence_id=ef.evidence_id,
+            case_id=case_id,
+            iteration_number=state.iteration_number,
+            cwd=case_cwd,
+            focus_context=focus,
+            host_id=host.host_id,
+            host_label=host.host_label,
+        )
+        with state_lock:
+            state.dispatch_results.append(result)
+            state.analysts_dispatched.append(f"{agent}@{host.host_id}")
+            state.tokens_uncached += result.tokens_uncached
+        if not result.succeeded:
+            logger.warning(
+                "analyst %s on host %s did not complete cleanly (stop_reason=%s)",
+                agent,
+                host.host_id,
+                result.stop_reason,
+            )
+        post_dispatch_findings_count = _count_draft_finding_ids()
+        safe_emit(
+            "analyze_done",
+            {
+                "host_id": host.host_id,
+                "host_label": host.host_label,
+                "analyst": agent,
+                "evidence_id": ef.evidence_id,
+                "findings_added": post_dispatch_findings_count
+                - pre_dispatch_findings_count,
+                "tokens_uncached": result.tokens_uncached,
+                "duration_ms": result.duration_ms,
+                "succeeded": result.succeeded,
+                "stop_reason": result.stop_reason,
+            },
+        )
+
+    # 4. Run jobs.
+    if parallel and len(jobs) > 1:
+        max_workers = min(len(jobs), parallel_max_workers)
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="analyst") as pool:
+            futures = [pool.submit(run_one_job, *job) for job in jobs]
+            for fut in as_completed(futures):
+                # Re-raise on exception so loop crashes cleanly
+                # instead of silently swallowing analyst failures.
+                fut.result()
+    else:
+        for job in jobs:
+            run_one_job(*job)
+
     findings_after_chain = _read_findings_chain(case_dir)
     findings_after = {
         e.finding.finding_id for e in findings_after_chain if isinstance(e.finding, DraftFinding)
     }
     state.analyst_finding_ids_added = sorted(findings_after - findings_before)
-    return dispatched_host_ids
+    return sorted(dispatched_host_ids_set)
 
 
 def _step_correlate_multi_host(
@@ -1055,6 +1123,8 @@ def run_loop_multi_host(
     update_finding_fn=_call_update_finding,
     case_cwd: Path | None = None,
     on_progress: ProgressCallback | None = None,
+    parallel: bool = True,
+    parallel_max_workers: int = DEFAULT_PARALLEL_MAX_WORKERS,
 ) -> LoopOutcome:
     """Multi-evidence variant of `run_loop`.
 
@@ -1071,9 +1141,15 @@ def run_loop_multi_host(
          budget heuristic by default.
       5. WRITE — iteration record carries `manifest_summary`.
 
-    Per CLAUDE.md "no parallel dispatch": sequential within a host,
-    sequential across hosts. The single-process audit-chain writer
-    contract is what scopes this.
+    Parallel dispatch is on by default. The hash-chained writers
+    (audit / findings / correlations / extractions / iterations)
+    serialize via ``server._chain_lock``, so multiple
+    parallel-dispatched subagent MCP-server processes can safely
+    write to the same chain files concurrently. The validator
+    (CORRELATE) and PROMOTE / PLAN / WRITE steps stay sequential —
+    correlations depend on the full DRAFT set being settled.
+    Set ``parallel=False`` for the legacy in-order dispatch (used
+    by the ``--no-parallel`` CLI flag and ordering-sensitive tests).
     """
     case_dir = case_dir.resolve()
     if case_cwd is None:
@@ -1120,6 +1196,8 @@ def run_loop_multi_host(
             pending_focus=pending_focus,
             dispatch_fn=dispatch_analyst_fn,
             on_progress=on_progress,
+            parallel=parallel,
+            parallel_max_workers=parallel_max_workers,
         )
 
         new_correlations = _step_correlate_multi_host(
