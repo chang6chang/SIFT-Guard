@@ -12,6 +12,7 @@ No real ewfmount / mount / guestmount calls happen in CI.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +20,7 @@ import pytest
 
 from server.runners import disk_mount
 from server.runners.disk_mount import (
+    MountError,
     MountVerificationError,
     SIFT_DISK_PREMOUNTED_PATH_ENV,
     _detect_image_format,
@@ -34,10 +36,20 @@ from server.runners.disk_mount import (
 
 @pytest.fixture(autouse=True)
 def _clear_mount_cache():
-    """Ensure each test starts with an empty in-process mount cache."""
+    """Ensure each test starts with an empty in-process mount cache.
+
+    The fallback-chain tests also stash entries in
+    ``_EWF_DIR_CACHE`` / ``_GUESTMOUNT_CACHE``; clear those too
+    so the atexit handler does not chase tmp dirs from a prior
+    test on shutdown.
+    """
     disk_mount._MOUNT_CACHE.clear()
+    disk_mount._EWF_DIR_CACHE.clear()
+    disk_mount._GUESTMOUNT_CACHE.clear()
     yield
     disk_mount._MOUNT_CACHE.clear()
+    disk_mount._EWF_DIR_CACHE.clear()
+    disk_mount._GUESTMOUNT_CACHE.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -329,3 +341,285 @@ class TestUmountAllFor:
     def test_unknown_evidence_id_is_no_op(self):
         # Idempotent — no error if there's no cached mount.
         umount_all_for("never-mounted")
+
+
+# ---------------------------------------------------------------------------
+# Fallback-chain dispatch — no real subprocesses run; every shell-out
+# is mocked. Verifies that each fallback fires in the right order and
+# that the post-mount /proc/mounts validation rejects partial mounts.
+# ---------------------------------------------------------------------------
+
+
+def _proc_mounts_for(target: str) -> str:
+    return f"proc /proc proc rw,relatime 0 0\n/dev/loop1 {target} ext4 ro,relatime 0 0\n"
+
+
+def _fuse_proc_mounts_for(target: str) -> str:
+    """A FUSE entry shaped like what guestmount writes to /proc/mounts."""
+    return f"proc /proc proc rw,relatime 0 0\n/dev/fuse {target} fuse.guestmount ro,user_id=1000 0 0\n"
+
+
+class TestFallbackChainDispatch:
+    """Each fallback step is a separate subprocess call; the test
+    decides which calls succeed and which fail so we can pin which
+    branch of the fallback chain fired."""
+
+    def test_e01_path_a_succeeds_with_direct_mount(self, monkeypatch, tmp_path: Path):
+        """Path A (ewfmount + loop-mount) succeeds direct (no sudo
+        retry, no guestmount fallback)."""
+        mount_base = tmp_path / "sift-mounts"
+        monkeypatch.setattr(disk_mount, "_MOUNT_BASE", mount_base)
+        monkeypatch.delenv(SIFT_DISK_PREMOUNTED_PATH_ENV, raising=False)
+        expected_mount = mount_base / "eid-e01-"[:8]  # _allocate_mount_dir uses [:8]
+
+        def fake_run(argv, *args, **kwargs):
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            return _R()
+
+        with (
+            patch("server.runners.disk_mount.subprocess.run", side_effect=fake_run) as mock_run,
+            patch.object(
+                disk_mount,
+                "_read_proc_mounts",
+                return_value=_proc_mounts_for(str(expected_mount)),
+            ),
+        ):
+            mount_path = mount_disk_image("eid-e01-a", "/case/disk.E01")
+
+        # No guestmount call should appear in the argv list.
+        argvs = [c.args[0] for c in mock_run.call_args_list]
+        flat = [token for argv in argvs for token in argv]
+        assert "guestmount" not in flat, "Path A succeeded; guestmount must not have fired"
+        # The first two calls should be ewfmount, then mount.
+        assert any("ewfmount" in a[0] for a in argvs)
+        assert any(a[0] == "mount" for a in argvs)
+        assert mount_path == str(expected_mount)
+
+    def test_e01_falls_back_to_sudo_then_guestmount(self, monkeypatch, tmp_path: Path):
+        """Direct ewfmount fails; sudo -n ewfmount also fails; both
+        Path A retries fail. Guestmount (Path B) is then attempted
+        and succeeds."""
+        mount_base = tmp_path / "sift-mounts"
+        monkeypatch.setattr(disk_mount, "_MOUNT_BASE", mount_base)
+        monkeypatch.delenv(SIFT_DISK_PREMOUNTED_PATH_ENV, raising=False)
+
+        calls: list[list[str]] = []
+
+        def fake_run(argv, *args, **kwargs):
+            calls.append(list(argv))
+
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            program = argv[0] if argv[0] != "sudo" else argv[2]
+            # ewfmount fails whether direct or via sudo. mount also
+            # fails (Path A is unusable). guestmount succeeds.
+            # The cleanup-path umount calls are treated as no-ops
+            # (they return _R(returncode=0)) since we use check=False.
+            if program in ("ewfmount", "mount") and not kwargs.get("check") is False:
+                raise subprocess.CalledProcessError(returncode=1, cmd=argv)
+            return _R()
+
+        # Second mount dir (after the cleanup-and-retry) has the
+        # same path because _allocate_mount_dir is deterministic
+        # and the cleanup rmdir is a no-op if it doesn't exist.
+        expected_mount = mount_base / "eid-e01-"[:8]
+
+        with (
+            patch("server.runners.disk_mount.subprocess.run", side_effect=fake_run),
+            patch.object(
+                disk_mount,
+                "_read_proc_mounts",
+                return_value=_fuse_proc_mounts_for(str(expected_mount)),
+            ),
+        ):
+            mount_disk_image("eid-e01-b", "/case/disk.E01")
+
+        programs = [c[0] if c[0] != "sudo" else c[2] for c in calls]
+        # ewfmount direct → ewfmount sudo (both fail) → guestmount.
+        # Cleanup also makes calls (umount, fusermount) before
+        # guestmount fires — we just need to verify the order:
+        # at least one ewfmount-direct, one ewfmount-sudo, then guestmount.
+        first_ewfmount_direct = next(i for i, p in enumerate(programs) if p == "ewfmount" and calls[i][0] != "sudo")
+        first_ewfmount_sudo = next(i for i, p in enumerate(programs) if p == "ewfmount" and calls[i][0] == "sudo")
+        first_guestmount = next(i for i, p in enumerate(programs) if p == "guestmount")
+        assert first_ewfmount_direct < first_ewfmount_sudo < first_guestmount
+
+    def test_raw_falls_back_to_guestmount_when_loop_mount_fails(
+        self, monkeypatch, tmp_path: Path
+    ):
+        """For raw images: mount -o ro,loop (direct then sudo) both
+        fail, so guestmount is attempted."""
+        mount_base = tmp_path / "sift-mounts"
+        monkeypatch.setattr(disk_mount, "_MOUNT_BASE", mount_base)
+        monkeypatch.delenv(SIFT_DISK_PREMOUNTED_PATH_ENV, raising=False)
+
+        calls: list[list[str]] = []
+
+        def fake_run(argv, *args, **kwargs):
+            calls.append(list(argv))
+
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            program = argv[0] if argv[0] != "sudo" else argv[2]
+            # The actual Path-A subprocess calls (via _run_subprocess,
+            # check=True) raise CalledProcessError. Cleanup calls
+            # (check=False) just return success.
+            if program == "mount" and kwargs.get("check"):
+                raise subprocess.CalledProcessError(returncode=1, cmd=argv)
+            return _R()
+
+        expected_mount = mount_base / "eid-raw-"[:8]
+
+        with (
+            patch("server.runners.disk_mount.subprocess.run", side_effect=fake_run),
+            patch.object(
+                disk_mount,
+                "_read_proc_mounts",
+                return_value=_fuse_proc_mounts_for(str(expected_mount)),
+            ),
+        ):
+            mount_disk_image("eid-raw-b", "/case/disk.raw")
+
+        programs = [c[0] if c[0] != "sudo" else c[2] for c in calls]
+        first_mount_direct = next(i for i, p in enumerate(programs) if p == "mount" and calls[i][0] != "sudo")
+        first_mount_sudo = next(i for i, p in enumerate(programs) if p == "mount" and calls[i][0] == "sudo")
+        first_guestmount = next(i for i, p in enumerate(programs) if p == "guestmount")
+        assert first_mount_direct < first_mount_sudo < first_guestmount
+
+    def test_vhdx_uses_guestmount_only(self, monkeypatch, tmp_path: Path):
+        """VHDX has no Path A — guestmount is the first and only
+        strategy."""
+        mount_base = tmp_path / "sift-mounts"
+        monkeypatch.setattr(disk_mount, "_MOUNT_BASE", mount_base)
+        monkeypatch.delenv(SIFT_DISK_PREMOUNTED_PATH_ENV, raising=False)
+
+        calls: list[list[str]] = []
+
+        def fake_run(argv, *args, **kwargs):
+            calls.append(list(argv))
+
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return _R()
+
+        expected_mount = mount_base / "eid-vhdx"[:8]
+
+        with (
+            patch("server.runners.disk_mount.subprocess.run", side_effect=fake_run),
+            patch.object(
+                disk_mount,
+                "_read_proc_mounts",
+                return_value=_fuse_proc_mounts_for(str(expected_mount)),
+            ),
+        ):
+            mount_disk_image("eid-vhdx", "/case/disk.vhdx")
+
+        programs = [c[0] if c[0] != "sudo" else c[2] for c in calls]
+        # Only one subprocess call expected — guestmount. No cleanup
+        # calls because Path A wasn't attempted.
+        assert programs == ["guestmount"]
+
+    def test_all_strategies_fail_raises_mount_error(self, monkeypatch, tmp_path: Path):
+        """When every tier of the fallback chain fails, the final
+        ``MountError`` propagates. No half-built mount leaks."""
+        monkeypatch.setattr(disk_mount, "_MOUNT_BASE", tmp_path / "sift-mounts")
+        monkeypatch.delenv(SIFT_DISK_PREMOUNTED_PATH_ENV, raising=False)
+
+        def fake_run(argv, *args, **kwargs):
+            # Only check=True calls raise; cleanup (check=False) is
+            # tolerated as a no-op.
+            if kwargs.get("check"):
+                raise subprocess.CalledProcessError(returncode=1, cmd=argv)
+
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return _R()
+
+        with (
+            patch("server.runners.disk_mount.subprocess.run", side_effect=fake_run),
+            patch.object(
+                disk_mount,
+                "_read_proc_mounts",
+                return_value="proc /proc proc rw,relatime 0 0\n",
+            ),
+        ):
+            with pytest.raises(MountError):
+                mount_disk_image("eid-all-fail", "/case/disk.E01")
+        # Cache is empty — no stale entry that future calls could trip on.
+        assert "eid-all-fail" not in disk_mount._MOUNT_CACHE
+
+    def test_mount_dir_lives_under_predictable_base(self, monkeypatch, tmp_path: Path):
+        """The mount dir lives under ``_MOUNT_BASE/<evidence_id_short>/``
+        — predictable so the sudoers wildcard scopes cleanly. No
+        random tempfile name."""
+        mount_base = tmp_path / "sift-mounts"
+        monkeypatch.setattr(disk_mount, "_MOUNT_BASE", mount_base)
+        monkeypatch.delenv(SIFT_DISK_PREMOUNTED_PATH_ENV, raising=False)
+
+        def fake_run(argv, *args, **kwargs):
+            class _R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            return _R()
+
+        expected_mount = mount_base / "abcdef01"
+
+        with (
+            patch("server.runners.disk_mount.subprocess.run", side_effect=fake_run),
+            patch.object(
+                disk_mount,
+                "_read_proc_mounts",
+                return_value=_proc_mounts_for(str(expected_mount)),
+            ),
+        ):
+            mount_path = mount_disk_image("abcdef0123456789", "/case/disk.raw")
+
+        # Mount path starts with the predictable base; the suffix
+        # is the first 8 chars of the evidence_id (no random tempfile suffix).
+        assert mount_path == str(expected_mount)
+
+
+class TestAtexitCleanup:
+    def test_atexit_skips_premounted_mode(self, tmp_path: Path, monkeypatch):
+        """In premounted mode the operator manages the mount; the
+        atexit handler must not unmount it."""
+        target = tmp_path / "mounted"
+        target.mkdir()
+        monkeypatch.setenv(SIFT_DISK_PREMOUNTED_PATH_ENV, str(target))
+        disk_mount._MOUNT_CACHE["eid-x"] = str(target)
+        with patch("subprocess.run") as mock_run:
+            disk_mount._atexit_cleanup_all_mounts()
+        assert mock_run.call_count == 0
+        # Premounted entries are also left in the cache so any
+        # post-shutdown introspection can see what the operator
+        # had set up.
+        assert "eid-x" in disk_mount._MOUNT_CACHE
+
+    def test_atexit_clears_cache_and_attempts_unmount(self, tmp_path: Path, monkeypatch):
+        """When not in premounted mode, atexit unmount-s every cached
+        mount and empties the cache."""
+        monkeypatch.delenv(SIFT_DISK_PREMOUNTED_PATH_ENV, raising=False)
+        target = tmp_path / "mounted"
+        target.mkdir()
+        disk_mount._MOUNT_CACHE["eid-y"] = str(target)
+        with patch("server.runners.disk_mount.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            disk_mount._atexit_cleanup_all_mounts()
+        assert mock_run.call_count >= 1
+        assert "eid-y" not in disk_mount._MOUNT_CACHE

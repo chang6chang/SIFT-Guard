@@ -327,7 +327,83 @@ else
 fi
 
 # =========================================================================
-# 13. Smoke test
+# 13. Disk-mount privilege wiring (sudoers + fuse group)
+# =========================================================================
+# disk_mount.py walks a fallback chain for ewfmount + loop-mount:
+# (1) direct call, (2) `sudo -n` retry, (3) guestmount FUSE. Direct
+# calls succeed only if the user is in the `fuse` group (for
+# ewfmount, which is FUSE-based) and has root (for loop-mount,
+# which always needs CAP_SYS_ADMIN). Step (2) needs a NOPASSWD
+# sudoers entry. Step (3) is the always-available fallback but is
+# noticeably slower because it spins up libguestfs. We wire (1)
+# and (2) here so the fast path is the default.
+
+info "Configuring disk-mount privileges..."
+
+# Add the invoking user to the `fuse` group so ewfmount can mount
+# without sudo. Skip when running as root (no fuse group needed —
+# root can do anything anyway).
+if [[ "${INVOKING_USER}" != "root" ]] && getent group fuse &>/dev/null; then
+    if id -nG "${INVOKING_USER}" | grep -qw fuse; then
+        ok "${INVOKING_USER} already in fuse group."
+    else
+        usermod -aG fuse "${INVOKING_USER}"
+        ok "Added ${INVOKING_USER} to fuse group (effective at next login)."
+    fi
+fi
+
+# Write a tightly-scoped sudoers entry: ewfmount on any path,
+# mount with `-o ro*` (so `-o ro,loop` matches) on any args, and
+# umount limited to /tmp/sift-guard-mounts/* (the predictable mount
+# base from disk_mount._MOUNT_BASE).
+#
+# `visudo -cf` validates the file before installing it; a broken
+# sudoers file blocks sudo for everyone. visudo writes to a tmp
+# file, validates, and only then copies to /etc/sudoers.d/ — if
+# validation fails we abort cleanly rather than poisoning sudo.
+SUDOERS_TMP=$(mktemp /tmp/sift-guard-sudoers-XXXX)
+EWFMOUNT_PATH="$(command -v ewfmount || echo /usr/bin/ewfmount)"
+MOUNT_PATH="$(command -v mount || echo /usr/bin/mount)"
+UMOUNT_PATH="$(command -v umount || echo /usr/bin/umount)"
+FUSERMOUNT_PATH="$(command -v fusermount || echo /usr/bin/fusermount)"
+cat > "${SUDOERS_TMP}" << SUDOERS
+# SIFT-Guard — disk-mount privilege wiring (installed by setup-sift-guard.sh).
+# These entries let server/runners/disk_mount.py mount E01 / raw disk
+# images read-only without prompting for a password. Scope is the
+# narrowest the fallback chain can use: ewfmount on any path (the
+# image is passed as argv), mount restricted to read-only options,
+# umount + fusermount restricted to the predictable mount base.
+${INVOKING_USER} ALL=(root) NOPASSWD: ${EWFMOUNT_PATH}
+${INVOKING_USER} ALL=(root) NOPASSWD: ${MOUNT_PATH} -o ro*
+${INVOKING_USER} ALL=(root) NOPASSWD: ${UMOUNT_PATH} /tmp/sift-guard-mounts/*
+${INVOKING_USER} ALL=(root) NOPASSWD: ${FUSERMOUNT_PATH} -u /tmp/sift-guard-mounts/*
+SUDOERS
+
+if visudo -cf "${SUDOERS_TMP}" &>/dev/null; then
+    install -m 0440 -o root -g root "${SUDOERS_TMP}" /etc/sudoers.d/sift-guard
+    ok "Installed /etc/sudoers.d/sift-guard."
+else
+    warn "Sudoers validation failed; not installing. Disk mount will fall back"
+    warn "to guestmount (slower but does not need sudo)."
+fi
+rm -f "${SUDOERS_TMP}"
+
+# Verification.
+if command -v ewfmount &>/dev/null; then
+    ok "ewfmount available: $(ewfmount -V 2>&1 | head -1)"
+else
+    warn "ewfmount not found on PATH. Disk-image (E01) analysis will rely on"
+    warn "guestmount only — slower but functional. Install ewf-tools to fix."
+fi
+if id -nG "${INVOKING_USER}" 2>/dev/null | grep -qw fuse; then
+    ok "${INVOKING_USER} is in fuse group (effective in new shells)."
+else
+    warn "${INVOKING_USER} not currently in fuse group; ewfmount will need sudo"
+    warn "until the user logs out and back in."
+fi
+
+# =========================================================================
+# 14. Smoke test
 # =========================================================================
 info "Running smoke test..."
 

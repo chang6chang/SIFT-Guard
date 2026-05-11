@@ -9,9 +9,10 @@ already-mounted path via the in-process mount cache.
 Privilege model
 ---------------
 
-`ewfmount` and `mount -o ro,loop` require either root or
-`CAP_SYS_ADMIN`. The MCP server runs as the invoking user. Two
-operating modes are supported:
+`ewfmount` and `mount -o ro,loop` require either root, `CAP_SYS_ADMIN`,
+or — for ewfmount specifically — membership in the `fuse` group (it is
+FUSE-based). The MCP server runs as the invoking user. Three operating
+modes are supported, in this resolution order:
 
   1. **Operator pre-mount (CI / dev / containers)** — set
      ``SIFT_DISK_PREMOUNTED_PATH=/mnt/sift_disk`` and the utility
@@ -19,23 +20,45 @@ operating modes are supported:
      path is read-only, and returns it. The operator is responsible
      for the actual `ewfmount` / `mount -o ro,loop` step.
 
-  2. **Real shell-out (production / SIFT VM with NOPASSWD sudo)** —
-     when the env var is unset, the utility runs the format-specific
-     mount commands the user spec'd:
+  2. **Real shell-out with fallback chain (default)** — when the
+     env var is unset, the utility walks the per-format fallback
+     chain below. Mount points live under
+     ``/tmp/sift-guard-mounts/<evidence_id_short>/`` — predictable
+     so the sudoers entry's wildcard (``umount
+     /tmp/sift-guard-mounts/*``) scopes cleanly, and writable by
+     the invoking user without elevation.
 
-       - ``.E01`` / ``.s01`` / ``.Ex01``: ``ewfmount <image>
-         <ewf_dir>`` followed by ``mount -o ro,loop <ewf_dir>/ewf1
-         <mount>``.
-       - ``.raw`` / ``.dd`` / ``.img``: ``mount -o ro,loop <image>
-         <mount>``.
-       - ``.vhdx`` / ``.vhd``: ``guestmount --ro -a <image> -i
-         <mount>`` (libguestfs route) with ``qemu-nbd -r`` as
-         fallback in the docstring but NOT auto-attempted.
+Per-format fallback chains
+--------------------------
 
-     `/proc/mounts` is always re-validated after the mount call:
-     the mount entry must include ``ro`` in its options. Any
-     mismatch raises ``MountVerificationError`` and the partial
-     mount is torn down.
+`.E01` / `.s01` / `.Ex01`:
+  Path A (preferred): ``ewfmount <image> <ewf_dir>`` then
+  ``mount -o ro,loop <ewf_dir>/ewf1 <mount>``. Each step tries the
+  command directly first; on non-zero exit it retries via
+  ``sudo -n`` (non-interactive — relies on the NOPASSWD sudoers
+  entry installed by ``setup-sift-guard.sh``).
+
+  Path B (fallback): ``guestmount --ro -a <image> -i <mount>``.
+  libguestfs builds an in-process Linux VM that reads the E01
+  directly via libewf; FUSE-mounted so no root required. Slower
+  than Path A but the only option when ewfmount / mount-loop are
+  both unavailable.
+
+`.raw` / `.dd` / `.img`:
+  Path A: ``mount -o ro,loop <image> <mount>`` — direct then
+  ``sudo -n``.
+
+  Path B: ``guestmount --ro -a <image> -i <mount>``.
+
+`.vhdx` / `.vhd`:
+  ``guestmount --ro -a <image> -i <mount>`` only. libguestfs
+  natively reads VHDX/VHD; no Path A.
+
+``/proc/mounts`` is re-validated after every successful mount: the
+mount entry must include ``ro`` in its options. Any mismatch raises
+``MountVerificationError`` and the partial mount is torn down. (For
+guestmount the FUSE entry registers as ``fuse.guestmount`` with
+``ro`` in its options when ``--ro`` was passed.)
 
 Both modes are unit-test-friendly: tests set the env var to a
 tmp_path the test pre-creates, plus monkeypatch
@@ -77,6 +100,7 @@ verified):
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import shlex
@@ -133,6 +157,23 @@ RELATIVE_REGISTRY_HIVES: dict[str, str] = {
 # `server.audit` for the same assumption. Maps evidence_id to the
 # resolved mount path so subsequent tool calls reuse the mount.
 _MOUNT_CACHE: dict[str, str] = {}
+
+# Cache of intermediate ewfmount FUSE dirs keyed by evidence_id, so
+# the atexit teardown can fusermount them in reverse order of the
+# loop-mount they back. ewf_dir is unmounted via `fusermount -u`.
+_EWF_DIR_CACHE: dict[str, str] = {}
+
+# Cache of guestmount FUSE mounts keyed by evidence_id, so the
+# atexit teardown can `guestunmount` them. Tracked separately from
+# `_MOUNT_CACHE` because guestmount + loop-mount tear down through
+# different commands.
+_GUESTMOUNT_CACHE: dict[str, str] = {}
+
+# Predictable mount base. Sudoers wildcards (`umount
+# /tmp/sift-guard-mounts/*`) can scope cleanly against this; the
+# directory lives under /tmp/ so the invoking user always has write
+# permission without sudo.
+_MOUNT_BASE = Path("/tmp/sift-guard-mounts")
 
 
 class MountError(RuntimeError):
@@ -230,25 +271,126 @@ def _run_subprocess(argv: list[str], *, timeout_seconds: int = 60) -> tuple[str,
     return result.stdout, shlex.join(argv), elapsed
 
 
+def _allocate_mount_dir(evidence_id: str, suffix: str = "") -> Path:
+    """Allocate a predictable mount directory under
+    ``/tmp/sift-guard-mounts/<evidence_id_short>[<suffix>]/``.
+
+    Predictable paths matter for the sudoers wildcard: an entry
+    permitting ``umount /tmp/sift-guard-mounts/*`` scopes cleanly
+    here, where ``tempfile.mkdtemp`` would produce
+    randomly-suffixed names the sudoers rule could not anticipate.
+    """
+    _MOUNT_BASE.mkdir(parents=True, exist_ok=True)
+    target = _MOUNT_BASE / f"{evidence_id[:8]}{suffix}"
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _try_direct_then_sudo(argv: list[str], *, timeout_seconds: int) -> tuple[str, str, float]:
+    """Run ``argv`` directly; on any non-zero exit, retry under
+    ``sudo -n``.
+
+    ``sudo -n`` is non-interactive — without a NOPASSWD sudoers
+    entry it returns immediately rather than prompting. Either
+    failure raises ``MountError``, but the cumulative command
+    string captures whichever attempt succeeded so the audit log
+    reflects reality.
+
+    The fallback exists so the same code path works whether the
+    operator (a) installed the sudoers entry, (b) added the user
+    to the ``fuse`` group, or (c) gave the binary the relevant
+    capability via ``setcap``.
+    """
+    try:
+        return _run_subprocess(argv, timeout_seconds=timeout_seconds)
+    except MountError:
+        pass
+    return _run_subprocess(["sudo", "-n", *argv], timeout_seconds=timeout_seconds)
+
+
+def _try_ewfmount_then_loop(
+    evidence_id: str, absolute_path: str, mount_dir: Path
+) -> tuple[str, float]:
+    """Path A for E01 images: ewfmount + loop-mount.
+
+    Each step tries the command direct first, then ``sudo -n``.
+    Mount dirs come from ``_allocate_mount_dir`` so the sudoers
+    wildcard scopes cleanly. Records the intermediate ewf dir in
+    ``_EWF_DIR_CACHE`` so atexit can ``fusermount -u`` it.
+
+    Returns ``(command_string, runtime_seconds)`` — combined across
+    the two-step pipeline.
+    """
+    ewfmount_bin = os.environ.get(SIFT_DISK_EWFMOUNT_BIN_ENV, _DEFAULT_EWFMOUNT_BIN)
+    mount_bin = os.environ.get(SIFT_DISK_MOUNT_BIN_ENV, _DEFAULT_MOUNT_BIN)
+    ewf_dir = _allocate_mount_dir(evidence_id, suffix="-ewf")
+
+    _, ewf_cmd, ewf_elapsed = _try_direct_then_sudo(
+        [ewfmount_bin, absolute_path, str(ewf_dir)],
+        timeout_seconds=120,
+    )
+    _EWF_DIR_CACHE[evidence_id] = str(ewf_dir)
+
+    _, mount_cmd, mount_elapsed = _try_direct_then_sudo(
+        [mount_bin, "-o", "ro,loop", str(ewf_dir / "ewf1"), str(mount_dir)],
+        timeout_seconds=60,
+    )
+    return f"{ewf_cmd} && {mount_cmd}", ewf_elapsed + mount_elapsed
+
+
+def _try_loop_mount(absolute_path: str, mount_dir: Path) -> tuple[str, float]:
+    """Loop-mount a raw image. Direct then ``sudo -n``."""
+    mount_bin = os.environ.get(SIFT_DISK_MOUNT_BIN_ENV, _DEFAULT_MOUNT_BIN)
+    _, command_string, elapsed = _try_direct_then_sudo(
+        [mount_bin, "-o", "ro,loop", absolute_path, str(mount_dir)],
+        timeout_seconds=60,
+    )
+    return command_string, elapsed
+
+
+def _try_guestmount(
+    evidence_id: str, absolute_path: str, mount_dir: Path
+) -> tuple[str, float]:
+    """Final fallback: FUSE-based libguestfs mount.
+
+    libguestfs spins up an in-process Linux VM, reads the image
+    natively (E01, raw, VHDX, VMDK, QCOW2 — anything libguestfs
+    recognizes), and exposes the filesystem via FUSE. No root and
+    no fuse-group membership required (libguestfs ships its own
+    FUSE-talking helper).
+
+    Records the mount in ``_GUESTMOUNT_CACHE`` so atexit can call
+    ``guestunmount`` rather than ``umount`` (the FUSE entry must
+    be torn down via libguestfs' own helper).
+    """
+    guestmount_bin = os.environ.get(SIFT_DISK_GUESTMOUNT_BIN_ENV, _DEFAULT_GUESTMOUNT_BIN)
+    _, command_string, elapsed = _run_subprocess(
+        [guestmount_bin, "--ro", "-a", absolute_path, "-i", str(mount_dir)],
+        timeout_seconds=180,
+    )
+    _GUESTMOUNT_CACHE[evidence_id] = str(mount_dir)
+    return command_string, elapsed
+
+
 def mount_disk_image(evidence_id: str, absolute_path: str) -> str:
     """Resolve a disk-image evidence_id to its mounted-root path.
 
-    Two-mode operation per the module docstring:
+    Resolution order:
 
-      1. ``SIFT_DISK_PREMOUNTED_PATH`` env var set: skip every
-         shell-out, validate ``/proc/mounts`` shows the path is
-         read-only, return it.
-      2. Otherwise: shell out to the format-specific mount tools
-         under a tmp dir, validate ``/proc/mounts`` afterward,
-         return the resolved mount path.
+      1. In-process cache (cheap re-validation against /proc/mounts).
+      2. ``SIFT_DISK_PREMOUNTED_PATH`` env var, when set.
+      3. Per-format fallback chain (see module docstring): ewfmount +
+         loop for E01, loop for raw, guestmount as final fallback.
 
     Caches per-evidence_id to avoid double-mounting on repeat tool
     calls. The cache is in-process; a server restart starts fresh
     and re-mounts.
 
     Raises:
-        MountError: any subprocess failure or unsupported format.
-        MountVerificationError: post-mount /proc/mounts check fails.
+        MountError: every strategy in the fallback chain failed,
+            or the image format is unsupported.
+        MountVerificationError: post-mount /proc/mounts check did
+            not show a read-only mount.
 
     Sanitized: messages never echo `absolute_path` or `evidence_id`
     back per the 2026-05-05 MCP error-message sanitization rule.
@@ -272,51 +414,27 @@ def mount_disk_image(evidence_id: str, absolute_path: str) -> str:
         return premounted
 
     fmt = _detect_image_format(absolute_path)
-    mount_dir = Path(tempfile.mkdtemp(prefix=f"sift-disk-{evidence_id[:8]}-"))
+    mount_dir = _allocate_mount_dir(evidence_id)
     try:
         if fmt == "e01":
-            ewf_dir = Path(tempfile.mkdtemp(prefix=f"sift-ewf-{evidence_id[:8]}-"))
-            ewfmount_bin = os.environ.get(SIFT_DISK_EWFMOUNT_BIN_ENV, _DEFAULT_EWFMOUNT_BIN)
-            mount_bin = os.environ.get(SIFT_DISK_MOUNT_BIN_ENV, _DEFAULT_MOUNT_BIN)
-            _run_subprocess(
-                [ewfmount_bin, absolute_path, str(ewf_dir)],
-                timeout_seconds=120,
-            )
-            _run_subprocess(
-                [
-                    mount_bin,
-                    "-o",
-                    "ro,loop",
-                    str(ewf_dir / "ewf1"),
-                    str(mount_dir),
-                ],
-                timeout_seconds=60,
-            )
+            try:
+                _try_ewfmount_then_loop(evidence_id, absolute_path, mount_dir)
+            except MountError:
+                # Path A failed at one of its two subprocess steps.
+                # Tear down whatever Path A managed to set up, then
+                # try Path B (guestmount) on a fresh mount dir.
+                _cleanup_partial_mount(evidence_id, mount_dir)
+                mount_dir = _allocate_mount_dir(evidence_id)
+                _try_guestmount(evidence_id, absolute_path, mount_dir)
         elif fmt == "raw":
-            mount_bin = os.environ.get(SIFT_DISK_MOUNT_BIN_ENV, _DEFAULT_MOUNT_BIN)
-            _run_subprocess(
-                [
-                    mount_bin,
-                    "-o",
-                    "ro,loop",
-                    absolute_path,
-                    str(mount_dir),
-                ],
-                timeout_seconds=60,
-            )
+            try:
+                _try_loop_mount(absolute_path, mount_dir)
+            except MountError:
+                _cleanup_partial_mount(evidence_id, mount_dir)
+                mount_dir = _allocate_mount_dir(evidence_id)
+                _try_guestmount(evidence_id, absolute_path, mount_dir)
         elif fmt == "vhdx":
-            guestmount_bin = os.environ.get(SIFT_DISK_GUESTMOUNT_BIN_ENV, _DEFAULT_GUESTMOUNT_BIN)
-            _run_subprocess(
-                [
-                    guestmount_bin,
-                    "--ro",
-                    "-a",
-                    absolute_path,
-                    "-i",
-                    str(mount_dir),
-                ],
-                timeout_seconds=120,
-            )
+            _try_guestmount(evidence_id, absolute_path, mount_dir)
         else:
             raise MountError("unsupported disk-image format")
 
@@ -325,15 +443,106 @@ def mount_disk_image(evidence_id: str, absolute_path: str) -> str:
     except Exception:
         # Best-effort cleanup; if teardown itself fails, surface the
         # original error rather than the cleanup error.
-        try:
-            mount_dir.rmdir()
-        except OSError:
-            pass
+        _cleanup_partial_mount(evidence_id, mount_dir)
         raise
 
     resolved = str(mount_dir)
     _MOUNT_CACHE[evidence_id] = resolved
     return resolved
+
+
+def _cleanup_partial_mount(evidence_id: str, mount_dir: Path) -> None:
+    """Best-effort teardown of a half-built mount.
+
+    Used both on the failure path inside ``mount_disk_image`` and
+    by the atexit cleanup. Tries the appropriate teardown command
+    for whichever phase the mount reached: ``guestunmount`` for
+    guestmount FUSE entries, ``fusermount -u`` for ewfmount FUSE
+    entries, ``umount`` (direct then ``sudo -n``) for loop mounts.
+
+    Failures are swallowed — the goal is cleanup, not loud
+    reporting. The cache entries are popped regardless so a stale
+    half-mount cannot poison future lookups.
+    """
+    # Guestmount FUSE entry, if one was registered.
+    guestmount_path = _GUESTMOUNT_CACHE.pop(evidence_id, None)
+    if guestmount_path:
+        try:
+            subprocess.run(
+                ["guestunmount", guestmount_path],
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+    # Loop-mounted target — try umount direct, then sudo.
+    try:
+        subprocess.run(
+            ["umount", str(mount_dir)],
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    try:
+        subprocess.run(
+            ["sudo", "-n", "umount", str(mount_dir)],
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    # ewfmount intermediate FUSE dir.
+    ewf_dir = _EWF_DIR_CACHE.pop(evidence_id, None)
+    if ewf_dir:
+        try:
+            subprocess.run(
+                ["fusermount", "-u", ewf_dir],
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        try:
+            Path(ewf_dir).rmdir()
+        except OSError:
+            pass
+
+    try:
+        mount_dir.rmdir()
+    except OSError:
+        pass
+
+
+def _atexit_cleanup_all_mounts() -> None:
+    """Tear down every cached mount on interpreter shutdown.
+
+    Iterates a snapshot of the mount cache (so we can mutate
+    ``_MOUNT_CACHE`` inside the loop), runs ``_cleanup_partial_mount``
+    against each, and finally removes the cache entries. In
+    premounted mode the entries are skipped — the operator manages
+    those mounts and would object to having them silently torn down.
+    """
+    if os.environ.get(SIFT_DISK_PREMOUNTED_PATH_ENV):
+        # Operator-managed mount; do not touch it on shutdown.
+        return
+    for evidence_id, mount_path in list(_MOUNT_CACHE.items()):
+        try:
+            _cleanup_partial_mount(evidence_id, Path(mount_path))
+        except Exception:
+            # Shutdown handlers swallow everything — the cache is
+            # being thrown away regardless.
+            pass
+        _MOUNT_CACHE.pop(evidence_id, None)
+
+
+atexit.register(_atexit_cleanup_all_mounts)
 
 
 def umount_all_for(evidence_id: str) -> None:
@@ -342,24 +551,22 @@ def umount_all_for(evidence_id: str) -> None:
     Called by tests' tmp_path teardown and by an explicit
     operator-tooling path. Not invoked at MCP-tool boundaries —
     the mount is intentionally long-lived across the analyst's
-    session so repeat calls hit the cache.
+    session so repeat calls hit the cache. Routes through
+    ``_cleanup_partial_mount`` so guestmount + ewfmount + loop
+    teardowns all run via the same code path as atexit.
     """
     mount_path = _MOUNT_CACHE.pop(evidence_id, None)
     if mount_path is None:
+        # Even with no main mount entry, guestmount / ewfmount
+        # intermediates may still be cached; teardown reaches into
+        # both caches.
+        if evidence_id in _GUESTMOUNT_CACHE or evidence_id in _EWF_DIR_CACHE:
+            _cleanup_partial_mount(evidence_id, Path("/tmp/sift-guard-mounts/__nonexistent__"))
         return
     if os.environ.get(SIFT_DISK_PREMOUNTED_PATH_ENV):
         # Operator-managed mount; do not attempt to unmount.
         return
-    mount_bin = os.environ.get(SIFT_DISK_MOUNT_BIN_ENV, _DEFAULT_MOUNT_BIN)
-    try:
-        subprocess.run(
-            [mount_bin.replace("mount", "umount"), mount_path],
-            capture_output=True,
-            check=False,
-            timeout=60,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        pass
+    _cleanup_partial_mount(evidence_id, Path(mount_path))
 
 
 # ---------------------------------------------------------------------------
