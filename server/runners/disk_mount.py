@@ -286,28 +286,6 @@ def _allocate_mount_dir(evidence_id: str, suffix: str = "") -> Path:
     return target
 
 
-def _try_direct_then_sudo(argv: list[str], *, timeout_seconds: int) -> tuple[str, str, float]:
-    """Run ``argv`` directly; on any non-zero exit, retry under
-    ``sudo -n``.
-
-    ``sudo -n`` is non-interactive — without a NOPASSWD sudoers
-    entry it returns immediately rather than prompting. Either
-    failure raises ``MountError``, but the cumulative command
-    string captures whichever attempt succeeded so the audit log
-    reflects reality.
-
-    The fallback exists so the same code path works whether the
-    operator (a) installed the sudoers entry, (b) added the user
-    to the ``fuse`` group, or (c) gave the binary the relevant
-    capability via ``setcap``.
-    """
-    try:
-        return _run_subprocess(argv, timeout_seconds=timeout_seconds)
-    except MountError:
-        pass
-    return _run_subprocess(["sudo", "-n", *argv], timeout_seconds=timeout_seconds)
-
-
 def _try_ewfmount_then_loop(
     evidence_id: str, absolute_path: str, mount_dir: Path
 ) -> tuple[str, float]:
@@ -325,24 +303,27 @@ def _try_ewfmount_then_loop(
     mount_bin = os.environ.get(SIFT_DISK_MOUNT_BIN_ENV, _DEFAULT_MOUNT_BIN)
     ewf_dir = _allocate_mount_dir(evidence_id, suffix="-ewf")
 
-    _, ewf_cmd, ewf_elapsed = _try_direct_then_sudo(
-        [ewfmount_bin, absolute_path, str(ewf_dir)],
+    _, ewf_cmd, ewf_elapsed = _run_subprocess(
+        ["sudo", ewfmount_bin, absolute_path, str(ewf_dir)],
         timeout_seconds=120,
     )
     _EWF_DIR_CACHE[evidence_id] = str(ewf_dir)
 
-    _, mount_cmd, mount_elapsed = _try_direct_then_sudo(
-        [mount_bin, "-o", "ro,loop", str(ewf_dir / "ewf1"), str(mount_dir)],
+    _, mount_cmd, mount_elapsed = _run_subprocess(
+        ["sudo", mount_bin, "-o", "ro,loop", str(ewf_dir / "ewf1"), str(mount_dir)],
         timeout_seconds=60,
     )
     return f"{ewf_cmd} && {mount_cmd}", ewf_elapsed + mount_elapsed
 
 
 def _try_loop_mount(absolute_path: str, mount_dir: Path) -> tuple[str, float]:
-    """Loop-mount a raw image. Direct then ``sudo -n``."""
+    """Loop-mount a raw image under sudo. The NOPASSWD sudoers entry
+    at /etc/sudoers.d/sift-guard grants the mount/umount/ewfmount
+    binaries without prompting; calling them direct first is a
+    wasted exec on every disk dispatch."""
     mount_bin = os.environ.get(SIFT_DISK_MOUNT_BIN_ENV, _DEFAULT_MOUNT_BIN)
-    _, command_string, elapsed = _try_direct_then_sudo(
-        [mount_bin, "-o", "ro,loop", absolute_path, str(mount_dir)],
+    _, command_string, elapsed = _run_subprocess(
+        ["sudo", mount_bin, "-o", "ro,loop", absolute_path, str(mount_dir)],
         timeout_seconds=60,
     )
     return command_string, elapsed
@@ -477,19 +458,10 @@ def _cleanup_partial_mount(evidence_id: str, mount_dir: Path) -> None:
         except (subprocess.TimeoutExpired, OSError):
             pass
 
-    # Loop-mounted target — try umount direct, then sudo.
+    # Loop-mounted target — umount under sudo (NOPASSWD).
     try:
         subprocess.run(
-            ["umount", str(mount_dir)],
-            capture_output=True,
-            check=False,
-            timeout=30,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        pass
-    try:
-        subprocess.run(
-            ["sudo", "-n", "umount", str(mount_dir)],
+            ["sudo", "umount", str(mount_dir)],
             capture_output=True,
             check=False,
             timeout=30,

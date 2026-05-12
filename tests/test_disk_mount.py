@@ -364,9 +364,13 @@ class TestFallbackChainDispatch:
     decides which calls succeed and which fail so we can pin which
     branch of the fallback chain fired."""
 
-    def test_e01_path_a_succeeds_with_direct_mount(self, monkeypatch, tmp_path: Path):
-        """Path A (ewfmount + loop-mount) succeeds direct (no sudo
-        retry, no guestmount fallback)."""
+    def test_e01_path_a_succeeds_with_sudo_mount(self, monkeypatch, tmp_path: Path):
+        """Path A (ewfmount + loop-mount) succeeds under sudo on the
+        first try (no guestmount fallback). ewfmount and mount are
+        always invoked via ``sudo`` — the NOPASSWD sudoers entry at
+        ``/etc/sudoers.d/sift-guard`` makes the call non-interactive
+        and the previous direct-first/sudo-on-failure two-step is
+        gone."""
         mount_base = tmp_path / "sift-mounts"
         monkeypatch.setattr(disk_mount, "_MOUNT_BASE", mount_base)
         monkeypatch.delenv(SIFT_DISK_PREMOUNTED_PATH_ENV, raising=False)
@@ -393,15 +397,26 @@ class TestFallbackChainDispatch:
         argvs = [c.args[0] for c in mock_run.call_args_list]
         flat = [token for argv in argvs for token in argv]
         assert "guestmount" not in flat, "Path A succeeded; guestmount must not have fired"
-        # The first two calls should be ewfmount, then mount.
-        assert any("ewfmount" in a[0] for a in argvs)
-        assert any(a[0] == "mount" for a in argvs)
+        # Every Path-A call leads with "sudo" — never a bare ewfmount/mount.
+        assert any(a[0] == "sudo" and a[1] == "ewfmount" for a in argvs), (
+            f"expected sudo ewfmount, got argvs={argvs!r}"
+        )
+        assert any(a[0] == "sudo" and a[1] == "mount" for a in argvs), (
+            f"expected sudo mount, got argvs={argvs!r}"
+        )
+        assert not any(
+            (a[0] == "ewfmount" or a[0] == "mount") for a in argvs
+        ), "ewfmount/mount must not be invoked without sudo"
         assert mount_path == str(expected_mount)
 
-    def test_e01_falls_back_to_sudo_then_guestmount(self, monkeypatch, tmp_path: Path):
-        """Direct ewfmount fails; sudo -n ewfmount also fails; both
-        Path A retries fail. Guestmount (Path B) is then attempted
-        and succeeds."""
+    def test_e01_falls_back_to_guestmount_when_sudo_ewfmount_fails(
+        self, monkeypatch, tmp_path: Path
+    ):
+        """``sudo ewfmount`` fails (or ``sudo mount -o ro,loop``
+        fails); Path A is unusable. Guestmount (Path B) is then
+        attempted and succeeds. The previous direct-then-sudo
+        two-step is gone — there's exactly one ewfmount attempt
+        (sudo) before the fallback fires."""
         mount_base = tmp_path / "sift-mounts"
         monkeypatch.setattr(disk_mount, "_MOUNT_BASE", mount_base)
         monkeypatch.delenv(SIFT_DISK_PREMOUNTED_PATH_ENV, raising=False)
@@ -416,11 +431,11 @@ class TestFallbackChainDispatch:
                 stdout = ""
                 stderr = ""
 
-            program = argv[0] if argv[0] != "sudo" else argv[2]
-            # ewfmount fails whether direct or via sudo. mount also
-            # fails (Path A is unusable). guestmount succeeds.
-            # The cleanup-path umount calls are treated as no-ops
-            # (they return _R(returncode=0)) since we use check=False.
+            program = argv[0] if argv[0] != "sudo" else argv[1]
+            # ewfmount + mount under sudo both fail; guestmount
+            # (run without sudo, libguestfs ships its own FUSE
+            # helper) succeeds. Cleanup-path umount calls are
+            # no-ops (check=False) and return success.
             if program in ("ewfmount", "mount") and not kwargs.get("check") is False:
                 raise subprocess.CalledProcessError(returncode=1, cmd=argv)
             return _R()
@@ -440,21 +455,31 @@ class TestFallbackChainDispatch:
         ):
             mount_disk_image("eid-e01-b", "/case/disk.E01")
 
-        programs = [c[0] if c[0] != "sudo" else c[2] for c in calls]
-        # ewfmount direct → ewfmount sudo (both fail) → guestmount.
-        # Cleanup also makes calls (umount, fusermount) before
-        # guestmount fires — we just need to verify the order:
-        # at least one ewfmount-direct, one ewfmount-sudo, then guestmount.
-        first_ewfmount_direct = next(i for i, p in enumerate(programs) if p == "ewfmount" and calls[i][0] != "sudo")
-        first_ewfmount_sudo = next(i for i, p in enumerate(programs) if p == "ewfmount" and calls[i][0] == "sudo")
-        first_guestmount = next(i for i, p in enumerate(programs) if p == "guestmount")
-        assert first_ewfmount_direct < first_ewfmount_sudo < first_guestmount
+        sudo_ewfmount_calls = [c for c in calls if c[:2] == ["sudo", "ewfmount"]]
+        bare_ewfmount_calls = [c for c in calls if c[:1] == ["ewfmount"]]
+        guestmount_calls = [c for c in calls if c[:1] == ["guestmount"]]
 
-    def test_raw_falls_back_to_guestmount_when_loop_mount_fails(
+        assert sudo_ewfmount_calls, "Path A must invoke ewfmount under sudo"
+        assert not bare_ewfmount_calls, (
+            "ewfmount must never be invoked without sudo — the "
+            "direct-then-sudo two-step was removed in favor of the "
+            "always-sudo path backed by /etc/sudoers.d/sift-guard"
+        )
+        assert guestmount_calls, (
+            "Path A failed; Path B (guestmount) must fire"
+        )
+        # Order: sudo ewfmount runs before guestmount.
+        first_sudo_ewf = next(i for i, c in enumerate(calls) if c[:2] == ["sudo", "ewfmount"])
+        first_guestmount = next(i for i, c in enumerate(calls) if c[:1] == ["guestmount"])
+        assert first_sudo_ewf < first_guestmount
+
+    def test_raw_falls_back_to_guestmount_when_sudo_loop_mount_fails(
         self, monkeypatch, tmp_path: Path
     ):
-        """For raw images: mount -o ro,loop (direct then sudo) both
-        fail, so guestmount is attempted."""
+        """For raw images: ``sudo mount -o ro,loop`` fails, so
+        guestmount is attempted. Only one mount attempt happens
+        before the fallback; the direct-then-sudo retry was
+        removed."""
         mount_base = tmp_path / "sift-mounts"
         monkeypatch.setattr(disk_mount, "_MOUNT_BASE", mount_base)
         monkeypatch.delenv(SIFT_DISK_PREMOUNTED_PATH_ENV, raising=False)
@@ -469,7 +494,7 @@ class TestFallbackChainDispatch:
                 stdout = ""
                 stderr = ""
 
-            program = argv[0] if argv[0] != "sudo" else argv[2]
+            program = argv[0] if argv[0] != "sudo" else argv[1]
             # The actual Path-A subprocess calls (via _run_subprocess,
             # check=True) raise CalledProcessError. Cleanup calls
             # (check=False) just return success.
@@ -489,11 +514,24 @@ class TestFallbackChainDispatch:
         ):
             mount_disk_image("eid-raw-b", "/case/disk.raw")
 
-        programs = [c[0] if c[0] != "sudo" else c[2] for c in calls]
-        first_mount_direct = next(i for i, p in enumerate(programs) if p == "mount" and calls[i][0] != "sudo")
-        first_mount_sudo = next(i for i, p in enumerate(programs) if p == "mount" and calls[i][0] == "sudo")
-        first_guestmount = next(i for i, p in enumerate(programs) if p == "guestmount")
-        assert first_mount_direct < first_mount_sudo < first_guestmount
+        sudo_mount_calls = [c for c in calls if c[:2] == ["sudo", "mount"]]
+        bare_mount_calls = [c for c in calls if c[:1] == ["mount"]]
+        guestmount_calls = [c for c in calls if c[:1] == ["guestmount"]]
+
+        assert sudo_mount_calls, "Path A must invoke mount under sudo"
+        assert not bare_mount_calls, (
+            "mount must never be invoked without sudo"
+        )
+        assert guestmount_calls, (
+            "sudo mount -o ro,loop failed; guestmount must fire"
+        )
+        first_sudo_mount = next(
+            i for i, c in enumerate(calls) if c[:2] == ["sudo", "mount"]
+        )
+        first_guestmount = next(
+            i for i, c in enumerate(calls) if c[:1] == ["guestmount"]
+        )
+        assert first_sudo_mount < first_guestmount
 
     def test_vhdx_uses_guestmount_only(self, monkeypatch, tmp_path: Path):
         """VHDX has no Path A — guestmount is the first and only
