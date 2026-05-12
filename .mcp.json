@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "sift-guard": {
-      "command": "/home/galvarino/SANS/SANS/HACKATHON-2026/Standard_Forensic_Case/.venv/bin/python",
-      "args": ["-m", "server.main"],
-      "cwd": "/home/galvarino/SANS/SANS/HACKATHON-2026/Standard_Forensic_Case"
-    }
-  }
-}

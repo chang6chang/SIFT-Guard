@@ -508,32 +508,64 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     #      under ``~/results/case-data/`` instead of the operator's
     #      output-dir, so the orchestrator's own audit chain stayed
     #      empty and the post-run report saw zero findings).
-    mcp_config = resolve_mcp_config_path()
+    # Synthesize a per-case .mcp.json from the running install's own
+    # paths, never copy an on-disk template. The 2026-05-12 SRL v5
+    # incident: a repo-checked-in ``.mcp.json`` carried a dev-machine
+    # python path (``/home/galvarino/.../.venv/bin/python``) which
+    # ``git reset --hard`` restored over the setup-script-written
+    # /opt/sift-guard/.mcp.json. The CLI then copied that file
+    # verbatim into the case dir, Claude Code tried to exec a
+    # nonexistent interpreter, and every subagent saw
+    # ``sift-guard: failed`` and fell back to raw Bash.
+    #
+    # ``sys.executable`` is the venv python actively running the CLI
+    # — exactly the interpreter we want the MCP server to spawn
+    # under. The project root is derived from this file's location,
+    # which is install-relative whether we're in /opt/sift-guard or
+    # a dev checkout.
+    project_root = Path(__file__).resolve().parent.parent
     case_mcp = case_dir / ".mcp.json"
-    if mcp_config is not None:
-        base_config = json.loads(mcp_config.read_text(encoding="utf-8"))
-        sift_entry = base_config.setdefault("mcpServers", {}).setdefault("sift-guard", {})
-        # Merge an env block so additional operator-supplied env
-        # vars (e.g. SIFT_VOL_PATH, SIFT_DISK_PREMOUNTED_PATH) survive.
-        env_block = dict(sift_entry.get("env", {}))
-        env_block["SIFT_GUARD_CASE_DIR"] = str(case_dir)
-        sift_entry["env"] = env_block
-        case_mcp.write_text(json.dumps(base_config, indent=2), encoding="utf-8")
-        # Make dispatch's resolve_mcp_config_path pick THIS case's
-        # config (with the SIFT_GUARD_CASE_DIR env injection) rather
-        # than the install-default. The env var is dispatch's first
-        # lookup tier.
-        os.environ["SIFT_GUARD_MCP_CONFIG"] = str(case_mcp)
-        print(
-            f"[{_hms()}] MCP config:     {case_mcp} "
-            f"(SIFT_GUARD_CASE_DIR={case_dir})"
-        )
-    else:
-        print(
-            f"[{_hms()}] WARNING: no MCP config found "
-            "(SIFT_GUARD_MCP_CONFIG / repo / /opt/sift-guard) — analysts will "
-            "be unable to call sift-guard tools and the run will abort early."
-        )
+    synthesized = {
+        "mcpServers": {
+            "sift-guard": {
+                "command": sys.executable,
+                "args": ["-m", "server.main"],
+                "cwd": str(project_root),
+                "env": {"SIFT_GUARD_CASE_DIR": str(case_dir)},
+            }
+        }
+    }
+    # Preserve any additional env keys an operator already wired
+    # into the install's .mcp.json (e.g. SIFT_VOL_PATH,
+    # SIFT_DISK_PREMOUNTED_PATH) without inheriting the bad path
+    # fields that triggered v5. We re-read only the env block from
+    # the install config when present.
+    install_config_path = resolve_mcp_config_path()
+    if install_config_path is not None:
+        try:
+            install_config = json.loads(
+                install_config_path.read_text(encoding="utf-8")
+            )
+            install_env = (
+                install_config.get("mcpServers", {})
+                .get("sift-guard", {})
+                .get("env", {})
+            )
+            if isinstance(install_env, dict):
+                merged_env = dict(install_env)
+                merged_env["SIFT_GUARD_CASE_DIR"] = str(case_dir)
+                synthesized["mcpServers"]["sift-guard"]["env"] = merged_env
+        except (OSError, ValueError):
+            pass
+    case_mcp.write_text(json.dumps(synthesized, indent=2), encoding="utf-8")
+    # Make dispatch's resolve_mcp_config_path pick THIS case's
+    # config rather than walking the install fallback chain.
+    os.environ["SIFT_GUARD_MCP_CONFIG"] = str(case_mcp)
+    print(
+        f"[{_hms()}] MCP config:     {case_mcp} "
+        f"(python={sys.executable}, cwd={project_root}, "
+        f"SIFT_GUARD_CASE_DIR={case_dir})"
+    )
 
     staging_mode = args.staging_mode  # "symlink" (default) | "copy"
 

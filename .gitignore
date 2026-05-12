@@ -1,3 +1,12 @@
+# MCP server config — install/operator-specific paths, regenerated
+# per-run by sift_guard.cli using the running interpreter's
+# sys.executable. Committing it would re-bake one operator's
+# absolute paths into every other clone (the 2026-05-12 SRL v5
+# incident: a dev-machine python path baked into the repo's
+# .mcp.json overwrote /opt/sift-guard/.mcp.json on git reset and
+# caused every analyst subagent to fall back to raw Bash).
+.mcp.json
+
 # Case data — NEVER commit evidence
 case-data/
 *.raw
