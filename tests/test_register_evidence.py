@@ -355,3 +355,39 @@ class TestRegisterEvidenceIdempotency:
         assert rehash_called["count"] == 1, (
             "first registration must hash even when file is already 0o444"
         )
+
+
+class TestServerMainCaseDirEnv:
+    """The MCP server resolves CASE_DIR from SIFT_GUARD_CASE_DIR at
+    import time. The orchestrator's per-case .mcp.json injects this
+    via the ``env`` block so every spawned MCP-server child writes
+    to the operator's case_dir, not the legacy ``case-data`` default.
+    Regression test for the 2026-05-12 SRL re-run incident."""
+
+    def test_env_var_overrides_default(self, tmp_path: Path, monkeypatch):
+        # Module-level resolution is one-shot at import; reimport to
+        # re-evaluate the env var.
+        custom = tmp_path / "explicit-case"
+        monkeypatch.setenv("SIFT_GUARD_CASE_DIR", str(custom))
+
+        import importlib
+
+        import server.main as server_main
+
+        importlib.reload(server_main)
+        try:
+            assert server_main.CASE_DIR == str(custom)
+        finally:
+            # Restore default behavior for the rest of the suite.
+            monkeypatch.delenv("SIFT_GUARD_CASE_DIR", raising=False)
+            importlib.reload(server_main)
+            assert server_main.CASE_DIR == "case-data"
+
+    def test_unset_env_var_falls_back_to_case_data(self, monkeypatch):
+        monkeypatch.delenv("SIFT_GUARD_CASE_DIR", raising=False)
+        import importlib
+
+        import server.main as server_main
+
+        importlib.reload(server_main)
+        assert server_main.CASE_DIR == "case-data"

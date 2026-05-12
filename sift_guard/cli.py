@@ -37,6 +37,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import shutil
@@ -494,22 +495,39 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     case_dir.mkdir(parents=True, exist_ok=True)
     print(f"[{_hms()}] case directory: {case_dir}")
 
-    # Belt-and-braces MCP-config plumbing. The orchestrator's
-    # dispatch passes --mcp-config explicitly, so this is not the
-    # primary mechanism — but if a future Claude Code release ever
-    # changes the precedence to prefer cwd-discovery over the flag,
-    # we don't want to silently regress into the 2026-05-12 SRL
-    # failure where subagents started without the sift-guard MCP
-    # server. Copying (not symlinking — Claude Code reads it as a
-    # config file, ownership and read-permission matter) the file
-    # into <case_dir>/.mcp.json mirrors what `setup-sift-guard.sh`
-    # writes into the install dir.
+    # Per-case MCP config. The orchestrator's dispatch passes
+    # ``--mcp-config <case_dir>/.mcp.json`` to every subagent so:
+    #   1. Claude Code attaches the sift-guard MCP server (the
+    #      2026-05-12 SRL incident; fix in commit ac67677).
+    #   2. The MCP server runs with ``SIFT_GUARD_CASE_DIR=<case_dir>``
+    #      injected via the ``env`` block, so every tool call writes
+    #      audit/findings/correlations/extractions/iterations to the
+    #      operator's case dir — NOT to the server's hardcoded
+    #      ``case-data`` default (the second 2026-05-12 SRL incident:
+    #      runs produced findings, but the MCP server wrote them
+    #      under ``~/results/case-data/`` instead of the operator's
+    #      output-dir, so the orchestrator's own audit chain stayed
+    #      empty and the post-run report saw zero findings).
     mcp_config = resolve_mcp_config_path()
+    case_mcp = case_dir / ".mcp.json"
     if mcp_config is not None:
-        case_mcp = case_dir / ".mcp.json"
-        if not case_mcp.exists() or case_mcp.read_bytes() != mcp_config.read_bytes():
-            shutil.copyfile(mcp_config, case_mcp)
-        print(f"[{_hms()}] MCP config:     {mcp_config} → {case_mcp}")
+        base_config = json.loads(mcp_config.read_text(encoding="utf-8"))
+        sift_entry = base_config.setdefault("mcpServers", {}).setdefault("sift-guard", {})
+        # Merge an env block so additional operator-supplied env
+        # vars (e.g. SIFT_VOL_PATH, SIFT_DISK_PREMOUNTED_PATH) survive.
+        env_block = dict(sift_entry.get("env", {}))
+        env_block["SIFT_GUARD_CASE_DIR"] = str(case_dir)
+        sift_entry["env"] = env_block
+        case_mcp.write_text(json.dumps(base_config, indent=2), encoding="utf-8")
+        # Make dispatch's resolve_mcp_config_path pick THIS case's
+        # config (with the SIFT_GUARD_CASE_DIR env injection) rather
+        # than the install-default. The env var is dispatch's first
+        # lookup tier.
+        os.environ["SIFT_GUARD_MCP_CONFIG"] = str(case_mcp)
+        print(
+            f"[{_hms()}] MCP config:     {case_mcp} "
+            f"(SIFT_GUARD_CASE_DIR={case_dir})"
+        )
     else:
         print(
             f"[{_hms()}] WARNING: no MCP config found "

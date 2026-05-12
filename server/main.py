@@ -27,6 +27,8 @@ Tool surface as of week 8 (19 tools):
 
 from __future__ import annotations
 
+import os
+
 from mcp.server.fastmcp import FastMCP
 
 from typing import Any, Literal
@@ -100,7 +102,19 @@ from server.tools.rag import rag_query as _rag_query_impl
 
 # Fixed at server startup. The agent does NOT control where the case
 # directory lives. See CLAUDE.md rule 3.
-CASE_DIR = "case-data"
+#
+# Resolution order:
+#   1. ``SIFT_GUARD_CASE_DIR`` env var — set by the orchestrator's
+#      per-case .mcp.json so multiple parallel-dispatched subagents'
+#      MCP-server children all write to the same case directory the
+#      orchestrator chose.
+#   2. ``"case-data"`` relative to cwd — the original convention.
+#      Falls back to whichever cwd the server happens to run in.
+#
+# The agent has no path here: ``SIFT_GUARD_CASE_DIR`` is injected by
+# the orchestrator at dispatch time via the MCP config file's ``env``
+# block; the agent cannot see, set, or override it.
+CASE_DIR = os.environ.get("SIFT_GUARD_CASE_DIR", "case-data")
 
 
 mcp = FastMCP("sift-guard")
