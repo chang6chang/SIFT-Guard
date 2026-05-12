@@ -95,95 +95,83 @@ Output
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    %% --- Inputs ---
-    Reg["register_evidence<br/>SHA-256 + chmod 444 + audit"]
-    EvDir[("&lt;case-dir&gt;/evidence/<br/>read-only after registration")]
-    Reg --> EvDir
+The self-correction loop, from evidence to report:
 
-    %% --- MCP server tools ---
-    subgraph MCP["SIFT-Guard MCP server (19 typed tools)"]
-        Tier1Mem["Tier-1 memory<br/>vol_pslist · vol_psscan<br/>vol_pstree · vol_netscan<br/>vol_cmdline · vol_malfind"]
-        Tier1Disk["Tier-1 disk<br/>disk_mft_timeline · disk_prefetch<br/>disk_evtx · disk_registry<br/>persists extractions/ + extractions.jsonl"]
-        Tier2["Tier-2 analytical<br/>query_records · group_by<br/>set_difference · subtree"]
-        RAG["rag_query<br/>ATT&CK + Sigma retrieval<br/>(validator-only)"]
-        RecF["record_finding"]
-        RecC["record_correlation"]
-        UpdF["update_finding"]
+```mermaid
+flowchart LR
+    E[("Evidence<br/>chmod 444<br/>SHA-256 registered")]
+
+    O["Orchestrator<br/>(Python)<br/>5-step loop"]
+
+    subgraph A[" Analyst subagents — parallel "]
+        direction TB
+        PA[process_analyst]
+        NA[network_analyst]
+        DA[disk_analyst]
     end
 
-    EvDir -->|read-only| Tier1Mem
-    EvDir -->|read-only ro mount| Tier1Disk
-    Tier1Mem -.->|reads cached extractions| Tier2
-    Tier1Disk -.->|reads cached extractions| Tier2
+    V[validator]
 
-    %% --- Subagents + orchestrator ---
-    PA["process_analyst<br/>subagent"]
-    NA["network_analyst<br/>subagent"]
-    DA["disk_analyst<br/>subagent"]
-    Val["validator<br/>subagent"]
-    Orch["Orchestrator (Python)<br/>5-step loop:<br/>ANALYZE → CORRELATE →<br/>PROMOTE → PLAN → WRITE"]
+    M["MCP server<br/>19 typed tools"]
 
-    PA --> Tier1Mem
-    PA --> Tier2
-    NA --> Tier1Mem
-    NA --> Tier2
-    DA --> Tier1Disk
-    DA --> Tier2
-    Val --> Tier1Mem
-    Val --> Tier1Disk
-    Val --> Tier2
+    C[("Hash-chained logs<br/>findings · correlations<br/>iterations · audit")]
 
-    Val --> RAG
+    R["report.md<br/>report.json"]
 
-    PA --> RecF
-    NA --> RecF
-    DA --> RecF
-    Val --> RecC
-    Orch --> UpdF
+    E -.->|read-only| M
+    O -->|dispatch| A
+    A -->|tool calls| M
+    M -->|append| C
+    A -->|DRAFT findings| C
+    O -->|dispatch| V
+    V -->|tool calls<br/>+ rag_query| M
+    V -->|correlations| C
+    C -->|read state| O
+    O -->|R1–R6 promotion<br/>UPDATE findings| C
+    O --> R
 
-    Orch -.->|dispatch| PA
-    Orch -.->|dispatch| NA
-    Orch -.->|dispatch| DA
-    Orch -.->|dispatch| Val
-
-    Findings[("findings.jsonl<br/>DRAFT + UPDATE entries")]
-    Corrs[("correlations.jsonl")]
-    Iters[("iterations.jsonl")]
-    Audit[("audit/sift-guard-mcp.jsonl<br/>every tool call, hash-chained")]
-
-    RecF --> Findings
-    UpdF --> Findings
-    RecC --> Corrs
-    Orch --> Iters
-
-    Reg --> Audit
-    Tier1Mem --> Audit
-    Tier1Disk --> Audit
-    Tier2 --> Audit
-    RAG --> Audit
-    RecF --> Audit
-    RecC --> Audit
-    UpdF --> Audit
-
-    classDef analyst fill:#cce5ff,stroke:#0044cc,color:#003366
+    classDef agent fill:#cce5ff,stroke:#0044cc,color:#003366
     classDef validator fill:#ffe5cc,stroke:#cc6600,color:#663300
     classDef orchestrator fill:#d5e8d4,stroke:#2e7d32,color:#1b5e20
-    classDef chain fill:#fafafa,stroke:#888,stroke-dasharray:3 3,color:#333
-    classDef storage fill:#fff8dc,stroke:#aa9,color:#333
+    classDef store fill:#fff8dc,stroke:#aa9,color:#333
     classDef tool fill:#ffffff,stroke:#444,color:#222
 
-    class PA,NA,DA analyst
-    class Val validator
-    class Orch orchestrator
-    class Findings,Corrs,Iters,Audit chain
-    class EvDir storage
-    class Reg,Tier1Mem,Tier1Disk,Tier2,RAG,RecF,RecC,UpdF tool
+    class PA,NA,DA agent
+    class V validator
+    class O orchestrator
+    class E,C,R store
+    class M tool
 ```
 
+**Loop stages.** ANALYZE dispatches every analyst subagent in
+parallel against the registered evidence. CORRELATE dispatches the
+validator over the resulting DRAFT findings; it can re-query the
+evidence but cannot write findings itself. PROMOTE applies R1–R6
+rules over correlations and emits `update_finding` calls. PLAN
+generates focus context for the next iteration. WRITE renders the
+final report. The loop terminates on zero unresolved findings, a
+stable disputed set, max-iterations, or token-budget exhaustion.
+
+**MCP tool surface, by writer role:**
+
+| Tool family | Callers | Tools |
+|---|---|---|
+| Tier-1 memory | process_analyst, network_analyst, validator | `vol_pslist` · `vol_psscan` · `vol_pstree` · `vol_netscan` · `vol_cmdline` · `vol_malfind` |
+| Tier-1 disk | disk_analyst, validator | `disk_mft_timeline` · `disk_prefetch` · `disk_evtx` · `disk_registry` |
+| Tier-2 analytical | every subagent | `query_records` · `group_by` · `set_difference` · `subtree` |
+| Knowledge retrieval | validator only | `rag_query` (MITRE ATT&CK + SigmaHQ) |
+| Evidence registration | CLI only | `register_evidence` |
+| Finding emission | analysts only | `record_finding` (DRAFT) |
+| Correlation emission | validator only | `record_correlation` |
+| Finding mutation | orchestrator only | `update_finding` (promotion + state changes) |
+
+Role restrictions are enforced architecturally: each subagent's
+`.claude/agents/<role>.md` frontmatter lists only the tools that
+role is allowed to call, and the MCP server independently rejects
+out-of-role write attempts at the schema layer.
+
 See [`docs/architecture-diagram.md`](docs/architecture-diagram.md)
-for the legend, the 19-tool table by writer role, and the loop
+for the legend, the full tool-surface breakdown, and the loop-stage
 narrative.
 
 ## Prerequisites
