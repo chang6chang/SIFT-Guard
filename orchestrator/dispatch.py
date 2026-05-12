@@ -177,12 +177,33 @@ class DispatchResult:
     mcp_server_status: dict[str, str] = field(default_factory=dict)
     raw_events: list[dict[str, Any]] = field(default_factory=list)
 
+    # States Claude Code emits in the system/init event that mean
+    # "the .mcp.json was loaded and the server is at worst still
+    # finishing its handshake." `pending` is the common case for
+    # locally-spawned stdio servers because Claude Code emits init
+    # before every MCP server has finished attaching; tool calls
+    # later in the stream still succeed once the handshake lands.
+    # The 2026-05-12 SRL-2015 v4 incident burned a whole rate-limit
+    # window because the guard treated `pending` as failure and
+    # bailed every subagent in <20s.
+    _MCP_ATTACHED_STATES = frozenset(
+        {"connected", "pending", "attached", "ready", "ok"}
+    )
+
     @property
     def sift_guard_mcp_attached(self) -> bool:
-        """True iff the subagent reported the sift-guard MCP server as
-        connected. False when the init event is missing the entry or
-        when its status is anything other than ``connected``."""
-        return self.mcp_server_status.get("sift-guard") == "connected"
+        """True iff the subagent's init event listed sift-guard in a
+        non-failed state. Missing-from-dict is treated as
+        not-attached (catches the original ``--mcp-config not
+        passed`` bug); explicit ``failed`` / ``needs-auth`` /
+        ``error`` states are also treated as not-attached. Mid-
+        handshake states (``pending``, ``connected``, ``attached``,
+        ``ready``, ``ok``) all count as attached for guard
+        purposes."""
+        status = self.mcp_server_status.get("sift-guard")
+        if status is None:
+            return False
+        return status in self._MCP_ATTACHED_STATES
 
     @property
     def succeeded(self) -> bool:
@@ -455,12 +476,14 @@ def dispatch_subagent(
     # eight subagents that won't write anything.
     server_status = _extract_mcp_server_status(events)
     sift_status = server_status.get("sift-guard")
-    if sift_status != "connected":
+    if sift_status not in DispatchResult._MCP_ATTACHED_STATES:
         logger.error(
             "subagent %s started without sift-guard MCP attached "
-            "(mcp_servers=%s); marking dispatch unsucceeded so "
-            "findings-less runs surface immediately",
+            "(sift_guard_status=%r, mcp_servers=%s); marking "
+            "dispatch unsucceeded so findings-less runs surface "
+            "immediately",
             agent,
+            sift_status,
             server_status or "<no init event>",
         )
 

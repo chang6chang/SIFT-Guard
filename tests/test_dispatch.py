@@ -238,6 +238,92 @@ class TestDispatchSubagentMcpConfigArg:
         assert result.mcp_server_status == {}
         assert result.succeeded is False
 
+    def _stream_with_status(self, sift_status: str) -> str:
+        """Like ``_stream`` but with an explicit sift-guard status string,
+        for covering Claude Code's mid-handshake (``pending``) and
+        explicit-failure (``needs-auth``, ``error``) shapes."""
+        init = {
+            "type": "system",
+            "mcp_servers": [{"name": "sift-guard", "status": sift_status}],
+        }
+        result = {
+            "type": "result",
+            "session_id": "sid",
+            "stop_reason": "end_turn",
+            "num_turns": 1,
+            "duration_ms": 100,
+            "duration_api_ms": 50,
+            "total_cost_usd": 0.0,
+            "usage": {
+                "input_tokens": 10,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "output_tokens": 5,
+            },
+        }
+        return json.dumps(init) + "\n" + json.dumps(result) + "\n"
+
+    @pytest.mark.parametrize(
+        "sift_status",
+        ["connected", "pending", "attached", "ready", "ok"],
+    )
+    def test_dispatch_succeeds_when_sift_guard_in_mid_handshake_or_attached(
+        self, tmp_path: Path, monkeypatch, sift_status: str
+    ):
+        # Claude Code emits the system/init event before MCP servers
+        # finish their handshake. For locally-spawned stdio servers
+        # the typical status at init is ``pending``; tool calls
+        # succeed once the handshake completes. The 2026-05-12
+        # SRL-2015 v4 incident proved this: every subagent's init
+        # event showed ``{'sift-guard': 'pending'}``, the guard
+        # treated it as failure, and 12 dispatches bailed in <20s
+        # each, producing zero findings. The guard must accept any
+        # non-failure state.
+        cfg = tmp_path / ".mcp.json"
+        cfg.write_text('{"mcpServers": {}}')
+        monkeypatch.setenv("SIFT_GUARD_MCP_CONFIG", str(cfg))
+
+        def fake_run(cmd, **kwargs):
+            return self._fake_proc(self._stream_with_status(sift_status))
+
+        with patch.object(dispatch_mod.subprocess, "run", side_effect=fake_run):
+            result = dispatch_subagent(
+                "process_analyst",
+                prompt="evidence_id: foo",
+                cwd=tmp_path,
+            )
+
+        assert result.sift_guard_mcp_attached, (
+            f"status={sift_status!r} should be accepted as attached"
+        )
+        assert result.succeeded
+
+    @pytest.mark.parametrize(
+        "sift_status", ["failed", "needs-auth", "error", "disconnected"]
+    )
+    def test_dispatch_fails_on_explicit_failure_states(
+        self, tmp_path: Path, monkeypatch, sift_status: str
+    ):
+        cfg = tmp_path / ".mcp.json"
+        cfg.write_text('{"mcpServers": {}}')
+        monkeypatch.setenv("SIFT_GUARD_MCP_CONFIG", str(cfg))
+
+        def fake_run(cmd, **kwargs):
+            return self._fake_proc(self._stream_with_status(sift_status))
+
+        with patch.object(dispatch_mod.subprocess, "run", side_effect=fake_run):
+            result = dispatch_subagent(
+                "process_analyst",
+                prompt="evidence_id: foo",
+                cwd=tmp_path,
+            )
+
+        assert result.sift_guard_mcp_attached is False, (
+            f"status={sift_status!r} must be rejected"
+        )
+        assert result.succeeded is False
+        assert result.mcp_server_status.get("sift-guard") == sift_status
+
     def test_argv_omits_flag_when_no_config_resolvable(
         self, tmp_path: Path, monkeypatch
     ):
