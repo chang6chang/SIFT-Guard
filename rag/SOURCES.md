@@ -2,8 +2,9 @@
 
 This file is the inventory of upstream knowledge sources the SIFT-Guard
 RAG pipeline draws from. Every record returned by `rag.retriever.search`
-carries its `source`, `citation_url`, and `license` so the week-6
-validator can ground hypotheses in named, attributable text.
+carries its `source`, `citation_url`, and `license` so the validator
+subagent can ground its correlation hypotheses in named, attributable
+text.
 
 When adding a new source, append a section here, set the `source` and
 `license` fields on the records produced by the ingest script, and
@@ -11,7 +12,7 @@ document the parsing decisions so a re-run is reproducible.
 
 ---
 
-## MITRE ATT&CK Enterprise — present in this PR
+## MITRE ATT&CK Enterprise
 
 | Field | Value |
 |---|---|
@@ -43,7 +44,7 @@ something different against v15 vs v19.
 When MITRE ships a new ATT&CK release and we want to upgrade:
 
 1. Edit `rag/ingest_attack.py`, change `ATTACK_TAG` to the new tag.
-2. Run `python -m rag.ingest_attack` (regenerates `rag/data/`).
+2. Run `python -m rag.build_index` (regenerates `rag/data/`).
 3. Re-run unit tests — fixture covers structural invariants and is
    independent of the upstream version.
 4. Run a smoke retrieval — the fixture-coverage test catches schema
@@ -53,7 +54,7 @@ When MITRE ships a new ATT&CK release and we want to upgrade:
 
 ---
 
-## SigmaHQ Windows rules — present in this PR
+## SigmaHQ Windows rules
 
 | Field | Value |
 |---|---|
