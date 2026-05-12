@@ -87,17 +87,34 @@ record_component() {
 # on success, 1 on failure. Each call writes /tmp/sift-guard-install-
 # <pkg>.log so the operator can diff what each package complained
 # about — preferable to one mega-log on a single apt-get install.
+#
+# The dpkg -s check fires FIRST so a fresh apt cache lookup is
+# skipped entirely for packages that are already present — this is
+# the common case on SIFT Workstation, which ships most of the
+# forensic surface (ewfmount, guestmount, evtx-dump, etc.)
+# pre-installed via the SIFT PPA. apt-get install is gated by a
+# 30 s timeout so a slow PPA mirror doesn't stall the whole
+# script; the per-package logfile records the timeout exit code
+# (124) verbatim so triage is one tail away.
+APT_INSTALL_TIMEOUT_SECONDS=30
+
 try_apt_install() {
     local pkg="$1"
     local logfile="/tmp/sift-guard-install-${pkg}.log"
-    if dpkg -l "${pkg}" 2>/dev/null | grep -q "^ii"; then
+    if dpkg -s "${pkg}" 2>/dev/null | grep -q "^Status: install ok installed"; then
         ok "${pkg} already installed"
         return 0
     fi
-    if DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkg}" \
-            > "${logfile}" 2>&1; then
+    if timeout "${APT_INSTALL_TIMEOUT_SECONDS}" \
+            env DEBIAN_FRONTEND=noninteractive \
+            apt-get install -y "${pkg}" > "${logfile}" 2>&1; then
         ok "${pkg} installed"
         return 0
+    fi
+    local rc=$?
+    if [[ ${rc} -eq 124 ]]; then
+        warn "${pkg} install timed out after ${APT_INSTALL_TIMEOUT_SECONDS}s (slow repo mirror)"
+        return 1
     fi
     warn "${pkg} install failed — see ${logfile} (last 5 lines below)"
     tail -5 "${logfile}" | sed 's/^/         /'
@@ -238,12 +255,41 @@ echo "============================================="
 echo "  Step 2/14 — System dependencies"
 echo "============================================="
 
-info "Refreshing apt package index..."
-if apt-get update > /tmp/sift-guard-install-apt-update.log 2>&1; then
-    ok "apt-get update"
+# apt-get update on a fresh SIFT install can stall for minutes when
+# the SIFT PPA mirror (ppa.launchpadcontent.net/sift/stable) is slow
+# to respond. We skip the refresh entirely when /var/cache/apt is
+# already current and gate the actual call by a 60 s timeout. The
+# SIFT image ships most of the forensic surface pre-installed; a
+# stale package list does not block the script from making
+# progress, and the per-package try_apt_install logs surface any
+# package that needs a fresher index.
+APT_UPDATE_TIMEOUT_SECONDS=60
+APT_CACHE_MAX_AGE_SECONDS=3600
+APT_CACHE_FILE="/var/cache/apt/pkgcache.bin"
+
+if [[ -f "${APT_CACHE_FILE}" ]]; then
+    APT_CACHE_AGE=$(( $(date +%s) - $(stat -c %Y "${APT_CACHE_FILE}") ))
 else
-    warn "apt-get update reported errors (see /tmp/sift-guard-install-apt-update.log)"
-    warn "Continuing — individual installs will surface specific failures."
+    APT_CACHE_AGE=$(( APT_CACHE_MAX_AGE_SECONDS + 1 ))
+fi
+
+if [[ ${APT_CACHE_AGE} -lt ${APT_CACHE_MAX_AGE_SECONDS} ]]; then
+    ok "apt cache is ${APT_CACHE_AGE}s old (<${APT_CACHE_MAX_AGE_SECONDS}s); skipping apt-get update"
+else
+    info "Refreshing apt package index (timeout ${APT_UPDATE_TIMEOUT_SECONDS}s)..."
+    if timeout "${APT_UPDATE_TIMEOUT_SECONDS}" \
+            apt-get update > /tmp/sift-guard-install-apt-update.log 2>&1; then
+        ok "apt-get update"
+    else
+        UPDATE_RC=$?
+        if [[ ${UPDATE_RC} -eq 124 ]]; then
+            warn "apt-get update timed out after ${APT_UPDATE_TIMEOUT_SECONDS}s (slow repo mirror)."
+            warn "Continuing — most SIFT-Guard dependencies are pre-installed on SIFT Workstation."
+        else
+            warn "apt-get update reported errors (see /tmp/sift-guard-install-apt-update.log)"
+            warn "Continuing — individual installs will surface specific failures."
+        fi
+    fi
 fi
 
 # Core packages: no SIFT-shipped conflicts, install plainly.
@@ -340,7 +386,12 @@ if [[ "${PYTHON_MAJOR}" != "3" ]] || [[ "${PYTHON_MINOR}" -lt 11 ]]; then
     try_apt_install software-properties-common
     if add-apt-repository -y ppa:deadsnakes/ppa \
             > /tmp/sift-guard-install-deadsnakes.log 2>&1; then
-        apt-get update > /tmp/sift-guard-install-apt-update-2.log 2>&1 || true
+        # Refresh the package index so the newly-added deadsnakes
+        # PPA's contents are visible. Timeout-gated for the same
+        # reason as the Step-2 refresh: a slow PPA mirror should
+        # not stall the script.
+        timeout "${APT_UPDATE_TIMEOUT_SECONDS}" \
+            apt-get update > /tmp/sift-guard-install-apt-update-2.log 2>&1 || true
         for p in python3.12 python3.12-venv python3.12-dev; do
             try_apt_install "$p"
         done
@@ -709,10 +760,11 @@ fi
 # ---------------------------------------------------------------------------
 # 12. Disk-mount privilege wiring (sudoers + fuse group + env defaults)
 # ---------------------------------------------------------------------------
-# disk_mount.py walks a fallback chain for ewfmount + loop-mount:
-# (1) direct call, (2) `sudo -n` retry, (3) guestmount FUSE. We wire
-# steps (1) and (2) here so the fast path is the default. Step (3) is
-# unconditional fallback handled by libguestfs.
+# disk_mount.py always invokes ewfmount, mount, umount, and fusermount
+# under sudo (no direct-first retry). This step installs the NOPASSWD
+# sudoers entry that makes those calls non-interactive. If sudoers
+# validation fails the install still works — disk_mount falls back to
+# guestmount, libguestfs' root-free FUSE mounter.
 
 echo ""
 echo "============================================="
