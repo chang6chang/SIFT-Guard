@@ -368,25 +368,18 @@ def dispatch_subagent(
     All three propagate as DispatchResult.succeeded == False; the
     caller decides how to react.
     """
-    cmd: list[str] = [
-        "claude",
-        "-p",
-        "--agent",
-        agent,
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--permission-mode",
-        "bypassPermissions",
-        "--max-budget-usd",
-        str(max_budget_usd),
-    ]
-    # Pass --mcp-config explicitly so the subagent loads the sift-guard
-    # MCP server regardless of cwd. Without this, the subagent's
-    # frontmatter ``tools:`` allow-list refers to names that don't
-    # exist (the MCP server isn't loaded), the allow-list silently
-    # fails open, and the agent improvises with Bash/Write — writing
-    # findings to .md files instead of calling record_finding.
+    # ``--mcp-config`` is variadic (``<configs...>`` per claude --help)
+    # so it greedily consumes subsequent argv elements as additional
+    # config paths until it sees a recognized flag. Place it at the
+    # start (immediately after ``claude -p``) so the following
+    # ``--agent`` token terminates the variadic capture cleanly.
+    # The prompt MUST be the final positional and must be preceded
+    # by a fixed-arity flag (``--max-budget-usd <amount>``) — never
+    # adjacent to ``--mcp-config``. See 2026-05-12 SRL re-run logs
+    # where the wrong argv order caused every dispatch to fail with
+    # ``MCP config file not found: /home/sansforensics/evidence_id:…``
+    # (the prompt itself was being interpreted as a config path).
+    cmd: list[str] = ["claude", "-p"]
     mcp_config = resolve_mcp_config_path()
     if mcp_config is not None:
         cmd.extend(["--mcp-config", str(mcp_config)])
@@ -396,7 +389,20 @@ def dispatch_subagent(
             "tools and will be flagged as not-attached after dispatch",
             agent,
         )
-    cmd.append(prompt)
+    cmd.extend(
+        [
+            "--agent",
+            agent,
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-mode",
+            "bypassPermissions",
+            "--max-budget-usd",
+            str(max_budget_usd),
+            prompt,
+        ]
+    )
     logger.info(
         "dispatching subagent %s (cwd=%s, mcp_config=%s)",
         agent,
