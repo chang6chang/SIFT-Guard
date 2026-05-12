@@ -218,6 +218,95 @@ class DispatchResult:
         return self.stop_reason in ("end_turn", "tool_use", "stop_sequence")
 
 
+# Per-agent mcp__sift-guard__* tool list, mirroring each agent's
+# frontmatter ``tools:`` block. Used to construct the
+# schema-preload preamble at the top of every dispatched prompt:
+# Claude Code surfaces MCP tools as *deferred* (the schema is not
+# preloaded; agents must call ``ToolSearch`` first), and analyst
+# system prompts on their own do not know this protocol. Without
+# the preamble, subagents skip the MCP layer entirely and fall
+# through to the default Bash surface — the 2026-05-12 SRL v6
+# incident (12 dispatches × ~600s each, 0 MCP tool calls, 0
+# findings).
+_AGENT_MCP_TOOLS: dict[str, tuple[str, ...]] = {
+    "process_analyst": (
+        "register_evidence",
+        "vol_pslist",
+        "vol_psscan",
+        "vol_pstree",
+        "vol_cmdline",
+        "vol_malfind",
+        "query_records",
+        "group_by",
+        "set_difference",
+        "subtree",
+        "record_finding",
+    ),
+    "network_analyst": (
+        "register_evidence",
+        "vol_netscan",
+        "query_records",
+        "group_by",
+        "record_finding",
+    ),
+    "disk_analyst": (
+        "register_evidence",
+        "disk_mft_timeline",
+        "disk_prefetch",
+        "disk_evtx",
+        "disk_registry",
+        "query_records",
+        "group_by",
+        "set_difference",
+        "subtree",
+        "record_finding",
+    ),
+    "validator": (
+        "register_evidence",
+        "vol_pslist",
+        "vol_psscan",
+        "vol_pstree",
+        "vol_netscan",
+        "query_records",
+        "group_by",
+        "set_difference",
+        "subtree",
+        "record_correlation",
+        "rag_query",
+    ),
+}
+
+
+def _schema_preload_preamble(agent: str) -> str:
+    """Build the leading instruction that tells the model to batch-load
+    every mcp__sift-guard__* tool's JSON schema via ToolSearch
+    before doing anything else. Returns '' for unknown agents."""
+    tools = _AGENT_MCP_TOOLS.get(agent)
+    if not tools:
+        return ""
+    select_arg = ",".join(f"mcp__sift-guard__{t}" for t in tools)
+    return (
+        "**TOOL SCHEMA PRELOAD — RUN BEFORE ANYTHING ELSE.**\n\n"
+        "Your `mcp__sift-guard__*` tools are surfaced as *deferred* "
+        "tools by Claude Code: each appears in your tool list but "
+        "its JSON schema is not preloaded, so calling one directly "
+        "fails with `InputValidationError: schema not loaded`. "
+        "Your very first action MUST be a single `ToolSearch` call "
+        "that selects every mcp__sift-guard__* tool you may need.\n\n"
+        f"Call exactly this once:\n\n"
+        f"    ToolSearch(query=\"select:{select_arg}\", "
+        f"max_results={len(tools)})\n\n"
+        "After it returns, every listed tool becomes callable "
+        "directly. Do NOT skip this step. Do NOT fall back to Bash "
+        "or any other shell-based parser when an MCP tool exists "
+        "for the task — Bash invocations do not enter the audit "
+        "chain, do not produce evidence_refs the validator can "
+        "cite, and findings recorded from Bash output cannot pass "
+        "schema validation. Every tool-derived observation in this "
+        "session MUST come from an mcp__sift-guard__* call.\n"
+    )
+
+
 def _build_prompt(
     *,
     agent: str,
@@ -321,7 +410,9 @@ def _build_prompt(
             "Cross-host correlations are independent-source corroborations "
             "and feed the same R3 strong-corroboration promotion path."
         )
-    return intro + "\n" + "\n".join(lines)
+    preamble = _schema_preload_preamble(agent)
+    body = intro + "\n" + "\n".join(lines)
+    return preamble + "\n" + body if preamble else body
 
 
 def _parse_stream_json(stdout: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
