@@ -35,16 +35,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from server.schemas import (
-    ContradictsCorrelation,
-    CorroboratesCorrelation,
     CorrelationChainEntry,
     CrossHostCorrelation,
     DraftFinding,
     FindingChainEntry,
     FindingUpdate,
-    RequestFollowupCorrelation,
-    StrengthensCorrelation,
-    WeakensCorrelation,
 )
 
 

@@ -54,44 +54,21 @@ timestamp>/` subdirectory per run. Override with `--output-dir`.
 
 ## CLI reference
 
-```text
-sift-guard analyze <evidence-dir> [flags]
+Most common flags:
 
-Staging
-  --no-copy             (DEFAULT) Register evidence in place. The
-                        originals are chmod 444'd and symlinks
-                        under <output-dir>/evidence/<host>/ point
-                        to them. No disk-space doubling.
-  --copy                Deep-copy evidence into the case dir before
-                        registration. Use when sources are on
-                        read-only media or you want a self-contained
-                        case dir. Slow on large cases (~50 GB = 10-20
-                        min to stage).
+| Flag | Default | Purpose |
+|---|---|---|
+| `--output-dir PATH` | `$SIFT_GUARD_OUTPUT_DIR` | Case directory. |
+| `--max-iterations N` | 6 | Hard cap on loop iterations. |
+| `--token-budget N` | 500K + 250K/host (max 5M) | Per-case token cap. |
+| `--parallel-max-workers N` | 12 | Concurrent analyst subagents. |
+| `--no-parallel` | off | Sequential dispatch (debugging). |
+| `--no-copy` / `--copy` | `--no-copy` | Register evidence in place (default) vs deep-copy. |
+| `--scan-only` | off | Show the host-grouping manifest and exit. No tokens. |
+| `--yes` | off | Skip the 5-second manifest review pause. |
+| `--verbose` | off | Show every MCP tool call in the live UI. |
 
-Dispatch
-  --max-iterations N    Hard cap on loop iterations. Default: 6.
-  --token-budget N      Override the per-case token budget heuristic
-                        (500K base + 250K per host, capped at 5M).
-  --no-parallel         Disable parallel analyst dispatch. Falls
-                        back to a per-host-per-analyst sequential
-                        walk. Use for debugging or token-rationing.
-  --parallel-max-workers N
-                        Cap simultaneously-running analyst subagents
-                        under parallel mode. Default: 12 (4 hosts ×
-                        3 analysts with no queueing).
-
-Pre-flight & previews
-  --scan-only           Print the host-grouping manifest and exit.
-                        No registration, no tokens.
-  --no-preflight        Skip the per-image OS + symbol-pack probe.
-  --yes                 Skip the 5-second manifest review pause.
-
-Output
-  --output-dir PATH     Case directory. Default precedence:
-                        --output-dir > $SIFT_GUARD_OUTPUT_DIR > cwd.
-  --no-report           Skip report.md / report.json generation.
-  --verbose             Show every MCP tool call in the live UI.
-```
+Full surface: `sift-guard analyze --help`.
 
 ## Architecture
 
@@ -266,10 +243,11 @@ Preview the host grouping without burning tokens:
 sift-guard analyze /path/to/evidence/dir --scan-only
 ```
 
-The legacy single-evidence shim remains supported for one-off runs:
+Single-evidence orchestration uses the `run` subcommand directly
+when you want to bypass the `sift-guard analyze` wrapper:
 
 ```bash
-PYTHONPATH=. .venv/bin/python -m orchestrator.run \
+PYTHONPATH=. .venv/bin/python -m orchestrator.main run \
     --case-dir case-data \
     --evidence-id <uuid>
 ```
@@ -294,7 +272,7 @@ print(register_evidence('case-data/evidence/synthetic-injected.raw',
 
 .venv/bin/python scripts/seed_synthetic_demo.py "$EID"
 
-PYTHONPATH=. .venv/bin/python -m orchestrator.run \
+PYTHONPATH=. .venv/bin/python -m orchestrator.main run \
     --case-dir case-data --evidence-id "$EID" --max-iterations 3
 ```
 
@@ -343,59 +321,15 @@ Opus); see the
 
 ## Troubleshooting
 
-**`sift-guard: command not found` after install.** The installer
-writes `/usr/local/bin/sift-guard` and sets
-`SIFT_GUARD_OUTPUT_DIR` via `/etc/profile.d/sift-guard.sh` — both
-require a new shell. Open a new terminal or
-`source /etc/profile.d/sift-guard.sh`.
-
-**Subagents fall back to raw Bash; audit chain only has
-`register_evidence` entries.** Claude Code surfaces MCP tools as
-*deferred* — analyst subagents must call `ToolSearch` once to load
-each schema before invoking. The orchestrator prepends a schema-
-preload preamble to every dispatch prompt to handle this; if you
-see this symptom after editing prompts, ensure the preamble is
-still emitted (see `orchestrator/dispatch.py:_schema_preload_preamble`).
-
-**`disk_*:rejected_mount_failed` in the audit chain.** Disk mounts
-use `sudo ewfmount` / `sudo mount -o ro,loop`, which need the
-NOPASSWD sudoers entry the installer writes to
-`/etc/sudoers.d/sift-guard`. Verify with `sudo -n ewfmount -V`.
-The fallback is `guestmount` (FUSE, no root); if the rejection
-persists, the image format may be unsupported by both paths.
-
-**Volatility symbol tables missing.** First-run `vol_pslist` on a
-new image will report `KdDebuggerDataBlock not found` without the
-matching symbol pack. The installer downloads the standard
-Windows packs into `/opt/volatility3/symbols`. For non-standard
-builds, drop the `.json.xz` into that directory or override with
-`VOLATILITY3_SYMBOL_DIRS`.
-
-**`ANTHROPIC_API_KEY` or `claude login` missing.** Without one,
-the Claude Code CLI fails analyst dispatch and the orchestrator
-records zero findings. Verify with `claude -p "say READY"` —
-should print `READY` in ~5 seconds.
-
-**`Path outside evidence directory rejected`.** The
-`register_evidence` tool refuses any path not under
-`<case-dir>/evidence/`. The CLI handles this automatically; if
-you're calling `register_evidence` directly, move the file into
-the evidence dir first.
-
-**`Permission denied` re-registering evidence.** Files under
-`<case-dir>/evidence/` are `chmod 444` and the parent dir is
-`chmod 555` after registration — the architectural defense
-against accidental modification. To re-register from scratch:
-`chmod 644` the file, remove its entry from `<case-dir>/CASE.yaml`,
-and re-run. The CLI's idempotent-skip path detects already-
-registered files by hash and parent dir state and skips the
-re-write — no manual reset usually needed.
-
-**RAG index missing or stale.** A "RAG index missing at …" error
-from `rag_query` means `rag/data/attack-enterprise.faiss` isn't on
-disk. Run `python -m rag.build_index` (needs GitHub network
-access). For a full refresh after bumping `ATTACK_TAG` /
-`SIGMA_TAG`, delete `rag/data/` and rebuild.
+| Symptom | Fix |
+|---|---|
+| `sift-guard: command not found` after install | Open a new shell, or `source /etc/profile.d/sift-guard.sh`. |
+| Subagents fall back to raw Bash; audit chain only has `register_evidence` | Prompt is missing the schema-preload preamble. See `orchestrator/dispatch.py:_schema_preload_preamble`. |
+| `disk_*:rejected_mount_failed` | NOPASSWD sudoers missing for `ewfmount` / `mount`. Verify with `sudo -n ewfmount -V`. Fallback is `guestmount` (FUSE, no root). |
+| Volatility `KdDebuggerDataBlock not found` | Symbol pack missing for that image's build. Drop the `.json.xz` into `/opt/volatility3/symbols` or set `VOLATILITY3_SYMBOL_DIRS`. |
+| `ANTHROPIC_API_KEY` / `claude login` missing | Verify with `claude -p "say READY"` — should print `READY` in ~5 s. |
+| `Permission denied` re-registering evidence | Registered files are `chmod 444`. The CLI's idempotent-skip path usually handles re-runs; otherwise `chmod 644` the file, drop its entry from `CASE.yaml`, re-run. |
+| RAG index missing or stale | Run `python -m rag.build_index`. For a full refresh, delete `rag/data/` first. |
 
 ## Documentation
 

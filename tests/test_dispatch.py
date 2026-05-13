@@ -26,7 +26,6 @@ import pytest
 
 from orchestrator import dispatch as dispatch_mod
 from orchestrator.dispatch import (
-    DispatchResult,
     _extract_mcp_server_status,
     dispatch_subagent,
     resolve_mcp_config_path,

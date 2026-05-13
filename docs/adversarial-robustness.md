@@ -112,7 +112,7 @@ The orchestrator was then driven against this evidence_id with the
 same CLI invocation used for the Rocba run:
 
 ```bash
-PYTHONPATH=. .venv/bin/python -m orchestrator.run \
+PYTHONPATH=. .venv/bin/python -m orchestrator.main run \
   --case-dir case-data \
   --evidence-id c60883bc-8698-40dd-9ff3-ad9718f05e7e
 ```

@@ -5,9 +5,6 @@ Two subcommands:
     python -m orchestrator.main run --evidence-id <uuid>
     python -m orchestrator.main run-case --evidence-dir <path>
 
-The legacy single-evidence entrypoint `python -m orchestrator.run`
-remains as a thin shim that forwards to `run` here.
-
 Subcommand summaries
 --------------------
 

@@ -778,7 +778,7 @@ cover full reproduction. In summary:
   register_evidence(path='case-data/evidence/Rocba-Memory.raw', case_dir='case-data')"
 
 # 3. Drive the orchestrator loop.
-PYTHONPATH=. .venv/bin/python -m orchestrator.run \
+PYTHONPATH=. .venv/bin/python -m orchestrator.main run \
   --case-dir case-data \
   --evidence-id <evidence_id_from_CASE.yaml>
 ```
