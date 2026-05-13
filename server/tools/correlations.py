@@ -197,10 +197,23 @@ def _build_payload(
 ):
     """Construct the typed pydantic correlation by `correlation_type`.
 
-    Per-type required-field check happens here: pydantic's
-    ValidationError surfaces if a required field is missing or an
-    unrelated-to-this-type field carries a non-default value
-    (e.g., corroborates with finding_a_id set).
+    Per-type required-field check happens here: a `ValueError` lands
+    if a required field is missing. Irrelevant-to-this-type fields
+    are *silently ignored* rather than rejected — the 2026-05-13
+    SRL-v2 run had 23 ``record_correlation:rejected_invalid_payload``
+    events, every one of them a legitimate correlation where the
+    validator additionally passed a per-type-irrelevant field
+    (e.g. ``strength`` on a ``strengthens`` call, or
+    ``resolvable_by_followup`` on a ``request_followup`` call).
+    Each rejection burned 5-10K tokens of validator reasoning on the
+    retry while contributing nothing to the audit trail's integrity:
+    the *type* and *required* fields were all correct, the
+    overflow fields just wouldn't have been persisted.
+
+    The schema's integrity is preserved by construction: only the
+    type-relevant fields ever land on the typed pydantic record. We
+    don't need a guardrail against the validator typing extra
+    kwargs — the schema's serialization is the guardrail.
     """
     common = dict(
         correlation_id=correlation_id,
@@ -212,20 +225,6 @@ def _build_payload(
         hypothesis=hypothesis,
     )
     if correlation_type == CorrelationType.CORROBORATES.value:
-        if (
-            finding_a_id is not None
-            or finding_b_id is not None
-            or target_finding_id is not None
-            or severity is not None
-            or resolvable_by_followup is not None
-            or target_analyst is not None
-            or related_finding_ids is not None
-            or focus_context not in (None, {})
-            or rationale is not None
-            or host_ids is not None
-            or shared_indicator not in (None, {})
-        ):
-            raise ValueError("corroborates accepts target_finding_ids + strength only")
         if target_finding_ids is None or strength is None:
             raise ValueError("corroborates requires target_finding_ids and strength")
         return CorroboratesCorrelation(
@@ -234,21 +233,6 @@ def _build_payload(
             strength=strength,  # type: ignore[arg-type]
         )
     if correlation_type == CorrelationType.CONTRADICTS.value:
-        if (
-            target_finding_ids is not None
-            or target_finding_id is not None
-            or strength is not None
-            or target_analyst is not None
-            or related_finding_ids is not None
-            or focus_context not in (None, {})
-            or rationale is not None
-            or host_ids is not None
-            or shared_indicator not in (None, {})
-        ):
-            raise ValueError(
-                "contradicts accepts finding_a_id + finding_b_id + "
-                "severity + resolvable_by_followup only"
-            )
         if (
             finding_a_id is None
             or finding_b_id is None
@@ -267,59 +251,14 @@ def _build_payload(
             resolvable_by_followup=resolvable_by_followup,
         )
     if correlation_type == CorrelationType.STRENGTHENS.value:
-        if (
-            target_finding_ids is not None
-            or finding_a_id is not None
-            or finding_b_id is not None
-            or strength is not None
-            or severity is not None
-            or resolvable_by_followup is not None
-            or target_analyst is not None
-            or related_finding_ids is not None
-            or focus_context not in (None, {})
-            or rationale is not None
-            or host_ids is not None
-            or shared_indicator not in (None, {})
-        ):
-            raise ValueError("strengthens accepts target_finding_id only")
         if target_finding_id is None:
             raise ValueError("strengthens requires target_finding_id")
         return StrengthensCorrelation(**common, target_finding_id=target_finding_id)
     if correlation_type == CorrelationType.WEAKENS.value:
-        if (
-            target_finding_ids is not None
-            or finding_a_id is not None
-            or finding_b_id is not None
-            or strength is not None
-            or severity is not None
-            or resolvable_by_followup is not None
-            or target_analyst is not None
-            or related_finding_ids is not None
-            or focus_context not in (None, {})
-            or rationale is not None
-            or host_ids is not None
-            or shared_indicator not in (None, {})
-        ):
-            raise ValueError("weakens accepts target_finding_id only")
         if target_finding_id is None:
             raise ValueError("weakens requires target_finding_id")
         return WeakensCorrelation(**common, target_finding_id=target_finding_id)
     if correlation_type == CorrelationType.REQUEST_FOLLOWUP.value:
-        if (
-            target_finding_ids is not None
-            or finding_a_id is not None
-            or finding_b_id is not None
-            or target_finding_id is not None
-            or strength is not None
-            or severity is not None
-            or resolvable_by_followup is not None
-            or host_ids is not None
-            or shared_indicator not in (None, {})
-        ):
-            raise ValueError(
-                "request_followup accepts target_analyst + "
-                "related_finding_ids + focus_context + rationale only"
-            )
         if target_analyst is None or related_finding_ids is None or rationale is None:
             raise ValueError(
                 "request_followup requires target_analyst, related_finding_ids, and rationale"
@@ -332,21 +271,6 @@ def _build_payload(
             rationale=rationale,
         )
     if correlation_type == CorrelationType.CROSS_HOST.value:
-        if (
-            finding_a_id is not None
-            or finding_b_id is not None
-            or target_finding_id is not None
-            or severity is not None
-            or resolvable_by_followup is not None
-            or target_analyst is not None
-            or related_finding_ids is not None
-            or focus_context not in (None, {})
-            or rationale is not None
-        ):
-            raise ValueError(
-                "cross_host accepts target_finding_ids + host_ids + "
-                "shared_indicator + strength only"
-            )
         if target_finding_ids is None or host_ids is None or strength is None:
             raise ValueError("cross_host requires target_finding_ids, host_ids, and strength")
         return CrossHostCorrelation(

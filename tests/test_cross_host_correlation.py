@@ -168,31 +168,40 @@ class TestBuildPayloadDispatch:
         assert payload.target_finding_ids == [f1, f2]
         assert payload.host_ids == ["nfury", "controller"]
 
-    def test_cross_host_rejects_extra_fields(self):
-        with pytest.raises(ValueError):
-            _build_payload(
-                correlation_id=str(uuid4()),
-                correlation_type="cross_host",
-                case_id="case-data",
-                iteration_number=1,
-                created_at=NOW_UTC,
-                audit_line=1,
-                evidence_refs=_refs(),
-                hypothesis="x" * 60,
-                target_finding_ids=[str(uuid4()), str(uuid4())],
-                finding_a_id=str(uuid4()),  # not allowed for cross_host
-                finding_b_id=None,
-                target_finding_id=None,
-                strength="strong",
-                severity=None,
-                resolvable_by_followup=None,
-                target_analyst=None,
-                related_finding_ids=None,
-                focus_context=None,
-                rationale=None,
-                host_ids=["nfury", "controller"],
-                shared_indicator=None,
-            )
+    def test_cross_host_silently_ignores_extra_fields(self):
+        # Per the 2026-05-13 SRL-v2 lenient-payload patch, irrelevant
+        # per-type fields are silently ignored rather than rejected.
+        # The schema's integrity is preserved by construction — only
+        # the per-type fields survive into the typed pydantic record.
+        f1, f2 = str(uuid4()), str(uuid4())
+        payload = _build_payload(
+            correlation_id=str(uuid4()),
+            correlation_type="cross_host",
+            case_id="case-data",
+            iteration_number=1,
+            created_at=NOW_UTC,
+            audit_line=1,
+            evidence_refs=_refs(),
+            hypothesis="x" * 60,
+            target_finding_ids=[f1, f2],
+            finding_a_id=str(uuid4()),  # overflow — silently dropped
+            finding_b_id=None,
+            target_finding_id=None,
+            strength="strong",
+            severity=None,
+            resolvable_by_followup=None,
+            target_analyst=None,
+            related_finding_ids=None,
+            focus_context=None,
+            rationale=None,
+            host_ids=["nfury", "controller"],
+            shared_indicator=None,
+        )
+        assert isinstance(payload, CrossHostCorrelation)
+        assert payload.target_finding_ids == [f1, f2]
+        assert payload.host_ids == ["nfury", "controller"]
+        # Overflow field did not land on the typed record.
+        assert getattr(payload, "finding_a_id", None) is None
 
     def test_cross_host_requires_host_ids_and_strength(self):
         with pytest.raises(ValueError):
@@ -220,30 +229,39 @@ class TestBuildPayloadDispatch:
                 shared_indicator=None,
             )
 
-    def test_corroborates_rejects_host_ids(self):
-        # Existing types must reject the new fields — the per-type
-        # extra-field check is what enforces this.
-        with pytest.raises(ValueError):
-            _build_payload(
-                correlation_id=str(uuid4()),
-                correlation_type="corroborates",
-                case_id="case-data",
-                iteration_number=1,
-                created_at=NOW_UTC,
-                audit_line=1,
-                evidence_refs=_refs(),
-                hypothesis="x" * 60,
-                target_finding_ids=[str(uuid4())],
-                finding_a_id=None,
-                finding_b_id=None,
-                target_finding_id=None,
-                strength="strong",
-                severity=None,
-                resolvable_by_followup=None,
-                target_analyst=None,
-                related_finding_ids=None,
-                focus_context=None,
-                rationale=None,
-                host_ids=["nfury", "controller"],  # not allowed
-                shared_indicator=None,
-            )
+    def test_corroborates_silently_ignores_host_ids(self):
+        # Per the 2026-05-13 SRL-v2 lenient-payload patch, irrelevant
+        # per-type fields (here, ``host_ids`` on a corroborates
+        # correlation) are silently dropped. The persisted record is
+        # a CorroboratesCorrelation with only the type-relevant
+        # fields populated.
+        from server.schemas import CorroboratesCorrelation
+
+        fid = str(uuid4())
+        payload = _build_payload(
+            correlation_id=str(uuid4()),
+            correlation_type="corroborates",
+            case_id="case-data",
+            iteration_number=1,
+            created_at=NOW_UTC,
+            audit_line=1,
+            evidence_refs=_refs(),
+            hypothesis="x" * 60,
+            target_finding_ids=[fid],
+            finding_a_id=None,
+            finding_b_id=None,
+            target_finding_id=None,
+            strength="strong",
+            severity=None,
+            resolvable_by_followup=None,
+            target_analyst=None,
+            related_finding_ids=None,
+            focus_context=None,
+            rationale=None,
+            host_ids=["nfury", "controller"],  # overflow — silently dropped
+            shared_indicator=None,
+        )
+        assert isinstance(payload, CorroboratesCorrelation)
+        assert payload.target_finding_ids == [fid]
+        assert payload.strength == "strong"
+        assert getattr(payload, "host_ids", None) is None

@@ -491,27 +491,47 @@ class TestRejectInvalidPayload:
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
         assert audit[-1]["tool_name"] == ("record_correlation:rejected_invalid_payload")
 
-    def test_contradicts_with_corroborates_field_rejected(self, tmp_path: Path):
-        # Cross-type field overflow: contradicts must not accept
-        # target_finding_ids (corroborates' field).
+    def test_contradicts_with_corroborates_field_is_silently_ignored(
+        self, tmp_path: Path
+    ):
+        # Cross-type field overflow is silently ignored as of the
+        # lenient-payload patch (2026-05-13 SRL-v2 follow-up): the
+        # validator routinely passes per-type-irrelevant fields and
+        # each rejection cost 5-10K tokens of retry reasoning. The
+        # schema's integrity is preserved by construction — only the
+        # per-type fields ever land on the typed pydantic record;
+        # `target_finding_ids` does not survive into a
+        # ContradictsCorrelation regardless of what the caller passes.
         case_dir = _seed_case_dir(tmp_path)
         _seed_finding(case_dir, FID_B)
-        with pytest.raises(ValueError):
-            record_correlation(
-                case_id="case-rocba",
-                iteration_number=0,
-                correlation_type="contradicts",
-                evidence_refs=_refs(),
-                hypothesis="Cross-type field overflow regression check.",
-                target_finding_ids=[FID_A],  # belongs to corroborates only
-                finding_a_id=FID_A,
-                finding_b_id=FID_B,
-                severity="minor",
-                resolvable_by_followup=False,
-                case_dir=str(case_dir),
-            )
+        result = record_correlation(
+            case_id="case-rocba",
+            iteration_number=0,
+            correlation_type="contradicts",
+            evidence_refs=_refs(),
+            hypothesis=(
+                "Cross-type field overflow regression check — overflow "
+                "field is silently ignored under lenient acceptance."
+            ),
+            target_finding_ids=[FID_A],  # belongs to corroborates only
+            finding_a_id=FID_A,
+            finding_b_id=FID_B,
+            severity="minor",
+            resolvable_by_followup=False,
+            case_dir=str(case_dir),
+        )
+        # The result IS a contradicts correlation. The overflow
+        # ``target_finding_ids`` did not land on the typed record.
+        assert result.correlation_type == "contradicts"
+        assert result.finding_a_id == FID_A
+        assert result.finding_b_id == FID_B
+        assert not hasattr(result, "target_finding_ids") or getattr(
+            result, "target_finding_ids", None
+        ) is None
+        # The audit chain shows a success (no rejection suffix).
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
-        assert audit[-1]["tool_name"] == ("record_correlation:rejected_invalid_payload")
+        assert audit[-1]["tool_name"] == "record_correlation"
+        assert ":rejected_" not in audit[-1]["tool_name"]
 
     def test_request_followup_without_rationale_rejected(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)

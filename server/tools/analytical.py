@@ -203,6 +203,25 @@ _PLUGIN_FIELD_ALIASES: dict[str, dict[str, str]] = {
     "windows.pstree.PsTree": {
         "process_name": "image_file_name",
     },
+    "windows.cmdline.CmdLine": {
+        # The reverse: cmdline's canonical name is ``process_name`` but
+        # the analyst frequently asks for ``image_file_name`` (carried
+        # across from pslist habits). The 2026-05-13 SRL-v2 run had 6
+        # rejections of identical shape
+        # ``fields=[pid, ppid, image_file_name, cmdline]`` against
+        # cmdline; ``image_file_name`` was the offender. ``ppid`` is
+        # not aliasable — cmdline doesn't carry a parent-pid column,
+        # the analyst needs to join against pslist for that — but
+        # surfacing the alias removes the lower-stakes confusion.
+        "image_file_name": "process_name",
+        # ``args`` is sometimes asked alongside ``cmdline``: the
+        # analyst conceptually wants "the arguments part of the
+        # command line", but Vol 3's cmdline plugin only returns the
+        # full string (which already includes the program and args).
+        # Aliasing to ``cmdline`` so the analyst gets the whole string;
+        # they can split client-side if they need to.
+        "args": "cmdline",
+    },
 }
 
 
