@@ -692,6 +692,33 @@ def dispatch_subagent(
     )
 
 
+# Per-analyst dispatch timeout defaults. The uniform 1800s ceiling
+# was too tight for `disk_analyst`: log2timeline / plaso on a 13 GB
+# E01 commonly takes 30-60 minutes for a single pass, and the
+# 2026-05-13 SRL-v2 run had three disk dispatches hit the 1800s wall
+# with plaso still mid-MFT. Memory-side analysts have no equivalent
+# long-running tool — vol_* plugins finish in seconds to a couple
+# minutes — so we keep their ceiling at 30 minutes. The validator
+# can also run long under heavy correlation work; same default as
+# the memory analysts.
+#
+# This is a stopgap. The architecturally cleaner fix is to
+# pre-extract tier-1 disk outputs at preflight time so the analyst
+# dispatch only does fast tier-2 queries against cached extractions.
+# Tracking that as a follow-up.
+_DEFAULT_TIMEOUT_BY_ANALYST: dict[str, int] = {
+    "process_analyst": 1800,
+    "network_analyst": 1800,
+    "disk_analyst": 3600,
+    "validator": 1800,
+}
+_DEFAULT_TIMEOUT_FALLBACK = 1800
+
+
+def _default_timeout_for(agent: str) -> int:
+    return _DEFAULT_TIMEOUT_BY_ANALYST.get(agent, _DEFAULT_TIMEOUT_FALLBACK)
+
+
 def dispatch_analyst(
     agent: str,
     *,
@@ -703,15 +730,23 @@ def dispatch_analyst(
     host_id: str | None = None,
     host_label: str | None = None,
     max_budget_usd: float = 5.0,
-    timeout_seconds: int = 1800,
+    timeout_seconds: int | None = None,
 ) -> DispatchResult:
     """High-level dispatch for an analyst subagent.
+
+    ``timeout_seconds=None`` (the default) picks a per-agent value
+    from ``_DEFAULT_TIMEOUT_BY_ANALYST`` — disk_analyst gets a longer
+    rope because plaso on a real disk image is slow. Pass an explicit
+    integer to override per-call (e.g. for the CLI ``--analyst-timeout``
+    flag if/when one is added).
 
     `host_id` / `host_label` populated by run-case orchestration —
     surface as a "You are analyzing evidence from host:" line at the
     top of the analyst's prompt. Single-evidence runs leave them
     None and the prompt is unchanged.
     """
+    if timeout_seconds is None:
+        timeout_seconds = _default_timeout_for(agent)
     prompt = _build_prompt(
         agent=agent,
         evidence_id=evidence_id,

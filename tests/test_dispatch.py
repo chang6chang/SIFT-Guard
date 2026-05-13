@@ -26,7 +26,9 @@ import pytest
 
 from orchestrator import dispatch as dispatch_mod
 from orchestrator.dispatch import (
+    _default_timeout_for,
     _extract_mcp_server_status,
+    dispatch_analyst,
     dispatch_subagent,
     resolve_mcp_config_path,
 )
@@ -487,3 +489,116 @@ class TestDispatchSubagentHostScoping:
         idx = captured["cmd"].index("--mcp-config")
         # Single-evidence path: base config is passed unchanged.
         assert captured["cmd"][idx + 1] == str(base_cfg)
+
+
+class TestPerAnalystTimeoutDefault:
+    """The 2026-05-13 SRL-v2 run showed three disk_analyst dispatches
+    timing out at the uniform 1800s wall while plaso was still
+    mid-MFT. Per-agent defaults give disk_analyst a longer rope
+    without affecting the memory analysts (which never take more
+    than a few minutes)."""
+
+    def test_disk_analyst_has_longer_default_timeout(self):
+        assert _default_timeout_for("disk_analyst") == 3600
+
+    def test_memory_analysts_keep_30min_default(self):
+        assert _default_timeout_for("process_analyst") == 1800
+        assert _default_timeout_for("network_analyst") == 1800
+        assert _default_timeout_for("validator") == 1800
+
+    def test_unknown_agent_falls_back_to_30min(self):
+        assert _default_timeout_for("not-a-real-analyst") == 1800
+
+    def test_dispatch_analyst_picks_per_agent_default(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # Stub out subprocess + mcp-config resolution so we can probe
+        # the timeout argument dispatch_subagent receives.
+        cfg = tmp_path / ".mcp.json"
+        cfg.write_text('{"mcpServers": {}}')
+        monkeypatch.setenv("SIFT_GUARD_MCP_CONFIG", str(cfg))
+
+        captured: dict[str, int] = {}
+
+        def fake_dispatch_subagent(*args, **kwargs):
+            captured["timeout_seconds"] = kwargs["timeout_seconds"]
+            # Return a minimal-but-valid DispatchResult.
+            from orchestrator.dispatch import DispatchResult
+
+            return DispatchResult(
+                agent=args[0] if args else "?",
+                session_id=None,
+                stop_reason="end_turn",
+                num_turns=0,
+                duration_ms=0,
+                duration_api_ms=0,
+                total_cost_usd=0.0,
+                input_tokens=0,
+                cache_creation_input_tokens=0,
+                cache_read_input_tokens=0,
+                output_tokens=0,
+                tokens_uncached=0,
+                final_text="",
+                raw_events=[],
+            )
+
+        monkeypatch.setattr(
+            dispatch_mod, "dispatch_subagent", fake_dispatch_subagent
+        )
+        dispatch_analyst(
+            "disk_analyst",
+            evidence_id="ff7e8c59-9235-4882-8963-ec2176eb056a",
+            case_id="case-x",
+            iteration_number=1,
+            cwd=tmp_path,
+        )
+        assert captured["timeout_seconds"] == 3600
+
+        dispatch_analyst(
+            "process_analyst",
+            evidence_id="ff7e8c59-9235-4882-8963-ec2176eb056a",
+            case_id="case-x",
+            iteration_number=1,
+            cwd=tmp_path,
+        )
+        assert captured["timeout_seconds"] == 1800
+
+    def test_explicit_timeout_override_wins(self, tmp_path: Path, monkeypatch):
+        cfg = tmp_path / ".mcp.json"
+        cfg.write_text('{"mcpServers": {}}')
+        monkeypatch.setenv("SIFT_GUARD_MCP_CONFIG", str(cfg))
+        captured: dict[str, int] = {}
+
+        def fake_dispatch_subagent(*args, **kwargs):
+            captured["timeout_seconds"] = kwargs["timeout_seconds"]
+            from orchestrator.dispatch import DispatchResult
+
+            return DispatchResult(
+                agent=args[0] if args else "?",
+                session_id=None,
+                stop_reason="end_turn",
+                num_turns=0,
+                duration_ms=0,
+                duration_api_ms=0,
+                total_cost_usd=0.0,
+                input_tokens=0,
+                cache_creation_input_tokens=0,
+                cache_read_input_tokens=0,
+                output_tokens=0,
+                tokens_uncached=0,
+                final_text="",
+                raw_events=[],
+            )
+
+        monkeypatch.setattr(
+            dispatch_mod, "dispatch_subagent", fake_dispatch_subagent
+        )
+        dispatch_analyst(
+            "disk_analyst",
+            evidence_id="ff7e8c59-9235-4882-8963-ec2176eb056a",
+            case_id="case-x",
+            iteration_number=1,
+            cwd=tmp_path,
+            timeout_seconds=900,  # explicit override
+        )
+        assert captured["timeout_seconds"] == 900
