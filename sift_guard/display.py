@@ -472,7 +472,27 @@ class ProgressDisplay:
         we want are almost always the last few entries (we're
         rendering live). Returns None on any IO error so the formatter
         falls back to ``input=unavailable`` rather than crashing.
+
+        The audit chain entry is written before the side-channel
+        record (the audit chain is the authoritative log; the
+        side-channel is debug). When the audit tail thread polls
+        immediately after a rejection, it can read the audit line
+        before ``rejections.jsonl`` has been flushed — particularly
+        on the *first* rejection of a run, when the file may not yet
+        exist. One short retry covers that window without bloating
+        rendering latency for the common case.
         """
+        for attempt in range(2):
+            hit = self._read_rejection_record(line_number)
+            if hit is not None:
+                return hit
+            if attempt == 0:
+                time.sleep(0.1)
+        return None
+
+    def _read_rejection_record(
+        self, line_number: int
+    ) -> dict[str, Any] | None:
         path = self._case_dir / "audit" / "rejections.jsonl"
         if not path.exists():
             return None
@@ -497,18 +517,33 @@ class ProgressDisplay:
         return None
 
     def _lookup_finding_by_hash(
-        self, this_finding_hash: str
+        self, output_hash: str
     ) -> dict[str, Any] | None:
-        """Find the finding-chain entry whose ``this_finding_hash``
-        matches the audit entry's ``output_hash``.
+        """Find the finding-chain entry that hashes to the audit
+        entry's ``output_hash``.
 
-        Linear scan over recent lines — the finding we just heard
-        about in the audit chain was almost certainly written in the
-        last few hundred milliseconds, so the matching line is at the
-        tail. Returns the ``finding`` payload (a DraftFinding dict)
-        directly so the caller can pull ``host_id`` / ``title`` /
-        ``confidence`` without further unwrapping.
+        Join: ``server.audit.append_audit_entry`` writes
+        ``output_hash = sha256(output.model_dump_json().encode())``
+        where ``output`` is the ``FindingChainEntry``. The findings
+        log writes the same bytes
+        (``entry.model_dump_json() + "\\n"``) per line. So the
+        matching findings.jsonl line is the one whose stripped text,
+        when SHA-256'd, equals the audit entry's ``output_hash``.
+
+        We can't join on ``this_finding_hash``: that's hashed over
+        the finding's payload *excluding* ``this_finding_hash``
+        itself (chain semantics), so it doesn't equal the
+        whole-entry digest the audit chain stores.
+
+        Linear scan over recent lines — the matching finding was
+        almost certainly written in the last few hundred
+        milliseconds, so the answer is at the tail. Returns the
+        ``finding`` payload (a DraftFinding dict) directly so the
+        caller can pull ``host_id`` / ``title`` / ``confidence``
+        without further unwrapping.
         """
+        import hashlib
+
         path = self._case_dir / "findings.jsonl"
         if not path.exists():
             return None
@@ -521,15 +556,17 @@ class ProgressDisplay:
             stripped = raw.strip()
             if not stripped:
                 continue
+            digest = hashlib.sha256(stripped.encode("utf-8")).hexdigest()
+            if digest != output_hash:
+                continue
             try:
                 rec = json.loads(stripped)
             except ValueError:
-                continue
-            if rec.get("this_finding_hash") == this_finding_hash:
-                finding = rec.get("finding")
-                if isinstance(finding, dict):
-                    return finding
                 return None
+            finding = rec.get("finding")
+            if isinstance(finding, dict):
+                return finding
+            return None
         return None
 
     @staticmethod
