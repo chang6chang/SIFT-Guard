@@ -102,13 +102,17 @@ from __future__ import annotations
 
 import atexit
 import json
+import logging
 import os
 import shlex
+import shutil
 import subprocess
 import tempfile
 import time
 from pathlib import Path
 from typing import Iterable
+
+logger = logging.getLogger(__name__)
 
 
 SIFT_DISK_PREMOUNTED_PATH_ENV = "SIFT_DISK_PREMOUNTED_PATH"
@@ -168,6 +172,14 @@ _EWF_DIR_CACHE: dict[str, str] = {}
 # `_MOUNT_CACHE` because guestmount + loop-mount tear down through
 # different commands.
 _GUESTMOUNT_CACHE: dict[str, str] = {}
+
+# Track plaso work directories so they get reaped on shutdown.
+# log2timeline.py writes ``out.plaso`` + ``out.jsonl`` into one of
+# these; a partially-completed pass leaves the dir behind, and the
+# 2026-05-13 SRL-v2 cleanup audit found ~210 MB of these accreted
+# across three killed runs. The runner adds to this set in
+# ``run_log2timeline_mft`` and the atexit hook clears it.
+_PLASO_TEMP_DIRS: set[str] = set()
 
 # Predictable mount base. Sudoers wildcards (`umount
 # /tmp/sift-guard-mounts/*`) can scope cleanly against this; the
@@ -286,6 +298,144 @@ def _allocate_mount_dir(evidence_id: str, suffix: str = "") -> Path:
     return target
 
 
+def _is_path_mounted_anywhere(mount_path: str) -> bool:
+    """True iff ``/proc/mounts`` has any entry for this path
+    (read-only or read-write, fuse or block device).
+
+    Distinct from ``_is_path_mounted_readonly`` which only matches
+    ro entries: we use this for orphan detection where we don't yet
+    know whether the existing mount is in a sane state, and don't
+    care.
+    """
+    target = mount_path.rstrip("/")
+    for raw in _read_proc_mounts().splitlines():
+        parts = raw.split()
+        if len(parts) < 2:
+            continue
+        if parts[1].rstrip("/") == target:
+            return True
+    return False
+
+
+def _force_unmount(path: Path) -> bool:
+    """Attempt to tear down whatever's mounted at ``path``.
+
+    Tries ``fusermount -u`` first (works for ewfmount + guestmount
+    fuse entries; user-mode), then ``sudo -n umount`` (loop-mounts;
+    privileged via NOPASSWD sudoers wildcard). Returns True iff
+    /proc/mounts shows ``path`` is no longer mounted at the end.
+
+    Best-effort; swallows tool failures. The goal is to clear stale
+    orphans from prior killed runs so a fresh mount can take the
+    same predictable path. The 2026-05-13 SRL-v2 cleanup found
+    three orphan fuse mounts (bed14651-ewf, 699521bf-ewf,
+    093ec18c-ewf) blocking re-mount of the same evidence_id.
+    """
+    if not _is_path_mounted_anywhere(str(path)):
+        return True
+
+    # fusermount first — works without sudo for user-mode FUSE,
+    # and the sudoers entry permits ``sudo -n fusermount -u
+    # /tmp/sift-guard-mounts/*`` for root-owned ones.
+    for argv in (
+        ["fusermount", "-u", str(path)],
+        ["sudo", "-n", "fusermount", "-u", str(path)],
+        ["sudo", "-n", "umount", str(path)],
+    ):
+        try:
+            subprocess.run(
+                argv,
+                capture_output=True,
+                check=False,
+                timeout=20,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+        if not _is_path_mounted_anywhere(str(path)):
+            return True
+    return False
+
+
+def _clean_stale_mount_for(evidence_id: str, mount_dir: Path) -> None:
+    """Tear down any orphan mount at the predictable paths for this
+    evidence_id, before a fresh mount attempt.
+
+    Two paths can hold orphans:
+      * ``mount_dir`` — the final mount target (loop-mount target,
+        or direct guestmount target).
+      * ``mount_dir + "-ewf"`` — the ewfmount intermediate fuse
+        mount used by the E01 fallback chain.
+
+    A predecessor sift-guard run that died ungracefully (SIGKILL
+    after timeout, ctrl-C during pre-extract, etc.) leaves those
+    fuse mounts as root-owned orphans; subsequent runs collide on
+    the predictable path. This function clears them so
+    ``mount_disk_image`` can proceed.
+    """
+    ewf_intermediate = mount_dir.with_name(f"{mount_dir.name}-ewf")
+    if _is_path_mounted_anywhere(str(mount_dir)):
+        logger.info(
+            "tearing down stale orphan mount at %s before remount", mount_dir
+        )
+        _force_unmount(mount_dir)
+    if _is_path_mounted_anywhere(str(ewf_intermediate)):
+        logger.info(
+            "tearing down stale orphan ewfmount at %s before remount",
+            ewf_intermediate,
+        )
+        _force_unmount(ewf_intermediate)
+
+
+def cleanup_stale_mounts_globally() -> dict[str, int]:
+    """Scan ``/tmp/sift-guard-mounts/`` and tear down every mount
+    not held by the current process's in-memory caches.
+
+    Returns ``{"cleaned": N, "remaining": M}`` so callers can decide
+    whether to warn the operator. The 2026-05-13 SRL-v2 audit found
+    three orphan fuse mounts surviving across run boundaries; this
+    helper is what the pre-extract phase calls before kicking off
+    plaso/regripper to ensure ``mount_disk_image`` won't hit the
+    predictable-path collision.
+
+    The function is safe to call multiple times — it only operates
+    on paths that look like sift-guard mount points and never
+    touches the operator's premounted-path env var.
+    """
+    if os.environ.get(SIFT_DISK_PREMOUNTED_PATH_ENV):
+        # Operator-managed mount; do not touch.
+        return {"cleaned": 0, "remaining": 0}
+
+    known = set(_MOUNT_CACHE.values()) | set(_EWF_DIR_CACHE.values()) | set(_GUESTMOUNT_CACHE.values())
+    cleaned = 0
+    remaining = 0
+    for raw in _read_proc_mounts().splitlines():
+        parts = raw.split()
+        if len(parts) < 2:
+            continue
+        path = parts[1].rstrip("/")
+        if not path.startswith(str(_MOUNT_BASE) + "/"):
+            continue
+        if path in known:
+            continue
+        if _force_unmount(Path(path)):
+            cleaned += 1
+        else:
+            remaining += 1
+    return {"cleaned": cleaned, "remaining": remaining}
+
+
+def _register_plaso_tempdir(path: Path) -> None:
+    """Track a plaso work directory for the atexit reaper.
+
+    Called by ``run_log2timeline_mft`` immediately after
+    ``tempfile.mkdtemp(prefix="sift-plaso-")``. The atexit reaper
+    walks ``_PLASO_TEMP_DIRS`` and ``rm -rf``s each, releasing
+    the ~50-130 MB per pass that plaso would otherwise leave under
+    /tmp on a killed run.
+    """
+    _PLASO_TEMP_DIRS.add(str(path))
+
+
 def _try_ewfmount_then_loop(
     evidence_id: str, absolute_path: str, mount_dir: Path
 ) -> tuple[str, float]:
@@ -396,6 +546,15 @@ def mount_disk_image(evidence_id: str, absolute_path: str) -> str:
 
     fmt = _detect_image_format(absolute_path)
     mount_dir = _allocate_mount_dir(evidence_id)
+    # Pre-mount orphan cleanup: a previous run that died ungracefully
+    # may have left fuse mounts at the predictable mount paths.
+    # ``_allocate_mount_dir`` is deterministic on evidence_id_short,
+    # so a collision is silent corruption: ewfmount / mount would
+    # either fail with "already mounted" or succeed with a stale
+    # backing file, masking the intended evidence. Clear orphans
+    # first, then proceed. See 2026-05-13 SRL-v2 cleanup audit for
+    # the empirical case.
+    _clean_stale_mount_for(evidence_id, mount_dir)
     try:
         if fmt == "e01":
             try:
@@ -493,25 +652,34 @@ def _cleanup_partial_mount(evidence_id: str, mount_dir: Path) -> None:
 
 
 def _atexit_cleanup_all_mounts() -> None:
-    """Tear down every cached mount on interpreter shutdown.
+    """Tear down every cached mount + plaso work dir on shutdown.
 
     Iterates a snapshot of the mount cache (so we can mutate
     ``_MOUNT_CACHE`` inside the loop), runs ``_cleanup_partial_mount``
-    against each, and finally removes the cache entries. In
-    premounted mode the entries are skipped — the operator manages
-    those mounts and would object to having them silently torn down.
+    against each, and finally removes the cache entries. Then reaps
+    every ``/tmp/sift-plaso-*`` directory the runner registered via
+    ``_register_plaso_tempdir`` — without this the temp dirs leak
+    across runs (~50-130 MB per killed pass; the 2026-05-13 SRL-v2
+    cleanup found ~210 MB accreted across three runs). Premounted
+    mode skips the mount cleanup but still reaps plaso work dirs,
+    since those are unconditionally owned by sift-guard.
     """
-    if os.environ.get(SIFT_DISK_PREMOUNTED_PATH_ENV):
-        # Operator-managed mount; do not touch it on shutdown.
-        return
-    for evidence_id, mount_path in list(_MOUNT_CACHE.items()):
+    if not os.environ.get(SIFT_DISK_PREMOUNTED_PATH_ENV):
+        for evidence_id, mount_path in list(_MOUNT_CACHE.items()):
+            try:
+                _cleanup_partial_mount(evidence_id, Path(mount_path))
+            except Exception:
+                # Shutdown handlers swallow everything — the cache is
+                # being thrown away regardless.
+                pass
+            _MOUNT_CACHE.pop(evidence_id, None)
+
+    for tmp_path_str in list(_PLASO_TEMP_DIRS):
         try:
-            _cleanup_partial_mount(evidence_id, Path(mount_path))
+            shutil.rmtree(tmp_path_str, ignore_errors=True)
         except Exception:
-            # Shutdown handlers swallow everything — the cache is
-            # being thrown away regardless.
             pass
-        _MOUNT_CACHE.pop(evidence_id, None)
+        _PLASO_TEMP_DIRS.discard(tmp_path_str)
 
 
 atexit.register(_atexit_cleanup_all_mounts)
@@ -570,7 +738,9 @@ def run_log2timeline_mft(
     """
     log2timeline_bin = os.environ.get(SIFT_DISK_LOG2TIMELINE_BIN_ENV, _DEFAULT_LOG2TIMELINE_BIN)
     psort_bin = os.environ.get(SIFT_DISK_PSORT_BIN_ENV, _DEFAULT_PSORT_BIN)
-    plaso_storage = Path(tempfile.mkdtemp(prefix="sift-plaso-")) / "out.plaso"
+    plaso_workdir = Path(tempfile.mkdtemp(prefix="sift-plaso-"))
+    _register_plaso_tempdir(plaso_workdir)
+    plaso_storage = plaso_workdir / "out.plaso"
     jsonl_out = plaso_storage.with_suffix(".jsonl")
 
     try:

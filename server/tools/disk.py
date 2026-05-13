@@ -204,23 +204,48 @@ def _log_runner_failure(
     *,
     command_shape: str,
 ) -> None:
-    """Append one runner-failure line to the audit chain.
+    """Append one runner-failure line to the audit chain, plus a
+    sanitized side-channel record so the operator console can
+    actually read the failure detail.
 
     Distinct tool_name suffix (``:runner_failed``) from
     ``:rejected_*`` so the post-mortem grep is unambiguous.
+
+    The audit chain stores only the output hash (per the
+    sanitization rule); the side-channel ``audit/rejections.jsonl``
+    carries the typed RunnerFailureRecord (error_class,
+    command_shape, remediation hint, evidence_id) so when the
+    operator sees ``! MCP disk_mft_timeline:runner_failed`` they
+    can also read *why* it failed without trawling stderr or
+    re-running. Same pattern as the findings/correlations
+    side-channel (commits a036662 / 8f579f2).
     """
+    from server.rejections_log import append_rejection_record
+
     record = _RunnerFailureRecord(
         error_class=f"{type(exc).__module__}.{type(exc).__name__}",
         command_shape=command_shape,
         remediation=_remediation_for_disk_exc(exc),
         evidence_id=evidence_id,
     )
-    append_audit_entry(
+    entry = append_audit_entry(
         case_dir=case_dir,
         tool_name=f"{tool_name}:runner_failed",
         evidence_id=evidence_id,
         input_args={"evidence_id": evidence_id},
         output=record,
+    )
+    # Route through the side-channel so the display tail can
+    # render the full failure detail next to the audit line.
+    append_rejection_record(
+        case_dir,
+        entry,
+        {
+            "evidence_id": evidence_id,
+            "error_class": record.error_class,
+            "command_shape": record.command_shape,
+            "remediation": record.remediation,
+        },
     )
 
 

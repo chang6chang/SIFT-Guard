@@ -72,6 +72,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from orchestrator.manifest import CaseManifest, EvidenceFile, HostEvidence
+from server.runners.disk_mount import cleanup_stale_mounts_globally
 from server.tools.disk import (
     disk_evtx,
     disk_mft_timeline,
@@ -171,6 +172,22 @@ def pre_extract_disk_tier1(
     if not tasks:
         return result
 
+    # Pre-flight cleanup: a prior sift-guard run that died ungracefully
+    # may have left fuse mounts at the predictable
+    # ``/tmp/sift-guard-mounts/<short>-ewf`` paths. The 2026-05-13
+    # SRL-v2 audit found three of these surviving across run
+    # boundaries — any one of them would cause
+    # ``rejected_mount_failed`` on the first plaso call because
+    # ``_allocate_mount_dir`` collides with the orphan. Clear before
+    # starting so the tier-1 wrappers don't trip on someone else's
+    # mess.
+    orphan_summary = cleanup_stale_mounts_globally()
+    if orphan_summary.get("cleaned"):
+        logger.info(
+            "pre-extract pre-flight: cleaned %d stale mount(s) from prior runs",
+            orphan_summary["cleaned"],
+        )
+
     _emit(
         on_progress,
         "pre_extract_phase_start",
@@ -178,6 +195,7 @@ def pre_extract_disk_tier1(
             "task_count": len(tasks),
             "host_count": len({t[0] for t in tasks}),
             "max_workers": max_workers,
+            "stale_mounts_cleaned": orphan_summary.get("cleaned", 0),
         },
     )
 

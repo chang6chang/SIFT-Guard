@@ -535,7 +535,9 @@ class TestFallbackChainDispatch:
 
     def test_vhdx_uses_guestmount_only(self, monkeypatch, tmp_path: Path):
         """VHDX has no Path A — guestmount is the first and only
-        strategy."""
+        mount strategy (other than the orphan-cleanup pre-flight,
+        which only fires when a stale mount actually exists at the
+        predictable path)."""
         mount_base = tmp_path / "sift-mounts"
         monkeypatch.setattr(disk_mount, "_MOUNT_BASE", mount_base)
         monkeypatch.delenv(SIFT_DISK_PREMOUNTED_PATH_ENV, raising=False)
@@ -554,19 +556,29 @@ class TestFallbackChainDispatch:
 
         expected_mount = mount_base / "eid-vhdx"[:8]
 
+        # Two-stage proc_mounts mock: empty BEFORE the mount so the
+        # orphan-cleanup pre-flight skips both paths, populated AFTER
+        # so the post-mount readonly verification passes.
+        proc_states = iter(
+            [
+                "",  # _clean_stale_mount_for: target check
+                "",  # _clean_stale_mount_for: ewf check
+            ]
+        )
+
+        def proc_mounts() -> str:
+            return next(proc_states, _fuse_proc_mounts_for(str(expected_mount)))
+
         with (
             patch("server.runners.disk_mount.subprocess.run", side_effect=fake_run),
-            patch.object(
-                disk_mount,
-                "_read_proc_mounts",
-                return_value=_fuse_proc_mounts_for(str(expected_mount)),
-            ),
+            patch.object(disk_mount, "_read_proc_mounts", side_effect=proc_mounts),
         ):
             mount_disk_image("eid-vhdx", "/case/disk.vhdx")
 
         programs = [c[0] if c[0] != "sudo" else c[2] for c in calls]
         # Only one subprocess call expected — guestmount. No cleanup
-        # calls because Path A wasn't attempted.
+        # calls because Path A wasn't attempted and the orphan-cleanup
+        # pre-flight saw the predictable paths clean.
         assert programs == ["guestmount"]
 
     def test_all_strategies_fail_raises_mount_error(self, monkeypatch, tmp_path: Path):
@@ -661,3 +673,174 @@ class TestAtexitCleanup:
             disk_mount._atexit_cleanup_all_mounts()
         assert mock_run.call_count >= 1
         assert "eid-y" not in disk_mount._MOUNT_CACHE
+
+
+class TestOrphanMountCleanup:
+    """The 2026-05-13 SRL-v2 audit found three orphan fuse mounts
+    surviving across run boundaries
+    (``/tmp/sift-guard-mounts/<short>-ewf``). Any subsequent run on
+    the same predictable mount path hits ``rejected_mount_failed``
+    because ``_allocate_mount_dir`` collides with the orphan.
+
+    These tests pin the orphan-detection + force-unmount path so the
+    fix doesn't regress."""
+
+    def test_is_path_mounted_anywhere_detects_orphan(self, monkeypatch):
+        fake_mounts = (
+            "/dev/fuse /tmp/sift-guard-mounts/bed14651-ewf "
+            "fuse rw,nosuid,nodev,relatime,user_id=0,group_id=0 0 0"
+        )
+        monkeypatch.setattr(disk_mount, "_read_proc_mounts", lambda: fake_mounts)
+        assert disk_mount._is_path_mounted_anywhere(
+            "/tmp/sift-guard-mounts/bed14651-ewf"
+        )
+        assert not disk_mount._is_path_mounted_anywhere(
+            "/tmp/sift-guard-mounts/nope"
+        )
+
+    def test_clean_stale_mount_for_attempts_both_paths(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """_clean_stale_mount_for must check BOTH ``mount_dir`` and
+        ``mount_dir + "-ewf"`` since the ewfmount fallback creates an
+        intermediate fuse mount at the latter."""
+        target = tmp_path / "bed14651"
+        ewf = tmp_path / "bed14651-ewf"
+        target.mkdir()
+        ewf.mkdir()
+        # Pretend BOTH paths stay mounted regardless of teardown
+        # attempts — that way _force_unmount exhausts every fallback
+        # and we can count the teardown attempts per path. The
+        # important assertion is that we tried to clean both, not
+        # that the cleanup succeeded.
+        fake_mounts = (
+            f"/dev/fuse {target} fuse rw 0 0\n"
+            f"/dev/fuse {ewf} fuse rw 0 0\n"
+        )
+        monkeypatch.setattr(disk_mount, "_read_proc_mounts", lambda: fake_mounts)
+
+        umount_calls: list[list[str]] = []
+
+        def fake_run(argv, **kwargs):
+            umount_calls.append(list(argv))
+            return subprocess.CompletedProcess(
+                argv, returncode=0, stdout="", stderr=""
+            )
+
+        with patch("server.runners.disk_mount.subprocess.run", side_effect=fake_run):
+            disk_mount._clean_stale_mount_for("bed14651-1234", target)
+
+        # _force_unmount tries fusermount, sudo fusermount, sudo umount
+        # per path → at minimum some teardown call per path.
+        target_attempts = [c for c in umount_calls if str(target) in c]
+        ewf_attempts = [c for c in umount_calls if str(ewf) in c]
+        assert target_attempts, f"no teardown attempts on {target}"
+        assert ewf_attempts, f"no teardown attempts on {ewf}"
+
+    def test_force_unmount_returns_true_when_clean(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # First check shows mounted; after fusermount, clean.
+        states = iter(
+            [
+                f"/dev/fuse {tmp_path}/m fuse rw 0 0",
+                "",
+            ]
+        )
+        monkeypatch.setattr(
+            disk_mount, "_read_proc_mounts", lambda: next(states, "")
+        )
+        with patch("server.runners.disk_mount.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            ok = disk_mount._force_unmount(tmp_path / "m")
+        assert ok is True
+
+    def test_cleanup_stale_mounts_globally_skips_known_mounts(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """An in-cache mount is owned by the current process; do not
+        tear it down even though it lives under the sift-guard mount
+        base."""
+        monkeypatch.delenv(SIFT_DISK_PREMOUNTED_PATH_ENV, raising=False)
+        my_mount = "/tmp/sift-guard-mounts/abcdef12"
+        orphan = "/tmp/sift-guard-mounts/dead0001-ewf"
+        disk_mount._MOUNT_CACHE["my-eid"] = my_mount
+        try:
+            fake_mounts = (
+                f"/dev/loop9 {my_mount} fuseblk ro 0 0\n"
+                f"/dev/fuse {orphan} fuse rw 0 0\n"
+            )
+            states = iter(
+                [
+                    fake_mounts,  # initial enumeration
+                    fake_mounts,  # check on orphan — mounted
+                    "",  # after fusermount on orphan — clean
+                ]
+            )
+            monkeypatch.setattr(
+                disk_mount, "_read_proc_mounts", lambda: next(states, "")
+            )
+            with patch(
+                "server.runners.disk_mount.subprocess.run"
+            ) as mock_run:
+                mock_run.return_value.returncode = 0
+                result = disk_mount.cleanup_stale_mounts_globally()
+
+            # The owned mount must not have been touched.
+            for call in mock_run.call_args_list:
+                args = call.args[0] if call.args else call.kwargs.get("args", [])
+                assert my_mount not in args
+            assert result["cleaned"] >= 1
+        finally:
+            disk_mount._MOUNT_CACHE.pop("my-eid", None)
+
+    def test_cleanup_stale_mounts_globally_respects_premounted_mode(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setenv(SIFT_DISK_PREMOUNTED_PATH_ENV, str(tmp_path))
+        with patch("server.runners.disk_mount.subprocess.run") as mock_run:
+            result = disk_mount.cleanup_stale_mounts_globally()
+        # No subprocess calls in premounted mode.
+        assert mock_run.call_count == 0
+        assert result == {"cleaned": 0, "remaining": 0}
+
+
+class TestPlasoTempdirTracking:
+    """The 2026-05-13 SRL-v2 audit found ~210 MB of leaked
+    ``/tmp/sift-plaso-*`` directories across three killed runs.
+    ``_register_plaso_tempdir`` + ``_atexit_cleanup_all_mounts``'s
+    new branch reaps these on shutdown."""
+
+    def test_register_adds_to_set(self, tmp_path: Path):
+        p = tmp_path / "sift-plaso-xyz"
+        p.mkdir()
+        try:
+            disk_mount._register_plaso_tempdir(p)
+            assert str(p) in disk_mount._PLASO_TEMP_DIRS
+        finally:
+            disk_mount._PLASO_TEMP_DIRS.discard(str(p))
+
+    def test_atexit_reaps_plaso_tempdirs(self, tmp_path: Path, monkeypatch):
+        monkeypatch.delenv(SIFT_DISK_PREMOUNTED_PATH_ENV, raising=False)
+        p = tmp_path / "sift-plaso-zzz"
+        p.mkdir()
+        (p / "out.plaso").write_bytes(b"\x00" * 4096)
+        disk_mount._register_plaso_tempdir(p)
+        # Cache is empty so the mount-cleanup loop is a no-op; the
+        # plaso reaper runs unconditionally.
+        disk_mount._atexit_cleanup_all_mounts()
+        assert not p.exists()
+        assert str(p) not in disk_mount._PLASO_TEMP_DIRS
+
+    def test_atexit_plaso_reap_runs_in_premounted_mode_too(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # Even in premounted mode (where the operator manages
+        # external mounts), plaso work dirs are unconditionally
+        # sift-guard-owned and must be reaped.
+        monkeypatch.setenv(SIFT_DISK_PREMOUNTED_PATH_ENV, str(tmp_path))
+        p = tmp_path / "sift-plaso-aaa"
+        p.mkdir()
+        disk_mount._register_plaso_tempdir(p)
+        disk_mount._atexit_cleanup_all_mounts()
+        assert not p.exists()
