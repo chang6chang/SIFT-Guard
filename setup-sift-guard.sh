@@ -148,6 +148,14 @@ SIFT_GUARD_BRANCH="main"
 VOL_SYMBOLS_URL="https://downloads.volatilityfoundation.org/volatility3/symbols/windows.zip"
 DEFAULT_OUTPUT_DIR="${INVOKING_HOME}/sift-guard-results"
 
+# When invoked from a working tree (the common case: a teammate has
+# already cloned the repo and is running ./setup-sift-guard.sh from
+# inside it), prefer to sync the source from that checkout rather
+# than network-clone. Works offline, picks up local edits the
+# operator wants to test, and avoids the "destination exists" git
+# clone failure when a previous run left files at INSTALL_DIR.
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
 echo ""
 echo "============================================="
 echo "  SIFT-Guard — Turnkey Setup (main branch)"
@@ -302,6 +310,7 @@ CORE_PKGS=(
     curl
     wget
     unzip
+    rsync
     build-essential
     ca-certificates
     sleuthkit
@@ -624,24 +633,73 @@ echo "============================================="
 echo "  Step 8/14 — Clone / update SIFT-Guard"
 echo "============================================="
 
-if [[ -d "${INSTALL_DIR}/.git" ]]; then
-    info "Existing checkout found; pulling latest..."
+# Resolution order:
+#   1. Script is invoked from its own checkout AND that checkout is
+#      not already the install dir → rsync from the script's source
+#      tree into the install dir. This is the offline / local-edits
+#      case and the most common one in practice.
+#   2. INSTALL_DIR already contains a git checkout → fetch + pull.
+#   3. Otherwise → network-clone from SIFT_GUARD_REPO.
+#
+# The rsync excludes runtime artifacts (.venv, results dirs,
+# build outputs) so a prior install at INSTALL_DIR keeps its
+# venv across re-runs.
+RSYNC_EXCLUDES=(
+    --exclude=".venv/"
+    --exclude="__pycache__/"
+    --exclude="*.egg-info/"
+    --exclude=".pytest_cache/"
+    --exclude=".ruff_cache/"
+    --exclude="case-data/"
+    --exclude="results/"
+    --exclude="results-*/"
+    --exclude="sift-guard-results/"
+    --exclude="rag/data/"
+    --exclude=".mcp.json"
+)
+
+if [[ -d "${SCRIPT_DIR}/.git" && "${SCRIPT_DIR}" != "${INSTALL_DIR}" \
+        && -f "${SCRIPT_DIR}/pyproject.toml" ]]; then
+    info "Syncing from local checkout at ${SCRIPT_DIR}..."
+    mkdir -p "${INSTALL_DIR}"
+    if rsync -a --delete-after "${RSYNC_EXCLUDES[@]}" \
+            "${SCRIPT_DIR}/" "${INSTALL_DIR}/" \
+            > /tmp/sift-guard-rsync.log 2>&1; then
+        chown -R "${INVOKING_USER}":"${INVOKING_USER}" "${INSTALL_DIR}" 2>/dev/null || true
+        SHORT_HEAD="$(git -C "${SCRIPT_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        ok "Synced to ${INSTALL_DIR} (HEAD ${SHORT_HEAD})"
+        record_component "repo" "ok" "synced from ${SCRIPT_DIR} (${SHORT_HEAD})"
+    else
+        fail "rsync from ${SCRIPT_DIR} failed — see /tmp/sift-guard-rsync.log"
+        record_component "repo" "fail" "rsync failed"
+    fi
+elif [[ -d "${INSTALL_DIR}/.git" ]]; then
+    info "Existing checkout found at ${INSTALL_DIR}; pulling latest..."
     if cd "${INSTALL_DIR}" && \
             git fetch origin > /tmp/sift-guard-git-fetch.log 2>&1 && \
             git checkout "${SIFT_GUARD_BRANCH}" > /tmp/sift-guard-git-checkout.log 2>&1 && \
             git pull origin "${SIFT_GUARD_BRANCH}" > /tmp/sift-guard-git-pull.log 2>&1; then
         ok "Updated to latest ${SIFT_GUARD_BRANCH}"
-        record_component "repo" "ok" "$(git -C ${INSTALL_DIR} rev-parse --short HEAD)"
+        record_component "repo" "ok" "$(git -C "${INSTALL_DIR}" rev-parse --short HEAD)"
     else
         fail "Git update failed — see /tmp/sift-guard-git-*.log"
         record_component "repo" "fail" "pull failed"
     fi
 else
-    info "Cloning repository..."
+    # Network-clone path. Refuses to clone into a non-empty
+    # directory by default, so move any stale leftovers aside
+    # first (preserves them at INSTALL_DIR.bak-<ts> for
+    # post-mortem inspection rather than deleting blindly).
+    if [[ -d "${INSTALL_DIR}" ]] && [[ -n "$(ls -A "${INSTALL_DIR}" 2>/dev/null)" ]]; then
+        STAMP="$(date +%s)"
+        warn "${INSTALL_DIR} exists and is not empty; moving aside to ${INSTALL_DIR}.bak-${STAMP}"
+        mv "${INSTALL_DIR}" "${INSTALL_DIR}.bak-${STAMP}"
+    fi
+    info "Cloning ${SIFT_GUARD_REPO} (branch ${SIFT_GUARD_BRANCH})..."
     if git clone -b "${SIFT_GUARD_BRANCH}" "${SIFT_GUARD_REPO}" "${INSTALL_DIR}" \
             > /tmp/sift-guard-git-clone.log 2>&1; then
         ok "Cloned to ${INSTALL_DIR}"
-        record_component "repo" "ok" "$(git -C ${INSTALL_DIR} rev-parse --short HEAD)"
+        record_component "repo" "ok" "$(git -C "${INSTALL_DIR}" rev-parse --short HEAD)"
     else
         fail "Git clone failed — see /tmp/sift-guard-git-clone.log"
         record_component "repo" "fail" "clone failed"
