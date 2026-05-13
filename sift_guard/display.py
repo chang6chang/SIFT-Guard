@@ -111,6 +111,52 @@ class ProgressDisplay:
         except Exception as exc:  # noqa: BLE001 — observer must not crash loop
             self._print(f"[{_hms()}] WARN   display handler {event} crashed: {exc}")
 
+    def _evt_pre_extract_phase_start(self, payload: dict[str, Any]) -> None:
+        task_count = payload.get("task_count", "?")
+        host_count = payload.get("host_count", "?")
+        workers = payload.get("max_workers", "?")
+        self._print(
+            f"[{_hms()}] PRE-EXTRACT │ {task_count} task(s) across "
+            f"{host_count} host(s)  (max_workers={workers})"
+        )
+
+    def _evt_pre_extract_start(self, payload: dict[str, Any]) -> None:
+        host = payload.get("host_label") or payload.get("host_id") or "?"
+        plugin = payload.get("plugin_tool_name", "?")
+        evidence_id = str(payload.get("evidence_id") or "")
+        short = evidence_id[:8] if evidence_id else "—"
+        self._print(
+            f"[{_hms()}] PRE-EXTRACT │ {host:<14} │ {plugin:<18} on {short} → running…"
+        )
+
+    def _evt_pre_extract_done(self, payload: dict[str, Any]) -> None:
+        host = payload.get("host_label") or payload.get("host_id") or "?"
+        plugin = payload.get("plugin_tool_name", "?")
+        evidence_id = str(payload.get("evidence_id") or "")
+        short = evidence_id[:8] if evidence_id else "—"
+        dur = payload.get("duration_seconds", 0.0)
+        succeeded = payload.get("succeeded", False)
+        mark = "✓" if succeeded else "✗"
+        err = ""
+        if not succeeded:
+            err_class = payload.get("error_class") or "?"
+            err = f"  ({err_class})"
+        self._print(
+            f"[{_hms()}] PRE-EXTRACT │ {host:<14} │ {plugin:<18} on {short} "
+            f"→ {dur:.0f}s {mark}{err}"
+        )
+
+    def _evt_pre_extract_phase_done(self, payload: dict[str, Any]) -> None:
+        succeeded = payload.get("succeeded", 0)
+        total = payload.get("task_count", 0)
+        failed = payload.get("failed", 0)
+        dur = payload.get("total_duration_seconds", 0.0)
+        fail_str = f", {failed} failed" if failed else ""
+        self._print(
+            f"[{_hms()}] PRE-EXTRACT │ phase complete: {succeeded}/{total} succeeded"
+            f"{fail_str}  ({dur:.0f}s)"
+        )
+
     def _evt_iteration_start(self, payload: dict[str, Any]) -> None:
         n = payload.get("iteration", "?")
         cap = payload.get("max_iterations")

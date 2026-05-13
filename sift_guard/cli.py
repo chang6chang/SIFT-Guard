@@ -48,6 +48,11 @@ from pathlib import Path
 
 from orchestrator.inventory import format_inventory_table, scan_evidence_directory
 from orchestrator.dispatch import resolve_mcp_config_path
+from orchestrator.pre_extract import (
+    PreExtractResult,
+    has_disk_evidence,
+    pre_extract_disk_tier1,
+)
 from orchestrator.loop import (
     DEFAULT_PARALLEL_MAX_WORKERS,
     _default_multi_host_token_budget,
@@ -146,6 +151,30 @@ def _parser() -> argparse.ArgumentParser:
         "--no-preflight",
         action="store_true",
         help="Skip the per-image OS + symbol-pack pre-flight probe.",
+    )
+    analyze.add_argument(
+        "--no-pre-extract",
+        action="store_true",
+        help="Skip the pre-extract phase. By default, before the "
+        "self-correction loop dispatches the disk_analyst, the CLI "
+        "runs each disk-image's tier-1 plugins "
+        "(disk_mft_timeline, disk_prefetch, disk_evtx, "
+        "disk_registry) once to populate the extraction cache. "
+        "This moves plaso/regripper wall time OUT of the analyst "
+        "session (where it would burn the analyst's per-dispatch "
+        "wall-time budget while the LLM sits idle waiting for the "
+        "tool result). With --no-pre-extract the disk_analyst's "
+        "first tool call drives plaso the old way.",
+    )
+    analyze.add_argument(
+        "--pre-extract-max-workers",
+        type=int,
+        default=2,
+        help="How many tier-1 disk extractions to run in parallel "
+        "during the pre-extract phase. Each plaso/regripper "
+        "subprocess uses multiple cores internally; the default of "
+        "2 keeps a 4-host run from saturating a 4-core VM. Bump on "
+        "bigger machines.",
     )
 
     # Evidence staging mode — mutually exclusive. Default (neither
@@ -492,6 +521,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         return 4
 
     case_dir = _resolve_case_dir(args.output_dir)
+
     case_dir.mkdir(parents=True, exist_ok=True)
     print(f"[{_hms()}] case directory: {case_dir}")
 
@@ -666,6 +696,39 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         print(decorated_table)
         print()
 
+    # Pre-extract phase: run tier-1 disk plugins to populate the
+    # extraction cache BEFORE the analyst loop dispatches. Without
+    # this, plaso/regripper wall time runs INSIDE the disk_analyst's
+    # dispatch and burns the per-dispatch timeout; with it, the
+    # analyst dispatch only does fast tier-2 queries. Skip if the
+    # case is memory-only (nothing to pre-extract) or if the
+    # operator overrode with --no-pre-extract. See
+    # `orchestrator.pre_extract` module docstring for rationale.
+    pre_extract_result: PreExtractResult | None = None
+    if not args.no_pre_extract and has_disk_evidence(manifest):
+        # Reuse the same ProgressDisplay instance for the whole
+        # session; it handles pre_extract_* events alongside the
+        # loop events.
+        pre_extract_display = ProgressDisplay(case_dir, verbose=args.verbose)
+        print(
+            f"[{_hms()}] pre-extracting tier-1 disk plugins "
+            f"(max_workers={args.pre_extract_max_workers}; "
+            f"audit-chain runner_failed entries indicate a plugin that "
+            f"didn't complete cleanly — see audit/sift-guard-mcp.jsonl)…"
+        )
+        pre_extract_result = pre_extract_disk_tier1(
+            case_dir=case_dir,
+            manifest=manifest,
+            max_workers=args.pre_extract_max_workers,
+            on_progress=pre_extract_display.on_event,
+        )
+        print(
+            f"[{_hms()}] pre-extract: "
+            f"{pre_extract_result.succeeded_count}/"
+            f"{len(pre_extract_result.tasks)} succeeded "
+            f"({pre_extract_result.total_duration_seconds:.0f}s)"
+        )
+
     token_budget = args.token_budget
     if token_budget is None:
         token_budget = _default_multi_host_token_budget(len(manifest.hosts))
@@ -713,6 +776,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
             report_paths.append(written.json_path)
 
     summary = build_summary(case_dir)
+
     display.render_summary(
         host_count=len(summary.findings_by_host),
         confidence_counts=summary.confidence_counts,
