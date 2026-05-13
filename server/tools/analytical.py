@@ -163,6 +163,79 @@ _FIELDS_BY_PLUGIN: dict[str, frozenset[str]] = {
     "disk.registry.Registry": _DISK_REGISTRY_FIELDS,
 }
 
+
+# Field-name aliases per plugin.
+#
+# Analysts repeatedly request the malfind plugin's VAD region with
+# the names the published Volatility 3 docs / blog posts use
+# (``start``, ``end``, ``tag``, ``disasm``, ``hexdump``) — but the
+# server's allow-list and the on-disk extraction use the names from
+# the plugin's actual TreeGrid column headers (``vad_start``,
+# ``vad_tag``, ``disassembly``, ``hex_dump``). Without aliasing,
+# every malfind query was rejected and the analyst burned tokens in
+# a retry loop guessing field names. See 2026-05-13 SRL-2015 run
+# (commit 2272078 surfaced the rejection inputs via the side-channel
+# log; this commit closes the loop).
+#
+# We map analyst-friendly synonyms to the canonical column name; the
+# canonical name is what flows through validation, filtering, and
+# projection. ``end`` / ``end_va`` / ``vad_end`` are intentionally
+# absent: Volatility 3's windows.malfind.Malfind does not expose the
+# VAD end address. Asking for it stays a hard rejection so the
+# analyst learns to stop asking rather than getting a silent
+# truncation.
+_PLUGIN_FIELD_ALIASES: dict[str, dict[str, str]] = {
+    "windows.malfind.Malfind": {
+        "start": "vad_start",
+        "start_va": "vad_start",
+        "tag": "vad_tag",
+        "disasm": "disassembly",
+        "hexdump": "hex_dump",
+    },
+    "windows.pslist.PsList": {
+        # The analyst's natural name (matches malfind's actual field
+        # name) maps to pslist's image_file_name column.
+        "process_name": "image_file_name",
+    },
+    "windows.psscan.PsScan": {
+        "process_name": "image_file_name",
+    },
+    "windows.pstree.PsTree": {
+        "process_name": "image_file_name",
+    },
+}
+
+
+def _canonicalize_field(plugin_name: str, name: str) -> str:
+    """Return the canonical field name for ``plugin_name`` if ``name``
+    is a known alias; otherwise return ``name`` unchanged.
+
+    Unknown names continue to flow through ``_validate_fields`` and
+    get rejected — aliasing only resolves the *known* synonyms.
+    """
+    return _PLUGIN_FIELD_ALIASES.get(plugin_name, {}).get(name, name)
+
+
+def _canonicalize_filters(
+    plugin_name: str, filters: list[FieldFilter]
+) -> list[FieldFilter]:
+    """Build a parallel list of filters whose ``field`` is canonical.
+
+    Filters are immutable from the caller's perspective; we
+    return a new list so the audit-chain ``input_args`` can still
+    reflect the original analyst-supplied field name while the
+    execution path uses the canonical form against the actual
+    extraction.
+    """
+    out: list[FieldFilter] = []
+    for f in filters:
+        canonical = _canonicalize_field(plugin_name, f.field)
+        if canonical == f.field:
+            out.append(f)
+        else:
+            out.append(FieldFilter(field=canonical, op=f.op, value=f.value))
+    return out
+
 # Where the records list lives in each plugin's stored JSON.
 _RECORDS_KEY_BY_PLUGIN: dict[str, str] = {
     "windows.pslist.PsList": "processes",
@@ -481,7 +554,16 @@ def query_records(
         )
         raise ValueError("limit/offset out of allowed range")
 
-    referenced_fields = [f.field for f in filters] + list(fields)
+    # Resolve known field-name synonyms before validation so the
+    # analyst's natural names (``start``, ``tag``, ``disasm``,
+    # ``hexdump`` on malfind; ``process_name`` on pslist/psscan/
+    # pstree) flow through cleanly. ``input_args`` keeps the original
+    # form so the audit chain shows what the analyst actually
+    # submitted; ``canonical_*`` carries what we run against the
+    # extraction.
+    canonical_filters = _canonicalize_filters(plugin_name, filters)
+    canonical_fields = [_canonicalize_field(plugin_name, f) for f in fields]
+    referenced_fields = [f.field for f in canonical_filters] + canonical_fields
     _validate_fields(
         case_dir_path,
         plugin_name,
@@ -500,10 +582,10 @@ def query_records(
     )
 
     records = _records_of(parsed, plugin_name)
-    matched = [r for r in records if _record_matches(r, filters)]
+    matched = [r for r in records if _record_matches(r, canonical_filters)]
     matched_count = len(matched)
     sliced = matched[offset : offset + limit]
-    projected = [_project(r, fields) for r in sliced]
+    projected = [_project(r, canonical_fields) for r in sliced]
     truncated = matched_count > offset + limit
 
     # All rejection paths have cleared. The next audit line is THIS
@@ -518,7 +600,13 @@ def query_records(
         returned_count=len(projected),
         records=projected,
         truncated=truncated,
-        untrusted_fields=untrusted_fields_for(plugin_name, fields),
+        # Projected records carry canonical field keys
+        # (analyst-supplied aliases were resolved upstream), so the
+        # untrusted-field marker set must reference those canonical
+        # names too — otherwise the agent's untrusted-content scan
+        # would miss e.g. ``disassembly`` because the analyst typed
+        # ``disasm``.
+        untrusted_fields=untrusted_fields_for(plugin_name, canonical_fields),
     )
 
     append_audit_entry(
@@ -573,7 +661,12 @@ def group_by(
         )
         raise ValueError("top_n out of allowed range")
 
-    referenced_fields = [f.field for f in filters] + [field]
+    # Resolve aliases on the group axis and on each filter's field
+    # so the analyst's natural names work without burning a rejection
+    # retry. See ``_PLUGIN_FIELD_ALIASES``.
+    canonical_field = _canonicalize_field(plugin_name, field)
+    canonical_filters = _canonicalize_filters(plugin_name, filters)
+    referenced_fields = [f.field for f in canonical_filters] + [canonical_field]
     _validate_fields(
         case_dir_path,
         plugin_name,
@@ -592,8 +685,8 @@ def group_by(
     )
 
     records = _records_of(parsed, plugin_name)
-    filtered = [r for r in records if _record_matches(r, filters)]
-    counter: Counter[Any] = Counter(r.get(field) for r in filtered)
+    filtered = [r for r in records if _record_matches(r, canonical_filters)]
+    counter: Counter[Any] = Counter(r.get(canonical_field) for r in filtered)
     distinct_values = len(counter)
     groups = list(counter.most_common(top_n))
 
@@ -602,16 +695,22 @@ def group_by(
     # `groups_keys` synthetic name: the untrusted axis is the value
     # side of every (value, count) tuple in `groups`. Marked when the
     # grouped field is itself in the plugin's untrusted record-field
-    # set; group_by on `pid` (integer) yields an empty list.
-    if field in PLUGIN_UNTRUSTED_RECORD_FIELDS.get(plugin_name, ()):
+    # set; group_by on `pid` (integer) yields an empty list. Use the
+    # canonical name so the lookup matches the plugin's untrusted
+    # set regardless of whether the analyst used an alias.
+    if canonical_field in PLUGIN_UNTRUSTED_RECORD_FIELDS.get(plugin_name, ()):
         group_untrusted = ["groups_keys"]
     else:
         group_untrusted = []
 
+    # ``field`` echoed in the result reflects the canonical column
+    # the aggregation actually walked, not the alias the analyst may
+    # have typed. Consistent with ``records`` shape: keys are
+    # canonical post-projection.
     result = GroupByResult(
         extraction=ref,
         audit_line=audit_line,
-        field=field,
+        field=canonical_field,
         total_records=len(filtered),
         distinct_values=distinct_values,
         groups=groups,
@@ -889,11 +988,16 @@ def subtree(
         )
         raise ValueError("max_depth out of allowed range")
 
-    if fields:
+    # Resolve aliases so e.g. ``process_name`` on the pstree plugin
+    # routes to ``image_file_name``. ``canonical_fields`` is the
+    # form used for validation and (later) projection; ``input_args``
+    # preserves the analyst-supplied form for the audit chain.
+    canonical_fields = [_canonicalize_field(plugin_name, f) for f in fields]
+    if canonical_fields:
         _validate_fields(
             case_dir_path,
             plugin_name,
-            fields,
+            canonical_fields,
             _SUBTREE_TOOL,
             evidence_id,
             input_args,
@@ -928,7 +1032,11 @@ def subtree(
         if len(nodes_visited) < _SUBTREE_NODE_TRUNCATION:
             stripped = {k: v for k, v in node.items() if k != "children"}
             stripped["depth"] = depth
-            nodes_visited.append(_project(stripped, fields + ["depth"]) if fields else stripped)
+            nodes_visited.append(
+                _project(stripped, canonical_fields + ["depth"])
+                if canonical_fields
+                else stripped
+            )
         if depth >= max_depth:
             return
         for child in node.get("children", []) or []:
@@ -958,7 +1066,10 @@ def subtree(
         descendant_count=descendant_count,
         nodes=nodes_visited,
         truncated=truncated_by_size,
-        untrusted_fields=untrusted_fields_for(plugin_name, fields),
+        # Use the canonical field names for the untrusted-field
+        # marker so it matches the keys present on the projected
+        # ``nodes`` (which carry canonical names).
+        untrusted_fields=untrusted_fields_for(plugin_name, canonical_fields),
     )
 
     append_audit_entry(
