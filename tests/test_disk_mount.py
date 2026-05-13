@@ -805,6 +805,73 @@ class TestOrphanMountCleanup:
         assert result == {"cleaned": 0, "remaining": 0}
 
 
+class TestFileBasedPremount:
+    """File-based per-evidence-id premount override.
+
+    Complements ``SIFT_DISK_PREMOUNTED_PATH`` (the env-var form,
+    one path for every evidence) by letting the operator point
+    each evidence_id at a different external mount via a hint file
+    at ``/tmp/sift-guard-premounts/<evidence_id>``. Useful when
+    multiple disks are pre-mounted by hand on different loop
+    devices."""
+
+    def test_file_hint_takes_effect_when_env_unset(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # Re-base the mount tree under tmp_path so we can stage the
+        # hint file alongside.
+        monkeypatch.delenv(SIFT_DISK_PREMOUNTED_PATH_ENV, raising=False)
+        monkeypatch.setattr(disk_mount, "_MOUNT_BASE", tmp_path / "sift-guard-mounts")
+        operator_mount = tmp_path / "operator-mount"
+        operator_mount.mkdir()
+        hint_dir = tmp_path / "sift-guard-premounts"
+        hint_dir.mkdir()
+        (hint_dir / "eid-abc").write_text(str(operator_mount) + "\n")
+
+        # Stage proc_mounts so the post-check sees operator_mount as ro.
+        monkeypatch.setattr(
+            disk_mount,
+            "_read_proc_mounts",
+            lambda: f"/dev/loop9 {operator_mount} ext4 ro 0 0\n",
+        )
+        try:
+            with patch("server.runners.disk_mount.subprocess.run") as mock_run:
+                mock_run.return_value.returncode = 0
+                resolved = mount_disk_image("eid-abc", "/case/disk.E01")
+            # The file-based override short-circuits before any
+            # mount/ewfmount call.
+            assert resolved == str(operator_mount)
+            assert mock_run.call_count == 0
+        finally:
+            disk_mount._MOUNT_CACHE.pop("eid-abc", None)
+
+    def test_env_var_wins_over_file_hint(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # If both are set, the env var (operator's session-level
+        # override) takes precedence over the per-evidence file.
+        env_mount = tmp_path / "env-mount"
+        env_mount.mkdir()
+        file_mount = tmp_path / "file-mount"
+        file_mount.mkdir()
+        monkeypatch.setenv(SIFT_DISK_PREMOUNTED_PATH_ENV, str(env_mount))
+        monkeypatch.setattr(disk_mount, "_MOUNT_BASE", tmp_path / "sift-guard-mounts")
+        hint_dir = tmp_path / "sift-guard-premounts"
+        hint_dir.mkdir()
+        (hint_dir / "eid-xyz").write_text(str(file_mount) + "\n")
+
+        monkeypatch.setattr(
+            disk_mount,
+            "_read_proc_mounts",
+            lambda: f"/dev/loop9 {env_mount} ext4 ro 0 0\n",
+        )
+        try:
+            resolved = mount_disk_image("eid-xyz", "/case/disk.E01")
+            assert resolved == str(env_mount)
+        finally:
+            disk_mount._MOUNT_CACHE.pop("eid-xyz", None)
+
+
 class TestPlasoTempdirTracking:
     """The 2026-05-13 SRL-v2 audit found ~210 MB of leaked
     ``/tmp/sift-plaso-*`` directories across three killed runs.

@@ -536,6 +536,18 @@ def mount_disk_image(evidence_id: str, absolute_path: str) -> str:
         _MOUNT_CACHE.pop(evidence_id, None)
 
     premounted = os.environ.get(SIFT_DISK_PREMOUNTED_PATH_ENV)
+    if not premounted:
+        # File-based per-evidence-id override: operator writes the
+        # mount path to ``/tmp/sift-guard-premounts/<evidence_id>``.
+        # Complements the env-var form, which applies one path to
+        # every evidence_id — the file form lets the operator point
+        # each evidence at a different external mount (useful when
+        # multiple disks are pre-mounted by hand under different
+        # loop devices). The evidence_id is a validated UUID at the
+        # MCP boundary so no path traversal is reachable here.
+        hint_file = _MOUNT_BASE.parent / "sift-guard-premounts" / evidence_id
+        if hint_file.exists():
+            premounted = hint_file.read_text(encoding="utf-8").strip() or None
     if premounted:
         if not _is_path_mounted_readonly(premounted):
             raise MountVerificationError(
