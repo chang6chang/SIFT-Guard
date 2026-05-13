@@ -363,18 +363,30 @@ def _log_hash_mismatch(
 def _resolve_and_validate(
     case_dir_path: Path, evidence_id: str, tool_name: str
 ) -> tuple[EvidenceRecord, str]:
-    """Resolution + artifact-class + path-confinement gate.
+    """Resolution + artifact-class gate.
 
     Returns ``(EvidenceRecord, image_path)`` on success. On any
     failure audits the rejection and raises a sanitized
     ``ValueError`` whose message does NOT echo the offending
-    evidence_id back at the agent. Three rejection paths share
+    evidence_id back at the agent. Two rejection paths share
     this body.
 
     `image_path` is the registered absolute_path — local to the
     host running the MCP server, since the local runner does not
-    cross any host/VM boundary. The path-confinement check is
-    defense-in-depth against hand-edited ``CASE.yaml``.
+    cross any host/VM boundary.
+
+    There is intentionally no per-tool path-confinement check: the
+    trust boundary is ``register_evidence``, which is the only
+    writer of CASE.yaml's ``absolute_path`` field and which
+    accepts paths outside ``<case_dir>/evidence/`` when invoked
+    via the CLI's ``--no-copy`` flow (the registered evidence
+    sits where it was originally captured and a symlink under the
+    case dir points to it — the 50 GB SRL-2015 case would
+    otherwise force a full deep copy). The 2026-05-13 SRL run
+    burned an iteration on every memory tool getting rejected
+    because the validator and register_evidence disagreed about
+    what "confinement" means. disk.py never had this redundant
+    check; memory.py now matches.
     """
     record = _resolve_evidence(evidence_id, case_dir_path)
     if record is None:
@@ -394,18 +406,6 @@ def _resolve_and_validate(
             evidence_id,
         )
         raise ValueError("evidence is not a memory image")
-
-    evidence_root = case_dir_path / "evidence"
-    try:
-        _validate_path_under_evidence(record.absolute_path, evidence_root)
-    except ValueError:
-        _log_tool_rejection(
-            case_dir_path,
-            tool_name,
-            _RejectionReason.PATH_OUTSIDE_EVIDENCE_DIR,
-            evidence_id,
-        )
-        raise
 
     return record, record.absolute_path
 

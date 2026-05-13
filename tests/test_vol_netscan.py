@@ -185,17 +185,6 @@ class TestVolNetscanRejectionAudit:
         assert len(lines) == 1
         assert lines[0]["tool_name"] == "vol_netscan:rejected_wrong_artifact_class"
 
-    def test_path_outside_evidence_writes_rejection_chain_line(self, tmp_path: Path):
-        case_dir = _make_case_dir(tmp_path, absolute_path="/tmp/Foo.raw")
-        with pytest.raises(ValueError) as exc_info:
-            vol_netscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
-        assert "/tmp/Foo.raw" not in str(exc_info.value)
-        assert "case evidence directory" in str(exc_info.value)
-        audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
-        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
-        assert len(lines) == 1
-        assert lines[0]["tool_name"] == "vol_netscan:rejected_path_outside_evidence_dir"
-
 
 # ---------------------------------------------------------------------------
 # happy path — five records exercising the TCP/UDP + v4/v6 + null-PID

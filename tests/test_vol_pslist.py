@@ -211,35 +211,6 @@ class TestVolPslistRejectionAudit:
         assert entry["line_number"] == 1
         assert entry["prev_line_hash"] == _GENESIS_PREV_HASH
 
-    def test_path_outside_evidence_writes_rejection_chain_line(self, tmp_path: Path):
-        # `absolute_path` lives outside the case_dir/evidence/ tree, so
-        # the path-confinement check fires after both the
-        # evidence-resolution and artifact-class gates have passed.
-        # Should be unreachable under a normal `register_evidence`
-        # flow (path-confinement blocks it at registration time), but
-        # we still record the probe — defense in depth, and the
-        # symmetric counterpart of the other two rejection tests.
-        case_dir = _make_case_dir(tmp_path, absolute_path="/tmp/Foo.raw")
-
-        with pytest.raises(ValueError) as exc_info:
-            vol_pslist(VALID_EVIDENCE_ID, case_dir=str(case_dir))
-
-        # Sanitized: the offending path is not echoed back to the agent.
-        assert "/tmp/Foo.raw" not in str(exc_info.value)
-        assert "case evidence directory" in str(exc_info.value)
-
-        audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
-        assert audit_path.exists(), "rejection must extend the chain"
-        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
-        assert len(lines) == 1
-        entry = lines[0]
-        assert entry["tool_name"] == "vol_pslist:rejected_path_outside_evidence_dir"
-        assert entry["evidence_id"] == VALID_EVIDENCE_ID
-        assert entry["line_number"] == 1
-        assert entry["prev_line_hash"] == _GENESIS_PREV_HASH
-        assert len(entry["this_line_hash"]) == 64
-        assert all(c in "0123456789abcdef" for c in entry["this_line_hash"])
-
     def test_runner_failure_logs_runner_failed_with_remediation(
         self, tmp_path: Path
     ):
