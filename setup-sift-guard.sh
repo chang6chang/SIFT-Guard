@@ -862,6 +862,35 @@ else
     record_component "fuse-group" "skip" "root install"
 fi
 
+# Add the invoking user to vboxsf when the group exists. VirtualBox
+# shared-folder auto-mounts are owned by gid=vboxsf with dmode=0770
+# — without this group, the operator gets PermissionError on any
+# /mnt/<share>/... evidence path even though the underlying files
+# are perfectly readable from inside the VM. The fuse group above
+# does not cover this; vboxsf is a separate VirtualBox-managed
+# group, created by virtualbox-guest-utils.
+if [[ "${INVOKING_USER}" != "root" ]] && getent group vboxsf >/dev/null 2>&1; then
+    if id -nG "${INVOKING_USER}" | tr ' ' '\n' | grep -qw vboxsf; then
+        ok "${INVOKING_USER} already in vboxsf group"
+        record_component "vboxsf-group" "ok" "${INVOKING_USER}"
+    else
+        if usermod -aG vboxsf "${INVOKING_USER}" \
+                > /tmp/sift-guard-usermod-vboxsf.log 2>&1; then
+            ok "Added ${INVOKING_USER} to vboxsf group"
+            warn "vboxsf group membership takes effect at next login — log out"
+            warn "and back in (or run \`newgrp vboxsf\`) before running"
+            warn "sift-guard against any /mnt/<share>/... evidence path."
+            record_component "vboxsf-group" "warn" \
+                "${INVOKING_USER} (re-login required)"
+        else
+            warn "usermod -aG vboxsf ${INVOKING_USER} failed"
+            record_component "vboxsf-group" "fail" "could not add user"
+        fi
+    fi
+else
+    record_component "vboxsf-group" "skip" "not a VirtualBox guest"
+fi
+
 # Sudoers entry. Validate with `visudo -cf` before installing; an
 # invalid sudoers file would lock everyone out of sudo.
 SUDOERS_TMP="$(mktemp /tmp/sift-guard-sudoers-XXXX)"
