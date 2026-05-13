@@ -326,6 +326,21 @@ def record_finding(
     #    must match the ref's source_tool. Either failure audits a
     #    single rejection line — we don't enumerate every bad ref to
     #    keep the audit chain compact.
+    #
+    #    The error message echoes back the offending ref AND the
+    #    actual tool_name at that audit line. The 2026-05-13 SRL run
+    #    surfaced the dominant failure mode: with N parallel analysts
+    #    writing the shared audit chain, an analyst that called
+    #    vol_pslist (and got back, e.g., audit_line=39) sees line
+    #    numbers 33-77 shuffled in by sibling analysts, then mis-
+    #    remembers its own line as 75 when building the finding.
+    #    A generic "does not match audit chain" message gave it no
+    #    recovery path; surfacing ``(claimed_tool@line, actual_tool@line)``
+    #    lets the analyst either correct the source_tool or pick a
+    #    different line. Echoing the line numbers and tool names is
+    #    safe under CLAUDE.md's sanitization rule — these are
+    #    integers and a short Literal from a closed allow-list, not
+    #    evidence-derived content under attacker control.
     audit_path = case_dir_path.joinpath(*_AUDIT_RELATIVE_PATH)
     audit_index = _read_audit_index(audit_path)
     for ref in evidence_refs:
@@ -337,7 +352,18 @@ def record_finding(
                 evidence_id,
                 raw_input,
             )
-            raise ValueError("evidence_ref does not match audit chain")
+            actual_desc = (
+                f"tool_name={actual!r}"
+                if actual is not None
+                else "no such line in audit chain"
+            )
+            raise ValueError(
+                f"evidence_ref claims source_tool={ref.source_tool!r} "
+                f"at audit_line={ref.audit_line}, but the audit chain has "
+                f"{actual_desc}. Use the audit_line returned by your own "
+                f"tool calls in THIS session — line numbers reflect the "
+                f"shared chain and shift as sibling analysts append."
+            )
 
     # 5. Construct the DraftFinding. Server-controlled fields are set
     #    here regardless of what the agent claimed elsewhere. pydantic

@@ -114,6 +114,28 @@ the records themselves come from tier-2 tools below.
 - `mcp__sift-guard__record_finding` — commit a DRAFT finding to
   the case. Schema-validated; rejections are audited.
 
+# Canonical field names for tier-2 tools
+
+`query_records`, `group_by`, and `subtree` validate every field name
+(in `fields=`, `filters[].field`, and `field=`) against the plugin's
+schema. **Unknown field names are rejected and burn tokens on the
+retry.** Use exactly these:
+
+| Plugin                       | Fields                                                                 |
+|------------------------------|------------------------------------------------------------------------|
+| windows.pslist.PsList        | pid, ppid, image_file_name, offset_v, threads, handles, session_id, wow64, create_time, exit_time |
+| windows.psscan.PsScan        | (same as pslist)                                                       |
+| windows.pstree.PsTree        | (pslist set) + audit, cmd, path                                        |
+| windows.cmdline.CmdLine      | pid, process_name, cmdline                                             |
+| windows.malfind.Malfind      | pid, process_name, vad_start, vad_tag, protection, hex_dump, disassembly |
+
+A few common synonyms are aliased server-side (`process_name` on
+pslist/psscan/pstree → `image_file_name`; `start`/`tag`/`disasm`/
+`hexdump` on malfind → `vad_start`/`vad_tag`/`disassembly`/`hex_dump`).
+Other names (`commit_charge`, `is_orphan`, `vad_type`, end-of-VAD
+addresses, etc.) are rejected — the underlying Volatility 3 plugin
+does not surface them.
+
 # Output contract
 
 All findings MUST be recorded via `mcp__sift-guard__record_finding`.
@@ -121,9 +143,14 @@ Free-form prose findings will not be picked up by downstream
 validation. Each finding requires:
 
 - `evidence_refs` that point to specific `audit_line` numbers from
-  tool calls you made in THIS session. The server validates each
-  ref against the live audit chain — invented or stale line numbers
-  are rejected.
+  tool calls you made in THIS session. Every successful tool result
+  carries the `audit_line` integer for that call — copy it verbatim
+  from the result you actually received. The audit chain is shared
+  across parallel analysts, so consecutive lines from your own
+  perspective can be 30+ numbers apart; do not guess or interpolate.
+  The server validates each ref's (source_tool, audit_line) pair
+  against the live chain; mismatches are rejected with the actual
+  tool at that line surfaced in the error.
 - a `category` from the fixed enumeration the schema accepts.
 - a `hypothesis` explaining your reasoning.
 

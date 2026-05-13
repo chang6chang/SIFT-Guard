@@ -165,3 +165,87 @@ class TestLookupFindingByHash:
         display = ProgressDisplay(case_dir=case_dir, stream=None)
         # A hash that's syntactically valid but not in the file.
         assert display._lookup_finding_by_hash("f" * 64) is None
+
+
+class TestLookupCorrelationByHash:
+    """Parallel of the finding-hash join, this time for the ``+ CORR``
+    console line. ``record_correlation`` writes a
+    CorrelationChainEntry to ``correlations.jsonl`` exactly as
+    ``entry.model_dump_json() + "\\n"``; the audit-chain ``output_hash``
+    is sha256 of those bytes. The display join recomputes and
+    matches."""
+
+    def test_correlation_lookup_round_trip(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # Reuse the host-id env override to ensure the finding the
+        # correlation will reference carries a host_id.
+        case_dir = _make_case_dir(tmp_path)
+        monkeypatch.setenv("SIFT_GUARD_HOST_ID", "nfury")
+
+        df = record_finding(
+            evidence_id=VALID_EVIDENCE_ID,
+            analyst="process_analyst",
+            category="process_anomaly",
+            severity="medium",
+            confidence="MEDIUM",
+            title="Source finding for correlation lookup round-trip",
+            description=(
+                "A long enough description to satisfy the schema "
+                "minimum length constraint of fifty characters total."
+            ),
+            evidence_refs=[
+                EvidenceRef(
+                    source_tool="vol_pslist",
+                    audit_line=1,
+                    detail="seeded line",
+                )
+            ],
+            case_dir=str(case_dir),
+        )
+
+        # The CASE.yaml seeded by _make_case_dir uses case_dir.name
+        # (here: "case-data") as the case_id.
+        from server.tools.correlations import record_correlation
+
+        record_correlation(
+            case_id="case-data",
+            iteration_number=1,
+            correlation_type="strengthens",
+            evidence_refs=[
+                EvidenceRef(
+                    source_tool="vol_pslist",
+                    audit_line=1,
+                    detail="seeded line",
+                )
+            ],
+            hypothesis=(
+                "Cross-validation: the finding's process anomaly is reinforced "
+                "by a parallel observation in another evidence stream."
+            ),
+            target_finding_id=df.finding_id,
+            case_dir=str(case_dir),
+        )
+
+        audit_lines = (
+            (case_dir / "audit" / "sift-guard-mcp.jsonl")
+            .read_text(encoding="utf-8")
+            .strip()
+            .splitlines()
+        )
+        last = json.loads(audit_lines[-1])
+        assert last["tool_name"] == "record_correlation"
+        output_hash = last["output_hash"]
+
+        display = ProgressDisplay(case_dir=case_dir, stream=None)
+        correlation = display._lookup_correlation_by_hash(output_hash)
+        assert correlation is not None
+        assert correlation["correlation_type"] == "strengthens"
+        assert correlation["target_finding_id"] == df.finding_id
+
+    def test_correlation_lookup_missing_file_returns_none(
+        self, tmp_path: Path
+    ):
+        case_dir = _make_case_dir(tmp_path)
+        display = ProgressDisplay(case_dir=case_dir, stream=None)
+        assert display._lookup_correlation_by_hash("0" * 64) is None

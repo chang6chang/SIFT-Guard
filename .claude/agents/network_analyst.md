@@ -85,6 +85,24 @@ UDP), `pid`, `owner`, `offset`, `created`. UDP records use
 - `mcp__sift-guard__record_finding` — commit a DRAFT finding to the
   case. Schema-validated; rejections are audited.
 
+# Canonical field names for tier-2 tools
+
+`query_records`, `group_by`, and `set_difference` validate every
+field name (in `fields=`, `filters[].field`, `field=`, `key=`)
+against the plugin's schema. **Unknown field names are rejected and
+burn tokens on the retry.** Use exactly these:
+
+| Plugin                       | Fields                                                                 |
+|------------------------------|------------------------------------------------------------------------|
+| windows.netscan.NetScan      | proto, local_addr, local_port, foreign_addr, foreign_port, state, pid, owner, offset, created |
+| windows.pslist.PsList        | pid, ppid, image_file_name, offset_v, threads, handles, session_id, wow64, create_time, exit_time |
+| windows.psscan.PsScan        | (same as pslist)                                                       |
+
+A few synonyms are aliased server-side (`process_name` on pslist /
+psscan → `image_file_name`). Other names are rejected — the
+underlying Volatility 3 plugin does not surface them. The pid join
+key for set_difference between netscan and pslist/psscan is `pid`.
+
 # Output contract
 
 All findings MUST be recorded via `mcp__sift-guard__record_finding`.
@@ -92,9 +110,14 @@ Free-form prose findings will not be picked up by downstream
 validation. Each finding requires:
 
 - `evidence_refs` that point to specific `audit_line` numbers from
-  tool calls you made in THIS session. The server validates each ref
-  against the live audit chain — invented or stale line numbers are
-  rejected.
+  tool calls you made in THIS session. Every successful tool result
+  carries the `audit_line` integer for that call — copy it verbatim
+  from the result you actually received. The audit chain is shared
+  across parallel analysts, so consecutive lines from your own
+  perspective can be 30+ numbers apart; do not guess or interpolate.
+  The server validates each ref's (source_tool, audit_line) pair
+  against the live chain; mismatches are rejected with the actual
+  tool at that line surfaced in the error.
 - a `category` from the fixed enumeration the schema accepts. Network
   findings should use one of: `network_anomaly`, `network_beacon`,
   `network_lateral_movement` (or, if the right framing demands it,

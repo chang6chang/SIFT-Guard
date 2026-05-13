@@ -395,16 +395,40 @@ class ProgressDisplay:
             )
 
         if tool == "record_correlation":
-            output = entry.get("output") or {}
-            ctype = output.get("correlation_type") or "?"
-            strength = output.get("strength") or output.get("severity") or ""
+            # Same shape as record_finding: AuditLogEntry stores only
+            # `output_hash`. The correlation chain
+            # (`correlations.jsonl`) writes the full CorrelationChainEntry
+            # as `model_dump_json()`, so the audit's `output_hash` is
+            # sha256(line_bytes). Join on that.
+            output_hash = entry.get("output_hash")
+            correlation = (
+                self._lookup_correlation_by_hash(output_hash)
+                if output_hash
+                else None
+            )
+            ctype = (correlation or {}).get("correlation_type") or "?"
+            strength = (
+                (correlation or {}).get("strength")
+                or (correlation or {}).get("severity")
+                or ""
+            )
             return f"[{ts}]  + CORR  │ {ctype:<16} {strength}"
 
         if tool == "update_finding":
-            output = entry.get("output") or {}
-            rule = output.get("promotion_rule") or "?"
-            new_state = output.get("new_state") or ""
-            new_conf = output.get("new_confidence") or ""
+            # `update_finding` writes a FindingUpdate to the same
+            # findings chain. The audit chain's `output_hash` matches
+            # sha256(findings.jsonl line bytes), same as
+            # `record_finding`. `_lookup_finding_by_hash` returns
+            # whichever payload was written (DraftFinding for
+            # record_finding, FindingUpdate for update_finding); for
+            # PROMO lines we read the update-shaped fields.
+            output_hash = entry.get("output_hash")
+            update = (
+                self._lookup_finding_by_hash(output_hash) if output_hash else None
+            )
+            rule = (update or {}).get("promotion_rule") or "?"
+            new_state = (update or {}).get("new_state") or ""
+            new_conf = (update or {}).get("new_confidence") or ""
             return f"[{ts}]  ↑ PROMO │ {rule:<3} → {new_state}/{new_conf}"
 
         if self._verbose:
@@ -498,7 +522,7 @@ class ProgressDisplay:
             return None
         try:
             with path.open("r", encoding="utf-8") as f:
-                tail: list[str] = f.readlines()[-200:]
+                tail: list[str] = f.readlines()[-self._CHAIN_SCAN_TAIL :]
         except OSError:
             return None
         for raw in reversed(tail):
@@ -515,6 +539,15 @@ class ProgressDisplay:
                     return ri
                 return None
         return None
+
+    # Scan window for chain joins. Live runs see the matching line
+    # at the tail (audit append immediately follows chain append),
+    # but on long runs or under iteration replay we sometimes need
+    # to reach further back — e.g., during an iteration-2 PROMOTE
+    # phase the matching finding was written 30+ minutes earlier.
+    # 5000 lines covers a multi-iteration multi-host case
+    # comfortably without resident-set bloat.
+    _CHAIN_SCAN_TAIL = 5000
 
     def _lookup_finding_by_hash(
         self, output_hash: str
@@ -535,21 +568,48 @@ class ProgressDisplay:
         itself (chain semantics), so it doesn't equal the
         whole-entry digest the audit chain stores.
 
-        Linear scan over recent lines — the matching finding was
-        almost certainly written in the last few hundred
-        milliseconds, so the answer is at the tail. Returns the
-        ``finding`` payload (a DraftFinding dict) directly so the
-        caller can pull ``host_id`` / ``title`` / ``confidence``
-        without further unwrapping.
+        Returns the ``finding`` payload (a DraftFinding dict for
+        record_finding entries, FindingUpdate for update_finding
+        entries) so the caller can pull ``host_id`` / ``title`` /
+        ``confidence`` / ``promotion_rule`` / ``new_state`` directly.
+        """
+        return self._lookup_by_hash(
+            self._case_dir / "findings.jsonl", output_hash, "finding"
+        )
+
+    def _lookup_correlation_by_hash(
+        self, output_hash: str
+    ) -> dict[str, Any] | None:
+        """Find the correlation-chain entry that hashes to the audit
+        entry's ``output_hash``. Same join shape as
+        ``_lookup_finding_by_hash``; the inner ``correlation`` field
+        carries the typed correlation (CorroboratesCorrelation,
+        ContradictsCorrelation, …) so callers can read
+        ``correlation_type`` / ``strength`` / ``severity`` /
+        ``host_ids`` without further unwrapping.
+        """
+        return self._lookup_by_hash(
+            self._case_dir / "correlations.jsonl", output_hash, "correlation"
+        )
+
+    def _lookup_by_hash(
+        self, path: Path, output_hash: str, payload_key: str
+    ) -> dict[str, Any] | None:
+        """Shared scanner for FindingChain / CorrelationChain joins.
+
+        Reads the tail of ``path`` (capped at ``_CHAIN_SCAN_TAIL``
+        lines) and returns the inner ``payload_key`` from the entry
+        whose raw-line SHA-256 matches ``output_hash``. Linear scan
+        is fine: the live tail is at most a few hundred entries; the
+        cap protects against pathological growth on long replays.
         """
         import hashlib
 
-        path = self._case_dir / "findings.jsonl"
         if not path.exists():
             return None
         try:
             with path.open("r", encoding="utf-8") as f:
-                tail = f.readlines()[-200:]
+                tail = f.readlines()[-self._CHAIN_SCAN_TAIL :]
         except OSError:
             return None
         for raw in reversed(tail):
@@ -563,9 +623,9 @@ class ProgressDisplay:
                 rec = json.loads(stripped)
             except ValueError:
                 return None
-            finding = rec.get("finding")
-            if isinstance(finding, dict):
-                return finding
+            payload = rec.get(payload_key)
+            if isinstance(payload, dict):
+                return payload
             return None
         return None
 

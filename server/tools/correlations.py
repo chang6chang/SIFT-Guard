@@ -46,6 +46,7 @@ from pydantic import BaseModel, ValidationError
 from server.audit import append_audit_entry, peek_next_line_number
 from server.correlations_log import append_correlation_entry
 from server.findings_log import read_finding_ids
+from server.rejections_log import append_rejection_record
 from server.schemas import (
     ContradictsCorrelation,
     CorroboratesCorrelation,
@@ -128,9 +129,19 @@ def _log_rejection(
     reason: _RejectionReason,
     case_id: str | None,
     correlation_type: str | None,
+    raw_input: dict | None = None,
 ) -> None:
+    """Append one rejection line to the audit chain, plus a sanitized
+    copy of ``raw_input`` to the side-channel rejections log so the
+    operator console can render *what* was rejected — not just *that
+    something* was rejected. Mirrors the contract in
+    ``server.tools.findings._log_rejection`` (commit a036662). The
+    hash-chained audit log still stores only the input hash; the
+    side-channel writer takes care of redaction
+    (``<evidence>…</evidence>`` stripping, length cap) before disk.
+    """
     rejection = _RejectionRecord(reason=reason, case_id=case_id, correlation_type=correlation_type)
-    append_audit_entry(
+    entry = append_audit_entry(
         case_dir=case_dir,
         tool_name=f"{_TOOL_NAME}:rejected_{reason.value}",
         evidence_id=None,
@@ -140,6 +151,8 @@ def _log_rejection(
         },
         output=rejection,
     )
+    if raw_input is not None:
+        append_rejection_record(case_dir, entry, raw_input)
 
 
 def _success_input_args(
@@ -411,6 +424,37 @@ def record_correlation(
     """
     case_dir_path = Path(case_dir).resolve()
 
+    # Snapshot of every analyst-supplied argument, captured once so
+    # all five rejection paths can hand the same payload to the
+    # side-channel rejections log. The hash-chained audit log keeps
+    # storing only `{case_id, correlation_type}` (per its sanitization
+    # contract); this snapshot lives in `audit/rejections.jsonl` and
+    # is what the operator console renders when a rejection fires.
+    # See `server.rejections_log` for the redaction rules.
+    raw_input: dict[str, object] = {
+        "case_id": case_id,
+        "iteration_number": iteration_number,
+        "correlation_type": correlation_type,
+        "evidence_refs": [
+            {"source_tool": r.source_tool, "audit_line": r.audit_line}
+            for r in evidence_refs
+        ],
+        "hypothesis": hypothesis,
+        "target_finding_ids": target_finding_ids,
+        "finding_a_id": finding_a_id,
+        "finding_b_id": finding_b_id,
+        "target_finding_id": target_finding_id,
+        "strength": strength,
+        "severity": severity,
+        "resolvable_by_followup": resolvable_by_followup,
+        "target_analyst": target_analyst,
+        "related_finding_ids": related_finding_ids,
+        "focus_context": focus_context,
+        "rationale": rationale,
+        "host_ids": host_ids,
+        "shared_indicator": shared_indicator,
+    }
+
     # 1. correlation_type membership.
     if correlation_type not in _VALID_CORRELATION_TYPES:
         _log_rejection(
@@ -418,6 +462,7 @@ def record_correlation(
             _RejectionReason.UNKNOWN_TYPE,
             case_id,
             correlation_type,
+            raw_input,
         )
         raise ValueError("correlation_type not in allow-list")
 
@@ -429,6 +474,7 @@ def record_correlation(
             _RejectionReason.UNKNOWN_CASE_ID,
             case_id,
             correlation_type,
+            raw_input,
         )
         raise ValueError("case_id not found in CASE.yaml")
 
@@ -443,6 +489,7 @@ def record_correlation(
                 _RejectionReason.INVALID_AUDIT_REF,
                 case_id,
                 correlation_type,
+                raw_input,
             )
             raise ValueError("evidence_ref does not match audit chain")
 
@@ -488,6 +535,7 @@ def record_correlation(
             _RejectionReason.INVALID_PAYLOAD,
             case_id,
             correlation_type,
+            raw_input,
         )
         raise ValueError("correlation payload failed validation")
 
@@ -501,6 +549,7 @@ def record_correlation(
             _RejectionReason.UNKNOWN_FINDING,
             case_id,
             correlation_type,
+            raw_input,
         )
         raise ValueError("referenced finding_id not in findings.jsonl")
 

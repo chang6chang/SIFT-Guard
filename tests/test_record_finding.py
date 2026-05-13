@@ -324,7 +324,12 @@ class TestRejectInvalidAuditRef:
                 **_good_args(evidence_refs=bad_refs),
                 case_dir=str(case_dir),
             )
-        assert "evidence_ref does not match audit chain" in str(exc_info.value)
+        # Error message now surfaces the offending line + actual tool
+        # so the analyst has a recovery path. See 2026-05-13 SRL run
+        # commentary in findings.py step 4.
+        msg = str(exc_info.value)
+        assert "audit_line=999" in msg
+        assert "no such line" in msg
 
         audit_lines = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
         assert audit_lines[-1]["tool_name"] == ("record_finding:rejected_invalid_audit_ref")
@@ -342,11 +347,18 @@ class TestRejectInvalidAuditRef:
                 detail="line 1 is actually vol_pslist not vol_netscan",
             )
         ]
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError) as exc_info:
             record_finding(
                 **_good_args(evidence_refs=bad_refs),
                 case_dir=str(case_dir),
             )
+        # Error message identifies the claimed tool, the line, and
+        # what's actually there — so an analyst can correct or pick
+        # a different audit_line.
+        msg = str(exc_info.value)
+        assert "vol_netscan" in msg
+        assert "audit_line=1" in msg
+        assert "vol_pslist" in msg
         audit_lines = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
         assert audit_lines[-1]["tool_name"] == ("record_finding:rejected_invalid_audit_ref")
 

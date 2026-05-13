@@ -104,6 +104,26 @@ the records themselves come from tier-2 tools below.
 - `mcp__sift-guard__record_finding` — commit a DRAFT finding to
   the case. Schema-validated; rejections are audited.
 
+# Canonical field names for tier-2 tools
+
+`query_records`, `group_by`, `set_difference`, and `subtree`
+validate every field name (in `fields=`, `filters[].field`,
+`field=`, `key=`) against the plugin's schema. **Unknown field
+names are rejected and burn tokens on the retry.** Use exactly
+these:
+
+| Plugin               | Fields                                                                 |
+|----------------------|------------------------------------------------------------------------|
+| disk.mft.MftTimeline | timestamp, full_path, entry_type, file_size                            |
+| disk.prefetch.Prefetch | executable_name, run_count, last_run_times, volume_path, referenced_files |
+| disk.evtx.EventLog   | timestamp, event_id, source, computer, user, channel, message_summary, logon_type |
+| disk.registry.Registry | hive_name, key_path, value_name, value_data, last_modified           |
+
+Other names (hash digests, MAC times split out, attribute IDs,
+expanded EVTX strings, etc.) are rejected — the disk runners do
+not produce them. Keep projections tight: a `fields=[...]` list of
+3-5 columns is usually enough for a finding.
+
 # Output contract
 
 All findings MUST be recorded via `mcp__sift-guard__record_finding`.
@@ -111,9 +131,14 @@ Free-form prose findings will not be picked up by downstream
 validation. Each finding requires:
 
 - `evidence_refs` that point to specific `audit_line` numbers from
-  tool calls you made in THIS session. The server validates each
-  ref against the live audit chain — invented or stale line numbers
-  are rejected.
+  tool calls you made in THIS session. Every successful tool result
+  carries the `audit_line` integer for that call — copy it verbatim
+  from the result you actually received. The audit chain is shared
+  across parallel analysts, so consecutive lines from your own
+  perspective can be 30+ numbers apart; do not guess or interpolate.
+  The server validates each ref's (source_tool, audit_line) pair
+  against the live chain; mismatches are rejected with the actual
+  tool at that line surfaced in the error.
 - a `category` from the fixed enumeration the schema accepts.
 - a `hypothesis` explaining your reasoning.
 
