@@ -357,6 +357,15 @@ class TestVolPsscanRecordWarnings:
 
 
 class TestAuditChain:
+    @pytest.mark.skipif(
+        not (ON_DISK_AUDIT_LOG.is_file() and ON_DISK_CASE_YAML.is_file()),
+        reason=(
+            "Requires a real prior run's case-data/CASE.yaml + "
+            "case-data/audit/sift-guard-mcp.jsonl as a seed. These "
+            "are gitignored runtime artifacts; on a fresh clone they "
+            "do not exist."
+        ),
+    )
     def test_audit_chain_extends_from_existing_on_disk_chain(self, tmp_path: Path):
         """Seed the tmp case dir from the real on-disk CASE.yaml + audit
         log and verify vol_psscan's new audit line links to the copied
