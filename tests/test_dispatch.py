@@ -352,3 +352,139 @@ class TestDispatchSubagentMcpConfigArg:
         assert "--mcp-config" not in captured["cmd"], (
             "no config resolved → the flag must be omitted, not passed with empty arg"
         )
+
+
+class TestDispatchSubagentHostScoping:
+    """When ``host_id`` is supplied, ``dispatch_subagent`` synthesizes
+    a per-dispatch .mcp.json that adds ``SIFT_GUARD_HOST_ID`` to the
+    sift-guard env block, and passes THAT file via ``--mcp-config``.
+    The MCP server child reads the env block when it starts and the
+    server-side ``record_finding`` override binds every recorded
+    finding to the dispatched host. Per CLAUDE.md Hard Rule #2."""
+
+    def _fake_proc(self):
+        class _R:
+            returncode = 0
+
+            def __init__(self):
+                self.stdout = (
+                    json.dumps(
+                        {
+                            "type": "system",
+                            "mcp_servers": [
+                                {"name": "sift-guard", "status": "connected"}
+                            ],
+                        }
+                    )
+                    + "\n"
+                    + json.dumps(
+                        {
+                            "type": "result",
+                            "session_id": "sid",
+                            "stop_reason": "end_turn",
+                            "num_turns": 1,
+                            "duration_ms": 100,
+                            "duration_api_ms": 50,
+                            "total_cost_usd": 0.0,
+                            "usage": {
+                                "input_tokens": 10,
+                                "cache_creation_input_tokens": 0,
+                                "cache_read_input_tokens": 0,
+                                "output_tokens": 5,
+                            },
+                        }
+                    )
+                    + "\n"
+                )
+                self.stderr = ""
+
+        return _R()
+
+    def _seed_base_config(self, tmp_path: Path, monkeypatch) -> Path:
+        cfg = tmp_path / ".mcp.json"
+        cfg.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "sift-guard": {
+                            "command": "/opt/sift-guard/.venv/bin/python",
+                            "args": ["-m", "server.main"],
+                            "cwd": "/opt/sift-guard",
+                            "env": {
+                                "SIFT_GUARD_CASE_DIR": "/case",
+                            },
+                        }
+                    }
+                }
+            )
+        )
+        monkeypatch.setenv("SIFT_GUARD_MCP_CONFIG", str(cfg))
+        return cfg
+
+    def test_argv_points_at_synthesized_config_when_host_id_set(
+        self, tmp_path: Path, monkeypatch
+    ):
+        base_cfg = self._seed_base_config(tmp_path, monkeypatch)
+        captured: dict[str, list[str]] = {}
+
+        # Snapshot the synthesized config's bytes BEFORE the dispatch
+        # `finally` deletes it.
+        synthesized_payload: dict[str, dict] = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            idx = cmd.index("--mcp-config")
+            cfg_path = Path(cmd[idx + 1])
+            synthesized_payload["content"] = json.loads(
+                cfg_path.read_text(encoding="utf-8")
+            )
+            synthesized_payload["path"] = str(cfg_path)
+            return self._fake_proc()
+
+        with patch.object(dispatch_mod.subprocess, "run", side_effect=fake_run):
+            result = dispatch_subagent(
+                "process_analyst",
+                prompt="evidence_id: foo",
+                cwd=tmp_path,
+                host_id="nfury",
+            )
+
+        # 1. The argv pointed at a path under .mcp-dispatch/, not at
+        #    the base config — concurrent workers would otherwise
+        #    clobber each other's host scoping.
+        assert synthesized_payload["path"] != str(base_cfg)
+        assert ".mcp-dispatch" in synthesized_payload["path"]
+        # 2. The synthesized config has SIFT_GUARD_HOST_ID in the env
+        #    block — that's the only channel that reaches the MCP
+        #    server child (Claude Code does not forward the parent's
+        #    process env to stdio MCP servers).
+        env = synthesized_payload["content"]["mcpServers"]["sift-guard"]["env"]
+        assert env["SIFT_GUARD_HOST_ID"] == "nfury"
+        # 3. Pre-existing env keys (SIFT_GUARD_CASE_DIR) survive.
+        assert env["SIFT_GUARD_CASE_DIR"] == "/case"
+        # 4. After dispatch completes, the synthesized file is cleaned
+        #    up so the case_dir doesn't accumulate stale per-dispatch
+        #    configs across a long run.
+        assert not Path(synthesized_payload["path"]).exists()
+        assert result.succeeded
+
+    def test_argv_uses_base_config_when_host_id_omitted(
+        self, tmp_path: Path, monkeypatch
+    ):
+        base_cfg = self._seed_base_config(tmp_path, monkeypatch)
+        captured: dict[str, list[str]] = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return self._fake_proc()
+
+        with patch.object(dispatch_mod.subprocess, "run", side_effect=fake_run):
+            dispatch_subagent(
+                "process_analyst",
+                prompt="evidence_id: foo",
+                cwd=tmp_path,
+            )
+
+        idx = captured["cmd"].index("--mcp-config")
+        # Single-evidence path: base config is passed unchanged.
+        assert captured["cmd"][idx + 1] == str(base_cfg)

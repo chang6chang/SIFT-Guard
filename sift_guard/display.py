@@ -341,7 +341,23 @@ class ProgressDisplay:
             base = tool.split(":", 1)[0]
             return f"[{ts}]  ! MCP   │ {base} hash_mismatch on {short_eid}"
         if ":rejected_" in tool:
-            return f"[{ts}]  ! MCP   │ {tool} (input={entry.get('input_args')})"
+            # The hash-chained audit log stores only `input_hash`, not
+            # the offending payload — so `entry.get('input_args')` is
+            # always None for rejection lines. The side-channel debug
+            # log `audit/rejections.jsonl` carries a sanitized copy
+            # keyed by audit-chain line_number. Look up the matching
+            # record and render a compact preview of the offending
+            # input; fall back to the old behavior if the side-channel
+            # is missing (older runs, or rejections written by tools
+            # that don't route through it).
+            line_no = entry.get("line_number")
+            redacted = self._lookup_redacted_input(line_no) if line_no else None
+            if redacted:
+                return (
+                    f"[{ts}]  ! MCP   │ {tool} "
+                    f"input={_truncate(self._compact_rejected_input(redacted), 80)}"
+                )
+            return f"[{ts}]  ! MCP   │ {tool} (input=unavailable)"
 
         if tool in {"query_records", "group_by", "set_difference", "subtree"}:
             args = entry.get("input_args") or {}
@@ -359,10 +375,20 @@ class ProgressDisplay:
             return f"[{ts}]  · MCP   │ rag_query     {_truncate(str(qv), 60)}"
 
         if tool == "record_finding":
-            output = entry.get("output") or {}
-            title = str(output.get("title") or "")
-            conf = output.get("confidence") or "?"
-            host = output.get("host_id") or "—"
+            # `AuditLogEntry` carries only `output_hash`; the
+            # operator-facing fields (title, confidence, host_id) live
+            # in the findings chain under `finding`. Join the two by
+            # matching the audit entry's `output_hash` to the finding
+            # entry's `this_finding_hash` (set by the writer in
+            # `record_finding`). Fall back to placeholders if the
+            # findings chain isn't readable.
+            output_hash = entry.get("output_hash")
+            finding = (
+                self._lookup_finding_by_hash(output_hash) if output_hash else None
+            )
+            title = str((finding or {}).get("title") or "")
+            conf = (finding or {}).get("confidence") or "?"
+            host = (finding or {}).get("host_id") or "—"
             return (
                 f"[{ts}]  + FIND  │ {conf:<8} host={host:<12} "
                 f"{_truncate(title, 70)}"
@@ -397,6 +423,114 @@ class ProgressDisplay:
         if "projection" in args and args["projection"]:
             bits.append(f"projection={len(args['projection'])}f")
         return " ".join(bits) if bits else ""
+
+    @staticmethod
+    def _compact_rejected_input(redacted: dict[str, Any]) -> str:
+        # Highlight the fields an operator scanning a rejection most
+        # often needs: the tool's main targets and any unknown_field
+        # offenders. Falls back to a JSON-ish summary for everything
+        # else.
+        bits: list[str] = []
+        for k in (
+            "plugin",
+            "plugin_a",
+            "plugin_b",
+            "key",
+            "axis",
+            "category",
+            "severity",
+            "confidence",
+            "analyst",
+        ):
+            v = redacted.get(k)
+            if isinstance(v, (str, int, float, bool)):
+                bits.append(f"{k}={v}")
+        filt = redacted.get("filter")
+        if isinstance(filt, dict) and "field" in filt:
+            bits.append(f"filter.field={filt.get('field')}")
+        proj = redacted.get("projection")
+        if isinstance(proj, list) and proj:
+            preview = ",".join(str(p) for p in proj[:3])
+            suffix = "…" if len(proj) > 3 else ""
+            bits.append(f"projection=[{preview}{suffix}]")
+        refs = redacted.get("evidence_refs")
+        if isinstance(refs, list) and refs:
+            bits.append(f"refs={len(refs)}")
+        if bits:
+            return " ".join(bits)
+        # Final fallback: short JSON snapshot. Keeps the line
+        # informative even for tools we haven't tuned a compact
+        # rendering for.
+        try:
+            return json.dumps(redacted, default=str, sort_keys=True)[:100]
+        except (TypeError, ValueError):
+            return repr(redacted)[:100]
+
+    def _lookup_redacted_input(self, line_number: int) -> dict[str, Any] | None:
+        """Find the side-channel rejection record matching an audit
+        line. Linear scan from the bottom of the file — the rejections
+        we want are almost always the last few entries (we're
+        rendering live). Returns None on any IO error so the formatter
+        falls back to ``input=unavailable`` rather than crashing.
+        """
+        path = self._case_dir / "audit" / "rejections.jsonl"
+        if not path.exists():
+            return None
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                tail: list[str] = f.readlines()[-200:]
+        except OSError:
+            return None
+        for raw in reversed(tail):
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            try:
+                rec = json.loads(stripped)
+            except ValueError:
+                continue
+            if rec.get("line_number") == line_number:
+                ri = rec.get("redacted_input")
+                if isinstance(ri, dict):
+                    return ri
+                return None
+        return None
+
+    def _lookup_finding_by_hash(
+        self, this_finding_hash: str
+    ) -> dict[str, Any] | None:
+        """Find the finding-chain entry whose ``this_finding_hash``
+        matches the audit entry's ``output_hash``.
+
+        Linear scan over recent lines — the finding we just heard
+        about in the audit chain was almost certainly written in the
+        last few hundred milliseconds, so the matching line is at the
+        tail. Returns the ``finding`` payload (a DraftFinding dict)
+        directly so the caller can pull ``host_id`` / ``title`` /
+        ``confidence`` without further unwrapping.
+        """
+        path = self._case_dir / "findings.jsonl"
+        if not path.exists():
+            return None
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                tail = f.readlines()[-200:]
+        except OSError:
+            return None
+        for raw in reversed(tail):
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            try:
+                rec = json.loads(stripped)
+            except ValueError:
+                continue
+            if rec.get("this_finding_hash") == this_finding_hash:
+                finding = rec.get("finding")
+                if isinstance(finding, dict):
+                    return finding
+                return None
+        return None
 
     @staticmethod
     def _extract_attack_ids(args: dict[str, Any], output: dict[str, Any]) -> set[str]:

@@ -60,11 +60,18 @@ import json
 import logging
 import os
 import subprocess
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# Per-dispatch synthesized MCP configs land here so concurrent
+# workers don't clobber one another's host scoping. Cleaned up in
+# the dispatch ``finally`` once ``claude -p`` has exited.
+_DISPATCH_MCP_SUBDIR = ".mcp-dispatch"
 
 
 # MCP-config path resolution. Claude Code subagents discover MCP
@@ -104,6 +111,63 @@ def resolve_mcp_config_path() -> Path | None:
     if _DEFAULT_INSTALL_MCP_CONFIG.exists():
         return _DEFAULT_INSTALL_MCP_CONFIG
     return None
+
+
+def _synthesize_host_scoped_mcp_config(
+    base_config_path: Path, cwd: Path, host_id: str
+) -> Path | None:
+    """Write a per-dispatch .mcp.json that adds ``SIFT_GUARD_HOST_ID``
+    to the sift-guard server's ``env`` block, and return the new path.
+
+    Claude Code does NOT forward the parent process's environment to a
+    stdio-launched MCP server child — the child's env is sourced from
+    the .mcp.json ``env`` block (which is also why ``SIFT_GUARD_CASE_DIR``
+    lives there, see ``cli.py``'s per-case config synthesis). So
+    per-dispatch host scoping has to land in a per-dispatch config file
+    rather than being passed through ``subprocess.run``'s env=.
+
+    The synthesized file lives under ``cwd / .mcp-dispatch /`` with a
+    UUID suffix so concurrent workers can't collide. Cleanup is the
+    caller's responsibility (``dispatch_subagent`` deletes it in
+    ``finally`` once the subagent exits).
+
+    Returns None on any failure (malformed base config, missing
+    sift-guard entry, write error). The caller falls back to the base
+    config in that case — host attribution degrades but the dispatch
+    still proceeds.
+    """
+    try:
+        content = json.loads(base_config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "could not read base mcp config %s for host scoping: %s",
+            base_config_path,
+            exc,
+        )
+        return None
+    servers = content.get("mcpServers")
+    if not isinstance(servers, dict):
+        return None
+    sift_guard = servers.get("sift-guard")
+    if not isinstance(sift_guard, dict):
+        return None
+    env_block = dict(sift_guard.get("env") or {})
+    env_block["SIFT_GUARD_HOST_ID"] = host_id
+    sift_guard["env"] = env_block
+
+    dispatch_dir = cwd / _DISPATCH_MCP_SUBDIR
+    try:
+        dispatch_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning("could not create %s for host scoping: %s", dispatch_dir, exc)
+        return None
+    out_path = dispatch_dir / f"{host_id}-{uuid.uuid4().hex[:8]}.json"
+    try:
+        out_path.write_text(json.dumps(content, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("could not write host-scoped mcp config %s: %s", out_path, exc)
+        return None
+    return out_path
 
 
 class MCPServerNotAttachedError(RuntimeError):
@@ -464,12 +528,22 @@ def dispatch_subagent(
     cwd: Path,
     max_budget_usd: float = 5.0,
     timeout_seconds: int = 1800,
+    host_id: str | None = None,
 ) -> DispatchResult:
     """Spawn `claude -p --agent <name>` and capture the run.
 
     The subagent's frontmatter restricts its tool surface; the parent
     process role here is purely transport — start it, wait for the
     result event, return token + timing metadata.
+
+    When ``host_id`` is set, a per-dispatch .mcp.json is synthesized
+    that adds ``SIFT_GUARD_HOST_ID=<host_id>`` to the sift-guard
+    server's ``env`` block, so every ``record_finding`` call from this
+    dispatch is server-side attributed to the dispatched host
+    regardless of what the analyst supplies. Architectural guardrail
+    per CLAUDE.md Hard Rule #2: host attribution must not depend on
+    the analyst remembering to pass ``host_id``. ``None`` preserves
+    the single-evidence path (no host scoping).
 
     Failure modes:
       - Subprocess timeout → DispatchResult with stop_reason=None.
@@ -492,7 +566,15 @@ def dispatch_subagent(
     # ``MCP config file not found: /home/sansforensics/evidence_id:…``
     # (the prompt itself was being interpreted as a config path).
     cmd: list[str] = ["claude", "-p"]
-    mcp_config = resolve_mcp_config_path()
+    base_mcp_config = resolve_mcp_config_path()
+    mcp_config = base_mcp_config
+    synthesized_mcp_config: Path | None = None
+    if base_mcp_config is not None and host_id is not None:
+        synthesized_mcp_config = _synthesize_host_scoped_mcp_config(
+            base_mcp_config, cwd, host_id
+        )
+        if synthesized_mcp_config is not None:
+            mcp_config = synthesized_mcp_config
     if mcp_config is not None:
         cmd.extend(["--mcp-config", str(mcp_config)])
     else:
@@ -523,32 +605,39 @@ def dispatch_subagent(
     )
 
     try:
-        proc = subprocess.run(
-            cmd,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        logger.error("subagent %s timed out after %ds", agent, timeout_seconds)
-        return DispatchResult(
-            agent=agent,
-            session_id=None,
-            stop_reason=None,
-            num_turns=0,
-            duration_ms=timeout_seconds * 1000,
-            duration_api_ms=0,
-            total_cost_usd=0.0,
-            input_tokens=0,
-            cache_creation_input_tokens=0,
-            cache_read_input_tokens=0,
-            output_tokens=0,
-            tokens_uncached=0,
-            final_text="",
-            raw_events=[],
-        )
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            logger.error("subagent %s timed out after %ds", agent, timeout_seconds)
+            return DispatchResult(
+                agent=agent,
+                session_id=None,
+                stop_reason=None,
+                num_turns=0,
+                duration_ms=timeout_seconds * 1000,
+                duration_api_ms=0,
+                total_cost_usd=0.0,
+                input_tokens=0,
+                cache_creation_input_tokens=0,
+                cache_read_input_tokens=0,
+                output_tokens=0,
+                tokens_uncached=0,
+                final_text="",
+                raw_events=[],
+            )
+    finally:
+        if synthesized_mcp_config is not None:
+            try:
+                synthesized_mcp_config.unlink()
+            except OSError:
+                pass
 
     events, final = _parse_stream_json(proc.stdout)
     if not final:
@@ -638,6 +727,7 @@ def dispatch_analyst(
         cwd=cwd,
         max_budget_usd=max_budget_usd,
         timeout_seconds=timeout_seconds,
+        host_id=host_id,
     )
 
 

@@ -47,6 +47,7 @@ from server.extractions import (
     HashMismatchError,
     load_extraction,
 )
+from server.rejections_log import append_rejection_record
 from server.schemas import (
     PLUGIN_UNTRUSTED_RECORD_FIELDS,
     ExtractionRef,
@@ -217,15 +218,26 @@ def _log_rejection(
     evidence_id: str,
     input_args: dict,
 ) -> None:
-    """Append one rejection line to the audit chain."""
+    """Append one rejection line to the audit chain, plus a sanitized
+    copy of ``input_args`` to the side-channel rejections log.
+
+    The audit chain still records only the input hash (no agent string
+    is round-tripped through it). The side-channel log gives the
+    operator console the *shape* of the rejected input —
+    ``query_records:rejected_unknown_field`` is useless without
+    knowing which field name tripped the validator. Sanitization
+    (evidence-block stripping, length cap) lives in
+    ``server.rejections_log``.
+    """
     rejection = _RejectionRecord(reason=reason, evidence_id=evidence_id)
-    append_audit_entry(
+    entry = append_audit_entry(
         case_dir=case_dir,
         tool_name=f"{tool_name}:rejected_{reason.value}",
         evidence_id=evidence_id,
         input_args=input_args,
         output=rejection,
     )
+    append_rejection_record(case_dir, entry, input_args)
 
 
 class _HashMismatchRecord(BaseModel):

@@ -173,3 +173,92 @@ class TestRecordFindingHostId:
             case_dir=str(case_dir),
         )
         assert df.host_id is None
+
+
+class TestRecordFindingHostIdEnvOverride:
+    """Architectural guardrail: ``SIFT_GUARD_HOST_ID`` injected per
+    dispatch by the orchestrator overrides any caller-supplied
+    host_id. Per CLAUDE.md Hard Rule #2, an analyst that forgets to
+    pass host_id — or that tries to attribute its finding to a
+    different host — cannot bypass the orchestrator's host scoping."""
+
+    def test_env_overrides_caller_supplied_host_id(
+        self, tmp_path: Path, monkeypatch
+    ):
+        case_dir = _make_case_dir(tmp_path)
+        monkeypatch.setenv("SIFT_GUARD_HOST_ID", "nfury")
+        df = record_finding(
+            evidence_id=VALID_EVIDENCE_ID,
+            analyst="process_analyst",
+            category="process_anomaly",
+            severity="medium",
+            confidence="MEDIUM",
+            title="Memory anomaly finding for env override test",
+            description="A long enough description to satisfy the schema "
+            "minimum length constraint of fifty characters total.",
+            evidence_refs=[
+                EvidenceRef(
+                    source_tool="vol_pslist",
+                    audit_line=1,
+                    detail="seeded line",
+                )
+            ],
+            # Analyst tries to attribute to a different host — env wins.
+            host_id="some-other-host",
+            case_dir=str(case_dir),
+        )
+        assert df.host_id == "nfury"
+
+    def test_env_supplies_host_id_when_caller_omits_it(
+        self, tmp_path: Path, monkeypatch
+    ):
+        case_dir = _make_case_dir(tmp_path)
+        monkeypatch.setenv("SIFT_GUARD_HOST_ID", "win2008R2-controller")
+        df = record_finding(
+            evidence_id=VALID_EVIDENCE_ID,
+            analyst="process_analyst",
+            category="process_anomaly",
+            severity="medium",
+            confidence="MEDIUM",
+            title="Memory anomaly finding for env-supply test",
+            description="A long enough description to satisfy the schema "
+            "minimum length constraint of fifty characters total.",
+            evidence_refs=[
+                EvidenceRef(
+                    source_tool="vol_pslist",
+                    audit_line=1,
+                    detail="seeded line",
+                )
+            ],
+            # Caller omits host_id — env supplies it.
+            case_dir=str(case_dir),
+        )
+        assert df.host_id == "win2008R2-controller"
+
+    def test_unset_env_does_not_inject_anything(
+        self, tmp_path: Path, monkeypatch
+    ):
+        case_dir = _make_case_dir(tmp_path)
+        monkeypatch.delenv("SIFT_GUARD_HOST_ID", raising=False)
+        df = record_finding(
+            evidence_id=VALID_EVIDENCE_ID,
+            analyst="process_analyst",
+            category="process_anomaly",
+            severity="medium",
+            confidence="MEDIUM",
+            title="Memory anomaly finding for env-unset test",
+            description="A long enough description to satisfy the schema "
+            "minimum length constraint of fifty characters total.",
+            evidence_refs=[
+                EvidenceRef(
+                    source_tool="vol_pslist",
+                    audit_line=1,
+                    detail="seeded line",
+                )
+            ],
+            host_id="caller-supplied",
+            case_dir=str(case_dir),
+        )
+        # Single-evidence runs leave the env unset; the caller value
+        # is preserved.
+        assert df.host_id == "caller-supplied"

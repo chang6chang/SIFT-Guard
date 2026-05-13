@@ -24,6 +24,7 @@ audit chain only.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
@@ -38,6 +39,7 @@ from server.findings_log import (
     append_finding_entry,
     read_finding_state,
 )
+from server.rejections_log import append_rejection_record
 from server.schemas import (
     DraftFinding,
     EvidenceRecord,
@@ -166,17 +168,33 @@ def _read_audit_index(audit_path: Path) -> dict[int, str]:
     return index
 
 
-def _log_rejection(case_dir: Path, reason: _RejectionReason, evidence_id: str | None) -> None:
+def _log_rejection(
+    case_dir: Path,
+    reason: _RejectionReason,
+    evidence_id: str | None,
+    raw_input: dict | None = None,
+) -> None:
     """Append one rejection line to the audit chain. Tool name is
-    `record_finding:rejected_<reason>` for greppability."""
+    `record_finding:rejected_<reason>` for greppability.
+
+    When ``raw_input`` is supplied, a sanitized copy is also written
+    to the side-channel ``audit/rejections.jsonl`` so the operator
+    console can render *what was rejected*, not just *that something
+    was rejected*. The hash-chained audit log keeps storing only the
+    hash of the input (no echo of agent-supplied content), preserving
+    the existing sanitization rule.
+    """
+    audit_input = {"evidence_id": evidence_id}
     rejection = _RejectionRecord(reason=reason, evidence_id=evidence_id)
-    append_audit_entry(
+    entry = append_audit_entry(
         case_dir=case_dir,
         tool_name=f"{_TOOL_NAME}:rejected_{reason.value}",
         evidence_id=evidence_id,
-        input_args={"evidence_id": evidence_id},
+        input_args=audit_input,
         output=rejection,
     )
+    if raw_input is not None:
+        append_rejection_record(case_dir, entry, raw_input)
 
 
 def _success_input_args(evidence_id: str, analyst: str, refs: list[EvidenceRef]) -> dict:
@@ -231,6 +249,43 @@ def record_finding(
     """
     case_dir_path = Path(case_dir).resolve()
 
+    # 0. Host attribution: ``SIFT_GUARD_HOST_ID`` is injected per
+    #    dispatch by the orchestrator (see
+    #    ``orchestrator.dispatch._synthesize_host_scoped_mcp_config``).
+    #    When set, it overrides any caller-supplied ``host_id`` — the
+    #    analyst literally cannot mis-attribute a finding to a
+    #    different host. Architectural guardrail per CLAUDE.md Hard
+    #    Rule #2. Falls through to the caller value (typically None)
+    #    when the env is unset, so single-evidence runs and the
+    #    existing host-id-propagation tests stay backward-compatible.
+    env_host_id = os.environ.get("SIFT_GUARD_HOST_ID")
+    if env_host_id:
+        host_id = env_host_id
+
+    # Build the raw-input snapshot once and reuse for every rejection
+    # path. Only the side-channel rejections log sees this — the
+    # hash-chained audit log keeps storing only the input hash, and
+    # the redactor in ``server.rejections_log`` strips
+    # ``<evidence>…</evidence>`` blocks plus truncates long strings
+    # before writing to disk. The shape mirrors record_finding's
+    # public signature so an operator reading the log sees what the
+    # analyst tried to submit.
+    raw_input: dict[str, object] = {
+        "evidence_id": evidence_id,
+        "analyst": analyst,
+        "category": category,
+        "severity": severity,
+        "confidence": confidence,
+        "title": title,
+        "description": description,
+        "evidence_refs": [
+            {"source_tool": r.source_tool, "audit_line": r.audit_line}
+            for r in evidence_refs
+        ],
+        "hypothesis": hypothesis,
+        "host_id": host_id,
+    }
+
     # 1. Evidence-id resolution. Audit-on-reject before raising — same
     #    pattern as the memory tools, same probe-channel reasoning.
     record = _resolve_evidence(evidence_id, case_dir_path)
@@ -239,6 +294,7 @@ def record_finding(
             case_dir_path,
             _RejectionReason.EVIDENCE_NOT_FOUND,
             evidence_id,
+            raw_input,
         )
         raise ValueError("evidence_id not found in CASE.yaml")
 
@@ -248,6 +304,7 @@ def record_finding(
             case_dir_path,
             _RejectionReason.UNKNOWN_ANALYST,
             evidence_id,
+            raw_input,
         )
         raise ValueError("analyst not in allow-list")
 
@@ -260,6 +317,7 @@ def record_finding(
             case_dir_path,
             _RejectionReason.DISPUTED_SELF_MARKED,
             evidence_id,
+            raw_input,
         )
         raise ValueError("DISPUTED confidence is reserved for the validator")
 
@@ -277,6 +335,7 @@ def record_finding(
                 case_dir_path,
                 _RejectionReason.INVALID_AUDIT_REF,
                 evidence_id,
+                raw_input,
             )
             raise ValueError("evidence_ref does not match audit chain")
 
@@ -307,6 +366,7 @@ def record_finding(
             case_dir_path,
             _RejectionReason.SCHEMA_VALIDATION_FAILED,
             evidence_id,
+            raw_input,
         )
         # Sanitized: the pydantic message can be verbose and may echo
         # field values back at the agent. The audit chain captures the
