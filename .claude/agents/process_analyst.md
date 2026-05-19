@@ -108,6 +108,9 @@ the records themselves come from tier-2 tools below.
 - `mcp__sift-guard__subtree` — extracts a subtree of process
   descendants rooted at a specific PID from the pstree extraction.
   Bounded by `max_depth` (≤ 10) and a 200-node truncation cap.
+  Every returned node carries a `depth` field (subtree-computed,
+  not a pstree schema field) — you can include `"depth"` in
+  `fields=` to keep it in the projection.
 
 ## Commitment
 
@@ -129,12 +132,27 @@ retry.** Use exactly these:
 | windows.cmdline.CmdLine      | pid, process_name, cmdline                                             |
 | windows.malfind.Malfind      | pid, process_name, vad_start, vad_tag, protection, hex_dump, disassembly |
 
-A few common synonyms are aliased server-side (`process_name` on
-pslist/psscan/pstree → `image_file_name`; `start`/`tag`/`disasm`/
-`hexdump` on malfind → `vad_start`/`vad_tag`/`disassembly`/`hex_dump`).
-Other names (`commit_charge`, `is_orphan`, `vad_type`, end-of-VAD
-addresses, etc.) are rejected — the underlying Volatility 3 plugin
-does not surface them.
+A few common synonyms are aliased server-side:
+
+- `process_name` on pslist/psscan/pstree → `image_file_name`
+- `offset` on pslist/psscan/pstree → `offset_v`
+- `start`/`start_va`/`start_vad`/`start_address` on malfind → `vad_start`
+- `end`/`end_va`/`end_vad` on malfind → `vad_start` (malfind has no
+  end-of-VAD column; the alias surfaces the row anyway — read
+  `hex_dump` length to size the region)
+- `tag` on malfind → `vad_tag`
+- `disasm` on malfind → `disassembly`
+- `hexdump` on malfind → `hex_dump`
+- `protect` on malfind → `protection`
+- `image_file_name` on malfind → `process_name`
+- `image_file_name`/`process` on cmdline → `process_name`
+- `args` on cmdline → `cmdline`
+
+Other names (`commit_charge`, `is_orphan`, `vad_type`, `depth`,
+`audit_anomaly`, `file_output` on malfind, `ppid` on cmdline, etc.)
+are rejected — the underlying Volatility 3 plugin does not surface
+them. To get parent PIDs for cmdline rows, join against
+`windows.pslist.PsList` by `pid`.
 
 # Output contract
 
@@ -149,8 +167,16 @@ validation. Each finding requires:
   across parallel analysts, so consecutive lines from your own
   perspective can be 30+ numbers apart; do not guess or interpolate.
   The server validates each ref's (source_tool, audit_line) pair
-  against the live chain; mismatches are rejected with the actual
-  tool at that line surfaced in the error.
+  against the live chain. A fabricated audit_line (line doesn't
+  exist) hard-rejects with `:rejected_invalid_audit_ref`. A line
+  that exists but whose tool_name disagrees with the ref's
+  `source_tool` is silently auto-corrected to the actual tool, and
+  the finding still lands — but the server emits an
+  informational `record_finding:source_tool_corrected` line that
+  the operator can grep. Cite the tool you ACTUALLY called at that
+  line (e.g., `query_records` for a tier-2 call against an
+  extraction, NOT the underlying tier-1 plugin name) to avoid
+  triggering the telemetry.
 - a `category` from the fixed enumeration the schema accepts.
 - a `hypothesis` explaining your reasoning.
 

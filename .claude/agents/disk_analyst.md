@@ -137,8 +137,15 @@ validation. Each finding requires:
   across parallel analysts, so consecutive lines from your own
   perspective can be 30+ numbers apart; do not guess or interpolate.
   The server validates each ref's (source_tool, audit_line) pair
-  against the live chain; mismatches are rejected with the actual
-  tool at that line surfaced in the error.
+  against the live chain. A fabricated audit_line (line doesn't
+  exist) hard-rejects with `:rejected_invalid_audit_ref`. A
+  line that exists but whose tool_name disagrees with the ref's
+  `source_tool` is silently auto-corrected to the actual tool, and
+  the finding still lands — but the server emits an
+  informational `record_finding:source_tool_corrected` telemetry
+  line. Cite the tool you ACTUALLY called at that line
+  (e.g., `query_records` for a tier-2 call against an extraction,
+  NOT the underlying tier-1 plugin name) to avoid the telemetry.
 - a `category` from the fixed enumeration the schema accepts.
 - a `hypothesis` explaining your reasoning.
 

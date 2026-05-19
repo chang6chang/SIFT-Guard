@@ -59,6 +59,15 @@ records or count by field.
   listening / established counts, and the count of distinct foreign
   addresses. Specific endpoints come from `query_records` / `group_by`
   against `plugin_name="windows.netscan.NetScan"`.
+  - OS-coverage gap: Vol3 ships netscan symbol tables for Vista and
+    later only. Against a Windows XP or Server 2003 image the tool
+    completes cleanly but returns an empty `NetscanSummary` with
+    zero records, and the audit chain logs
+    `vol_netscan:unsupported_os`. Treat the empty summary as
+    informative ("network state was not recoverable from this OS"),
+    not a tool failure — record one finding noting the gap if it
+    matters to the case (so the operator sees a network-evidence
+    coverage hole), and otherwise stop the network thread.
 
 A tier-1 tool's summary is your map. It tells you *where* to look;
 the records themselves come from tier-2 tools below.
@@ -98,10 +107,14 @@ burn tokens on the retry.** Use exactly these:
 | windows.pslist.PsList        | pid, ppid, image_file_name, offset_v, threads, handles, session_id, wow64, create_time, exit_time |
 | windows.psscan.PsScan        | (same as pslist)                                                       |
 
-A few synonyms are aliased server-side (`process_name` on pslist /
-psscan → `image_file_name`). Other names are rejected — the
-underlying Volatility 3 plugin does not surface them. The pid join
-key for set_difference between netscan and pslist/psscan is `pid`.
+A few synonyms are aliased server-side:
+
+- `process_name` on pslist/psscan → `image_file_name`
+
+Netscan has no server-side aliases — its column set is the canonical
+list above. Other names are rejected — the underlying Volatility 3
+plugin does not surface them. The pid join key for `set_difference`
+between netscan and pslist/psscan is `pid`.
 
 # Output contract
 
@@ -116,8 +129,15 @@ validation. Each finding requires:
   across parallel analysts, so consecutive lines from your own
   perspective can be 30+ numbers apart; do not guess or interpolate.
   The server validates each ref's (source_tool, audit_line) pair
-  against the live chain; mismatches are rejected with the actual
-  tool at that line surfaced in the error.
+  against the live chain. A fabricated audit_line (line doesn't
+  exist) hard-rejects with `:rejected_invalid_audit_ref`. A
+  line that exists but whose tool_name disagrees with the ref's
+  `source_tool` is silently auto-corrected to the actual tool, and
+  the finding still lands — but the server emits an
+  informational `record_finding:source_tool_corrected` telemetry
+  line. Cite the tool you ACTUALLY called at that line
+  (e.g., `query_records` for a tier-2 call against an extraction,
+  NOT the underlying tier-1 plugin name) to avoid the telemetry.
 - a `category` from the fixed enumeration the schema accepts. Network
   findings should use one of: `network_anomaly`, `network_beacon`,
   `network_lateral_movement` (or, if the right framing demands it,

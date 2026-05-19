@@ -246,7 +246,12 @@ DO NOT also set: same as strengthens.
 **request_followup** — set ONLY:
 - `correlation_type`: `"request_followup"`
 - `target_analyst`: `"process_analyst"`, `"network_analyst"`, or `"disk_analyst"`
-- `related_finding_ids`: list of one or more finding-id UUIDs
+- `related_finding_ids`: list of one or more finding-id UUIDs.
+  Note: this is `related_finding_ids` (plural, prefixed with
+  `related_`) — NOT `target_finding_ids`, `target_finding_id`,
+  `finding_a_id`, or `finding_b_id`. Putting the id under any of
+  those other names on a `request_followup` is the single most
+  common drift; it triggers `:rejected_invalid_payload`.
 - `focus_context`: a JSON object (may be empty `{}`). In multi-host
   runs, include `host_id` to scope to a specific host.
 - `rationale`: free-form prose, 20-1000 chars
