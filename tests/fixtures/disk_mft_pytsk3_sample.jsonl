@@ -1,0 +1,4 @@
+{"timestamp": "2024-03-15T10:00:00+00:00", "full_path": "/Windows/System32/cmd.exe", "entry_type": "created", "file_size": 289792}
+{"timestamp": "2024-03-16T11:30:00+00:00", "full_path": "/Windows/System32/cmd.exe", "entry_type": "modified", "file_size": 289792}
+{"timestamp": "2024-03-20T08:45:00+00:00", "full_path": "/Users/Public/notepad.exe", "entry_type": "accessed", "file_size": 201728}
+{"timestamp": "2024-03-20T08:46:00+00:00", "full_path": "/Users/Public/notepad.exe", "entry_type": "mft_modified", "file_size": 201728}

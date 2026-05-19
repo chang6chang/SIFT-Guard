@@ -104,12 +104,14 @@ import atexit
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import tempfile
 import threading
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Iterable
 
@@ -867,6 +869,160 @@ def umount_all_for(evidence_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_raw_image_path(evidence_id: str, absolute_path: str) -> str:
+    """Return a path that ``pytsk3.Img_Info`` can open as a raw NTFS
+    block device.
+
+    For E01 evidence, the on-disk ``.E01`` file is opaque to TSK
+    without libewf — but the existing ewfmount-FUSE layer at
+    ``_EWF_DIR_CACHE[evidence_id]/ewf1`` exposes the same bytes as
+    a raw image. Reuse that.
+
+    For raw .dd / .raw / .001 split images, the registered
+    ``absolute_path`` IS the raw block device.
+
+    This helper is called by the MFT runner specifically; the
+    ntfs-3g mount sits on top of the same raw layer but doesn't
+    expose ``$MFT`` (default ntfs-3g hides system files), so pytsk3
+    walks the raw image directly instead.
+    """
+    ewf_dir = _EWF_DIR_CACHE.get(evidence_id)
+    if ewf_dir is not None:
+        candidate = Path(ewf_dir) / "ewf1"
+        if candidate.exists():
+            return str(candidate)
+    return absolute_path
+
+
+def run_mft_timeline_pytsk3(
+    raw_image_path: str, *, timeout_seconds: int = 1200
+) -> tuple[str, str, float, str]:
+    """Walk the MFT directly via pytsk3 and emit timeline rows.
+
+    Replaces ``run_log2timeline_mft`` for the disk_mft_timeline tool.
+    log2timeline + psort hit the 30-min timeout on the 2026-05-19
+    multi-host run for every Win7+ disk (~30 GB images). pytsk3 walks
+    the same MFT directly from the raw image and emits the same
+    timeline rows in seconds — observed 7.4 s for ~130 K files /
+    ~500 K timestamp rows on a 28 GB nfury image (≈240× faster).
+
+    Output is JSON-line, one row per (file, timestamp_type) pair, to
+    match the existing ``parse_plaso_jsonl`` shape — the parser
+    auto-detects pytsk3 rows by the presence of a top-level
+    ``entry_type`` key. Each row carries the canonical MFT fields:
+
+      - ``timestamp``: ISO-8601 UTC string
+      - ``full_path``: NTFS path from the root, forward-slash separated
+      - ``entry_type``: one of ``created`` / ``modified`` / ``accessed``
+        / ``mft_modified``
+      - ``file_size``: int for regular files, None for directories
+
+    Recursive directory descent skips:
+      - the synthetic ``.`` / ``..`` dirents (TSK exposes them; the
+        timeline shouldn't double-count)
+      - ``System Volume Information`` (locked + uninteresting under
+        normal acquisitions)
+      - allocated entries with no metadata (orphans without
+        $STANDARD_INFORMATION are unusable)
+
+    The whole-walk timeout is a soft ceiling: ``time.monotonic()``
+    checks fire between top-level directory visits, NOT inside
+    pytsk3 native calls — a pathological NTFS structure could
+    technically run past the limit if a single subtree dominates.
+    In practice the 7-second observed walk has 100× headroom.
+    """
+    try:
+        import pytsk3
+    except ImportError as exc:
+        raise RuntimeError(
+            "pytsk3 not installed — disk_mft_timeline now uses pytsk3 "
+            "instead of plaso; install via `pip install pytsk3`"
+        ) from exc
+
+    start = time.monotonic()
+    img = pytsk3.Img_Info(raw_image_path)
+    # The ewf1 FUSE entry presents the NTFS volume directly (no
+    # partition table). For other image shapes the same code-path
+    # works because pytsk3 falls back to offset 0 when there's no
+    # volume table.
+    fs = pytsk3.FS_Info(img, offset=0)
+
+    rows: list[str] = []
+    deadline = start + timeout_seconds
+
+    def _iso_or_none(timestamp: int | None) -> str | None:
+        if timestamp is None or timestamp <= 0:
+            return None
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            return _dt.fromtimestamp(timestamp, tz=_tz.utc).isoformat()
+        except (OSError, OverflowError, ValueError):
+            return None
+
+    def _walk(directory, path_prefix: str, depth: int) -> None:
+        if time.monotonic() > deadline:
+            return
+        for entry in directory:
+            try:
+                raw_name = entry.info.name.name
+            except AttributeError:
+                continue
+            if raw_name is None:
+                continue
+            try:
+                name = raw_name.decode("utf-8", errors="replace")
+            except (AttributeError, UnicodeDecodeError):
+                continue
+            if name in (".", ".."):
+                continue
+            meta = entry.info.meta
+            if meta is None:
+                continue
+            full_path = f"{path_prefix}/{name}" if path_prefix else f"/{name}"
+            is_dir = meta.type == pytsk3.TSK_FS_META_TYPE_DIR
+            file_size = None if is_dir else int(meta.size or 0)
+            for entry_type, ts_raw in (
+                ("created", meta.crtime),
+                ("modified", meta.mtime),
+                ("accessed", meta.atime),
+                ("mft_modified", meta.ctime),
+            ):
+                ts_iso = _iso_or_none(ts_raw)
+                if ts_iso is None:
+                    continue
+                rows.append(
+                    json.dumps(
+                        {
+                            "timestamp": ts_iso,
+                            "full_path": full_path,
+                            "entry_type": entry_type,
+                            "file_size": file_size,
+                        }
+                    )
+                )
+            if (
+                is_dir
+                and name != "System Volume Information"
+                and not name.startswith("$")
+                and depth < 32
+            ):
+                try:
+                    child = entry.as_directory()
+                except (OSError, RuntimeError):
+                    continue
+                _walk(child, full_path, depth + 1)
+
+    _walk(fs.open_dir("/"), "", 0)
+    elapsed = time.monotonic() - start
+    stdout = "\n".join(rows)
+    return (
+        stdout,
+        f"pytsk3 NTFS walk of {raw_image_path}",
+        elapsed,
+        "pytsk3 (libtsk)",
+    )
+
+
 def run_log2timeline_mft(
     mount_path: str, *, timeout_seconds: int = 1800
 ) -> tuple[str, str, float, str]:
@@ -967,6 +1123,10 @@ def run_prefetch(mount_path: str, *, timeout_seconds: int = 300) -> tuple[str, s
     return stdout, command_string, elapsed, prefetch_cmd
 
 
+_EVTX_CHANNEL_MARKER_PREFIX = "<!-- __channel__:"
+_EVTX_CHANNEL_MARKER_SUFFIX = " -->"
+
+
 def run_evtx_dump(
     mount_path: str,
     channels: Iterable[str] = ("Security", "System"),
@@ -976,19 +1136,21 @@ def run_evtx_dump(
     """Dump the requested EVTX channels under the mount.
 
     Subprocess invocation per channel:
-    ``${SIFT_DISK_EVTX_DUMP_CMD:-evtx_dump.py} -o json
-    <Logs/<channel>.evtx>``. Concatenates JSON-line output across
-    the requested channels with the channel name prepended on each
-    line as a synthetic ``__channel`` field so the parser can split
-    them out without re-reading file-paths.
+    ``${SIFT_DISK_EVTX_DUMP_CMD:-evtx_dump.py} <Logs/<channel>.evtx>``.
+    SIFT 2026.1 ships python-evtx 0.8.1, which writes XML (not JSON)
+    and has no ``-o`` flag — the 2026-05-19 multi-host run logged 7
+    ``disk_evtx:runner_failed`` events on every Win7+ host because
+    the runner was still passing ``-o json``. The current shape
+    concatenates per-channel XML blobs with a marker comment
+    (``<!-- __channel__:<name> -->``) before each so the parser can
+    split them out without re-reading paths.
+
+    XP/2003 mounts have no ``winevt/Logs`` at all (XP uses
+    ``WINDOWS/system32/config/*.Evt`` — different .evt format, not
+    supported by python-evtx) so the resolver returns None there
+    and we yield a zero-record extraction.
     """
     cmd = os.environ.get(SIFT_DISK_EVTX_DUMP_CMD_ENV, _DEFAULT_EVTX_DUMP_CMD)
-    # Case-insensitive lookup so Win7+ (``Windows/System32/winevt/Logs``)
-    # and any non-standard imaging-tool casing both resolve. XP/2003
-    # mounts have no ``winevt/Logs`` at all (XP uses
-    # ``WINDOWS/system32/config/*.Evt`` — different .evt format, not
-    # supported by python-evtx) so this resolver returns None there
-    # and the channel-loop yields a zero-record extraction.
     log_dir = _resolve_path_ci(mount_path, RELATIVE_EVTX_DIR)
 
     pieces: list[str] = []
@@ -1004,24 +1166,18 @@ def run_evtx_dump(
         if log_path is None or not log_path.exists():
             continue
         stdout, command_string, elapsed = _run_subprocess(
-            [cmd, "-o", "json", str(log_path)],
+            [cmd, str(log_path)],
             timeout_seconds=timeout_seconds,
             wrap_as_mount_error=False,
         )
         cmd_pieces.append(command_string)
         cumulative_elapsed += elapsed
-        # Tag each line with its source channel so the parser can
-        # restore it without re-walking paths. JSON-line input only.
-        for raw in stdout.splitlines():
-            stripped = raw.strip()
-            if not stripped:
-                continue
-            try:
-                obj = json.loads(stripped)
-            except json.JSONDecodeError:
-                continue
-            obj["__channel"] = channel
-            pieces.append(json.dumps(obj))
+        # Channel marker before the XML payload; the parser splits on
+        # this and skips the XML preamble inside each chunk.
+        pieces.append(
+            f"{_EVTX_CHANNEL_MARKER_PREFIX}{channel}{_EVTX_CHANNEL_MARKER_SUFFIX}"
+        )
+        pieces.append(stdout)
 
     combined_stdout = "\n".join(pieces)
     combined_command = " && ".join(cmd_pieces) if cmd_pieces else f"{cmd} (no logs)"
@@ -1128,16 +1284,26 @@ _PLASO_TIMESTAMP_DESC_MAP: dict[str, str] = {
 
 
 def parse_plaso_jsonl(stdout: str) -> list[dict]:
-    """Parse psort.py's json_line output to MftTimelineRecord-shaped dicts.
+    """Parse MFT timeline JSON-line output to MftTimelineRecord shape.
 
-    Each line is a JSON object with plaso fields. We map the subset
-    the schema cares about (datetime → timestamp, display_name →
-    full_path, timestamp_desc → entry_type, file_size → file_size).
+    Handles two on-disk shapes transparently:
 
-    Lines whose `parser` is not `mft` are filtered out — defense-in-
-    depth against the runner being misconfigured. Lines whose
-    timestamp_desc is not one of the four MFT timestamp categories
-    are dropped (forward-compat with future plaso desc additions).
+    1. ``run_mft_timeline_pytsk3`` (default since 2026-05-19) emits
+       rows in the canonical schema directly: ``timestamp``,
+       ``full_path``, ``entry_type``, ``file_size``. The parser just
+       passes those through.
+
+    2. Legacy ``run_log2timeline_mft`` (plaso) output: each row is a
+       plaso JSON object with ``datetime``, ``display_name``,
+       ``timestamp_desc``, ``file_size``. We map fields and reject
+       rows whose ``timestamp_desc`` isn't one of the four MFT
+       timestamp categories. Kept so cached extractions from
+       pre-pytsk3 runs still parse and so the legacy runner stays
+       usable as a fallback.
+
+    Lines whose ``parser`` (plaso) is not ``mft`` are filtered out
+    as defense-in-depth against the legacy runner being
+    misconfigured.
     """
     rows: list[dict] = []
     for raw in stdout.splitlines():
@@ -1148,6 +1314,18 @@ def parse_plaso_jsonl(stdout: str) -> list[dict]:
             obj = json.loads(stripped)
         except json.JSONDecodeError:
             continue
+        # Pytsk3 shape: canonical fields present directly.
+        if "entry_type" in obj and "full_path" in obj:
+            rows.append(
+                {
+                    "timestamp": obj.get("timestamp"),
+                    "full_path": obj.get("full_path", ""),
+                    "entry_type": obj.get("entry_type"),
+                    "file_size": obj.get("file_size"),
+                }
+            )
+            continue
+        # Plaso legacy shape: map timestamp_desc → entry_type.
         if obj.get("parser") and obj.get("parser") != "mft":
             continue
         desc = obj.get("timestamp_desc", "")
@@ -1202,93 +1380,170 @@ def parse_prefetch(stdout: str) -> list[dict]:
     return rows
 
 
-def parse_evtx(stdout: str) -> list[dict]:
-    """Parse `evtx_dump.py -o json` line-tagged stdout.
+_EVTX_NAMESPACE_RE = re.compile(r"\sxmlns(:\w+)?=\"[^\"]*\"")
+_EVTX_CHANNEL_MARKER_RE = re.compile(
+    r"<!--\s*__channel__:([^>\s]+)\s*-->"
+)
 
-    Each line is a per-event JSON object. The runner pre-tags each
-    line with `__channel: <name>` so we can populate the schema's
-    `channel` field without re-walking file paths. EventData is
-    flattened to a string for `message_summary` and truncated to
-    500 chars.
+
+def _strip_xml_namespaces(xml_text: str) -> str:
+    """Strip xmlns declarations so ElementTree tag lookups match the
+    short tag names. python-evtx's XML carries the W3C events namespace
+    plus a few annotation namespaces; preprocessing here is cheaper
+    than per-element namespace gymnastics on the search side.
+    """
+    return _EVTX_NAMESPACE_RE.sub("", xml_text)
+
+
+def _parse_evtx_chunk(xml_text: str, channel: str) -> list[dict]:
+    """Parse one channel's XML payload (per-event ``<Event>`` blocks)
+    into EvtxRecord-shaped dicts. Tolerant of truncated or partially
+    corrupted streams — drops the affected event and continues. The
+    enclosing ``<Events>`` root may or may not be present (concatenated
+    output across channels means each chunk has its own preamble + root).
     """
     rows: list[dict] = []
-    for raw in stdout.splitlines():
-        stripped = raw.strip()
-        if not stripped:
-            continue
+    if not xml_text.strip():
+        return rows
+    cleaned = _strip_xml_namespaces(xml_text)
+    # python-evtx writes one ``<?xml ?>`` preamble + one ``<Events>``
+    # root per channel. Wrap in a synthetic root so concatenated
+    # output (multiple ``<Events>`` blocks back-to-back) still parses
+    # under a single root. ``<?xml ?>`` declarations inside the body
+    # would break the wrap, so strip them.
+    cleaned = re.sub(r"<\?xml[^?]*\?>", "", cleaned)
+    wrapped = f"<EvtxRoot>{cleaned}</EvtxRoot>"
+    try:
+        root = ET.fromstring(wrapped)
+    except ET.ParseError:
+        # Fall through to per-event regex split when the whole-chunk
+        # parse fails — a single malformed event can poison the root.
+        return _parse_evtx_chunk_event_by_event(cleaned, channel)
+    for event_node in root.iter("Event"):
+        row = _event_node_to_row(event_node, channel)
+        if row is not None:
+            rows.append(row)
+    return rows
+
+
+def _parse_evtx_chunk_event_by_event(xml_text: str, channel: str) -> list[dict]:
+    """Fallback per-event parse for chunks where the whole-chunk parse
+    failed. Splits on ``<Event``/``</Event>`` boundaries with regex,
+    parses each event independently, skips the ones that fail.
+    """
+    rows: list[dict] = []
+    # Lazy split: find each <Event ...>...</Event> block. The greedy
+    # pattern is intentional — events don't nest each other.
+    pattern = re.compile(r"<Event(\s[^>]*)?>.*?</Event>", re.DOTALL)
+    for match in pattern.finditer(xml_text):
         try:
-            obj = json.loads(stripped)
-        except json.JSONDecodeError:
+            node = ET.fromstring(match.group(0))
+        except ET.ParseError:
             continue
-        system = (
-            obj.get("Event", {}).get("System", {}) if isinstance(obj.get("Event"), dict) else {}
-        )
-        # Some evtx_dump variants flatten differently; fall back to
-        # top-level keys when System.* is absent.
-        event_id_raw = system.get("EventID") or obj.get("EventID") or obj.get("event_id") or 0
-        if isinstance(event_id_raw, dict):
-            event_id_raw = event_id_raw.get("#text", 0)
-        try:
-            event_id = int(event_id_raw)
-        except (TypeError, ValueError):
-            continue
+        row = _event_node_to_row(node, channel)
+        if row is not None:
+            rows.append(row)
+    return rows
 
-        provider = system.get("Provider", {}) if isinstance(system.get("Provider"), dict) else {}
-        source = provider.get("Name") or system.get("Provider") or obj.get("source") or ""
-        channel = obj.get("__channel") or system.get("Channel") or obj.get("channel") or ""
-        time_created_raw = (
-            system.get("TimeCreated", {}).get("SystemTime")
-            if isinstance(system.get("TimeCreated"), dict)
-            else None
-        ) or obj.get("timestamp")
 
-        # Render EventData as a flat string for message_summary;
-        # extract logon_type when present.
-        event_data = (
-            obj.get("Event", {}).get("EventData", {})
-            if isinstance(obj.get("Event"), dict)
-            else obj.get("EventData") or {}
-        )
-        if not isinstance(event_data, dict):
-            event_data = {}
-        # `Data` may be a list of {"@Name": "...", "#text": "..."}
-        # entries on the rendered XML form, or a flat dict on
-        # already-flattened producers.
-        rendered: list[str] = []
-        logon_type: int | None = None
-        data = event_data.get("Data")
-        if isinstance(data, list):
-            for d in data:
-                if isinstance(d, dict):
-                    name = d.get("@Name") or d.get("Name") or ""
-                    val = d.get("#text") or d.get("text") or d.get("value") or ""
-                    rendered.append(f"{name}={val}")
-                    if name == "LogonType":
-                        try:
-                            logon_type = int(val)
-                        except (TypeError, ValueError):
-                            pass
-        elif isinstance(data, dict):
-            for name, val in data.items():
-                rendered.append(f"{name}={val}")
-                if name == "LogonType":
-                    try:
-                        logon_type = int(val)
-                    except (TypeError, ValueError):
-                        pass
+def _event_node_to_row(event_node: "ET.Element", channel: str) -> dict | None:
+    """Extract EvtxRecord-shaped fields from a single ``<Event>`` node.
 
-        message_summary = _truncate_to_500("; ".join(rendered) if rendered else str(event_data))
+    Returns ``None`` when the event lacks a usable EventID — those
+    rows would fail the EvtxRecord pydantic constructor with
+    ``int`` parse errors and there's no value preserving them.
+    """
+    system = event_node.find("System")
+    if system is None:
+        return None
+    event_id_node = system.find("EventID")
+    if event_id_node is None or event_id_node.text is None:
+        return None
+    try:
+        event_id = int(event_id_node.text.strip())
+    except (TypeError, ValueError):
+        return None
 
-        rows.append(
-            {
-                "event_id": event_id,
-                "timestamp": time_created_raw,
-                "source": str(source),
-                "channel": str(channel),
-                "message_summary": message_summary,
-                "logon_type": logon_type,
-            }
-        )
+    provider_node = system.find("Provider")
+    source = ""
+    if provider_node is not None:
+        source = provider_node.get("Name") or (provider_node.text or "")
+
+    # Channel from XML wins over the runner's marker when both are
+    # present; XP-style logs may not carry it, hence the fallback.
+    channel_node = system.find("Channel")
+    channel_value = (
+        channel_node.text.strip()
+        if channel_node is not None and channel_node.text
+        else channel
+    )
+
+    time_node = system.find("TimeCreated")
+    timestamp = None
+    if time_node is not None:
+        timestamp = time_node.get("SystemTime") or (time_node.text or None)
+
+    rendered: list[str] = []
+    logon_type: int | None = None
+    event_data_node = event_node.find("EventData")
+    if event_data_node is not None:
+        for data_node in event_data_node.findall("Data"):
+            name = data_node.get("Name") or ""
+            val = (data_node.text or "").strip()
+            rendered.append(f"{name}={val}" if name else val)
+            if name == "LogonType":
+                try:
+                    logon_type = int(val)
+                except (TypeError, ValueError):
+                    pass
+
+    message_summary = _truncate_to_500(
+        "; ".join(r for r in rendered if r) if rendered else ""
+    )
+
+    return {
+        "event_id": event_id,
+        "timestamp": timestamp,
+        "source": str(source),
+        "channel": str(channel_value),
+        "message_summary": message_summary,
+        "logon_type": logon_type,
+    }
+
+
+def parse_evtx(stdout: str) -> list[dict]:
+    """Parse ``evtx_dump.py`` XML output (python-evtx 0.8.1 / SIFT
+    2026.1 shape) into EvtxRecord-shaped dicts.
+
+    The runner concatenates per-channel XML blobs with marker
+    comments — ``<!-- __channel__:<name> -->`` — before each. We
+    split on those markers to recover the channel-of-origin, then
+    parse each chunk independently. The XML preamble is stripped per
+    chunk so concatenated outputs are tolerated. EventData is
+    flattened to a ``key=value; key=value`` string for
+    ``message_summary`` and truncated at 500 chars.
+
+    Pre-2026-05-19 the runner emitted JSON-line output via
+    ``evtx_dump.py -o json``; SIFT 2026.1 ships python-evtx without
+    that flag, so the runner switched to bare XML output. This
+    parser handles only the XML shape.
+    """
+    rows: list[dict] = []
+    if not stdout.strip():
+        return rows
+    # Split on the marker comments. ``re.split`` keeps the captured
+    # group, so we get alternating ``[preamble, channel_name,
+    # chunk_xml, channel_name, chunk_xml, ...]``.
+    parts = _EVTX_CHANNEL_MARKER_RE.split(stdout)
+    if len(parts) == 1:
+        # No markers at all — treat the whole input as one untagged
+        # chunk (test fixtures, direct manual dumps).
+        rows.extend(_parse_evtx_chunk(stdout, ""))
+        return rows
+    for i in range(1, len(parts), 2):
+        channel = parts[i]
+        xml_payload = parts[i + 1] if i + 1 < len(parts) else ""
+        rows.extend(_parse_evtx_chunk(xml_payload, channel))
     return rows
 
 

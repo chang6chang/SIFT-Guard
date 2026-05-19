@@ -22,7 +22,7 @@ from server.tools.disk import disk_mft_timeline
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-MFT_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "disk_mft_sample.jsonl"
+MFT_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "disk_mft_pytsk3_sample.jsonl"
 
 VALID_EVIDENCE_ID = "550e8400-e29b-41d4-a716-446655440000"
 VALID_SHA256 = "eb33bdf63730858a805463d171245b233335dd6d89ed458bc681f7d282e10563"
@@ -183,12 +183,13 @@ class TestDiskMftRejectionAudit:
 
 class TestDiskMftHappyPath:
     def test_returns_summary_with_four_records(self, tmp_path: Path):
+        # Since 2026-05-19 disk_mft_timeline uses pytsk3 instead of
+        # plaso log2timeline. The mocked runner is now
+        # ``run_mft_timeline_pytsk3``; the canonical-row fixture
+        # exercises the pytsk3 path of ``parse_plaso_jsonl``.
         case_dir = _make_case_dir(tmp_path)
         fixture_stdout = MFT_FIXTURE.read_text(encoding="utf-8")
-        fake_command = (
-            "log2timeline.py --parsers mft --storage-file /tmp/x.plaso "
-            "/mnt/sift_disk && psort.py -o json_line -w /tmp/x.jsonl /tmp/x.plaso"
-        )
+        fake_command = "pytsk3 NTFS walk of /tmp/sift-guard-mounts/<uid>-ewf/ewf1"
         fake_mount = "/mnt/sift_disk"
 
         with (
@@ -197,8 +198,12 @@ class TestDiskMftHappyPath:
                 return_value=fake_mount,
             ),
             patch(
-                "server.tools.disk.run_log2timeline_mft",
-                return_value=(fixture_stdout, fake_command, 42.0, "plaso 20240126"),
+                "server.tools.disk._resolve_raw_image_path",
+                return_value="/raw/image.bin",
+            ),
+            patch(
+                "server.tools.disk.run_mft_timeline_pytsk3",
+                return_value=(fixture_stdout, fake_command, 42.0, "pytsk3 (libtsk)"),
             ) as mock_run,
         ):
             summary = disk_mft_timeline(VALID_EVIDENCE_ID, case_dir=str(case_dir))
@@ -231,15 +236,15 @@ class TestDiskMftHappyPath:
         assert loaded_ref.cached is True
         assert loaded_ref.runtime_seconds is None
         assert parsed["plugin_name"] == "disk.mft.MftTimeline"
-        assert parsed["tool_version"] == "plaso 20240126"
+        assert parsed["tool_version"] == "pytsk3 (libtsk)"
         assert parsed["command_executed"] == fake_command
         entries = parsed["entries"]
         assert len(entries) == 4
 
-        # Mount was called with the right evidence id; runner with
-        # the resolved mount path.
+        # Mount was still called (sibling tools need it); runner
+        # received the raw image path, not the mount path.
         mock_run.assert_called_once()
-        assert mock_run.call_args.args[0] == fake_mount
+        assert mock_run.call_args.args[0] == "/raw/image.bin"
 
         # Extractions chain line written + hash matches.
         chain_path = case_dir / "extractions.jsonl"

@@ -66,8 +66,10 @@ from server.runners.disk_mount import (
     parse_regripper,
     run_evtx_dump,
     run_log2timeline_mft,
+    run_mft_timeline_pytsk3,
     run_prefetch,
     run_regripper,
+    _resolve_raw_image_path,
 )
 from server.schemas import (
     ArtifactClass,
@@ -640,17 +642,31 @@ def _serve_fresh(
 
 
 def disk_mft_timeline(evidence_id: str, case_dir: str = "case-data") -> MftTimelineSummary:
-    """Run plaso's MFT-only timeline against a registered disk_image.
+    """Walk the MFT directly via pytsk3 against a registered disk_image.
 
-    Two-step pipeline (log2timeline.py + psort.py); see
-    `server.runners.disk_mount.run_log2timeline_mft` for details.
-    Returns a `MftTimelineSummary` with entry-type distribution,
+    Uses ``run_mft_timeline_pytsk3`` (libtsk) since 2026-05-19. Pre-2026-05-19
+    runs used plaso's two-step ``log2timeline.py`` + ``psort.py`` pipeline,
+    which routinely hit the 30-min timeout on real evidence (the
+    2026-05-19 multi-host run had 2 of 4 hosts time out at 1800s).
+    pytsk3 reads the raw NTFS volume and yields the same MFT
+    timeline rows in seconds — 7.4s observed for ~130K files /
+    ~500K timeline rows on a 28GB image.
+
+    The raw image path comes from ``_resolve_raw_image_path``: the
+    ewfmount FUSE entry for E01s, the registered absolute_path for
+    raw .dd/.001 images. The ntfs-3g mount is still needed for
+    sibling tools (disk_evtx, disk_prefetch, disk_registry) so
+    ``_resolve_and_mount`` is still called for its side effect —
+    the mount survives into the rest of the analyst session.
+
+    Returns a ``MftTimelineSummary`` with entry-type distribution,
     timestamp range, and a top-N list of paths by entry count.
     Specific timeline rows come from
-    `query_records(plugin_name="disk.mft.MftTimeline", ...)`.
+    ``query_records(plugin_name="disk.mft.MftTimeline", ...)``.
     """
     case_dir_path = Path(case_dir).resolve()
-    _, mount_path = _resolve_and_mount(case_dir_path, evidence_id, _MFT_TOOL_NAME)
+    record, _ = _resolve_and_mount(case_dir_path, evidence_id, _MFT_TOOL_NAME)
+    raw_image_path = _resolve_raw_image_path(evidence_id, record.absolute_path)
 
     summary_fn: Callable[[ExtractionRef, list[dict]], MftTimelineSummary] = _compute_mft_summary
 
@@ -667,11 +683,11 @@ def disk_mft_timeline(evidence_id: str, case_dir: str = "case-data") -> MftTimel
     return _serve_fresh(
         case_dir_path,
         evidence_id,
-        mount_path,
+        raw_image_path,
         _MFT_PLUGIN,
         _MFT_TOOL_NAME,
         "entries",
-        run_log2timeline_mft,
+        run_mft_timeline_pytsk3,
         parse_plaso_jsonl,
         MftTimelineRecord,
         MftTimelineResult,

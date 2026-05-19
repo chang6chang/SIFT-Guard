@@ -15,7 +15,7 @@ from server.tools.disk import disk_evtx
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-EVTX_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "disk_evtx_sample.jsonl"
+EVTX_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "disk_evtx_sample.xml"
 
 VALID_EVIDENCE_ID = "550e8400-e29b-41d4-a716-446655440000"
 VALID_SHA256 = "eb33bdf63730858a805463d171245b233335dd6d89ed458bc681f7d282e10563"
@@ -78,7 +78,7 @@ class TestDiskEvtxHappyPath:
                 "server.tools.disk.run_evtx_dump",
                 return_value=(
                     fixture_stdout,
-                    "evtx_dump.py -o json /mnt/sift_disk/Windows/System32/winevt/Logs/Security.evtx",
+                    "evtx_dump.py /mnt/sift_disk/Windows/System32/winevt/Logs/Security.evtx",
                     7.5,
                     "evtx_dump.py",
                 ),

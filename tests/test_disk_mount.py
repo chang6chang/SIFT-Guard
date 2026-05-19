@@ -187,7 +187,7 @@ class TestIsPathMountedReadonly:
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MFT_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "disk_mft_sample.jsonl"
 PREFETCH_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "disk_prefetch_sample.jsonl"
-EVTX_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "disk_evtx_sample.jsonl"
+EVTX_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "disk_evtx_sample.xml"
 REGRIPPER_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "disk_regripper_sample.txt"
 
 
@@ -213,6 +213,38 @@ class TestParsePlasoJsonl:
             '"display_name": "/x.exe"}\n'
         )
         assert rows == []
+
+    def test_parses_pytsk3_canonical_rows(self):
+        # Since 2026-05-19 the runner emits canonical rows directly
+        # (run_mft_timeline_pytsk3). parse_plaso_jsonl detects the
+        # pytsk3 shape by the presence of the ``entry_type`` field
+        # and short-circuits — no plaso field mapping needed.
+        rows = parse_plaso_jsonl(
+            '{"timestamp": "2024-01-01T00:00:00+00:00", '
+            '"full_path": "/x.exe", "entry_type": "created", '
+            '"file_size": 1024}\n'
+            '{"timestamp": "2024-01-01T00:01:00+00:00", '
+            '"full_path": "/dir", "entry_type": "modified", '
+            '"file_size": null}'
+        )
+        assert len(rows) == 2
+        assert rows[0]["entry_type"] == "created"
+        assert rows[0]["file_size"] == 1024
+        assert rows[1]["entry_type"] == "modified"
+        assert rows[1]["file_size"] is None
+
+    def test_plaso_legacy_shape_still_parses(self):
+        # Cached extractions written under the pre-pytsk3 runner are
+        # in the plaso json_line shape; parse_plaso_jsonl still maps
+        # the legacy fields so old extractions remain readable.
+        rows = parse_plaso_jsonl(
+            '{"datetime": "2024-01-01T00:00:00+00:00", "parser": "mft", '
+            '"timestamp_desc": "Creation Time", '
+            '"display_name": "/legacy.exe", "file_size": 42}\n'
+        )
+        assert len(rows) == 1
+        assert rows[0]["entry_type"] == "created"
+        assert rows[0]["full_path"] == "/legacy.exe"
 
 
 class TestParsePrefetch:
@@ -259,19 +291,63 @@ class TestParseEvtx:
 
     def test_message_summary_truncated_to_500_chars(self):
         # Synthetic huge EventData payload — parser truncates.
+        # SIFT 2026.1's python-evtx 0.8.1 emits XML; the parser splits
+        # on the runner's per-channel marker and parses each chunk.
         long_val = "A" * 600
-        line = (
-            '{"__channel": "Security", "Event": {"System": '
-            '{"EventID": 4624, "Provider": {"Name": "X"}, '
-            '"Channel": "Security", "TimeCreated": '
-            '{"SystemTime": "2024-01-01T00:00:00+00:00"}}, '
-            f'"EventData": {{"Data": [{{"@Name": "Foo", '
-            f'"#text": "{long_val}"}}]}}}}}}'
+        xml = (
+            "<!-- __channel__:Security -->\n"
+            '<?xml version="1.1" encoding="utf-8" standalone="yes" ?>\n'
+            "<Events>\n"
+            '<Event><System><Provider Name="X"></Provider>\n'
+            "<EventID>4624</EventID>\n"
+            '<TimeCreated SystemTime="2024-01-01T00:00:00+00:00"></TimeCreated>\n'
+            "<Channel>Security</Channel>\n"
+            "</System>\n"
+            "<EventData>\n"
+            f'<Data Name="Foo">{long_val}</Data>\n'
+            "</EventData>\n"
+            "</Event>\n"
+            "</Events>"
         )
-        rows = parse_evtx(line)
+        rows = parse_evtx(xml)
         assert len(rows) == 1
         assert len(rows[0]["message_summary"]) <= 500
         assert rows[0]["message_summary"].endswith("[truncated]")
+
+    def test_no_channel_marker_falls_back_to_untagged_chunk(self):
+        # Tolerate the case where the runner couldn't tag a channel —
+        # parse_evtx should still ingest the events with an empty
+        # channel string rather than dropping everything.
+        xml = (
+            '<?xml version="1.1" encoding="utf-8" standalone="yes" ?>\n'
+            "<Events>\n"
+            '<Event><System><Provider Name="X"></Provider>\n'
+            "<EventID>9999</EventID>\n"
+            '<TimeCreated SystemTime="2024-01-01T00:00:00+00:00"></TimeCreated>\n'
+            "</System></Event>\n"
+            "</Events>"
+        )
+        rows = parse_evtx(xml)
+        assert len(rows) == 1
+        assert rows[0]["event_id"] == 9999
+
+    def test_malformed_event_inside_chunk_is_skipped(self):
+        # One garbage <Event> block should not poison the whole chunk —
+        # the parser falls back to per-event regex parsing.
+        xml = (
+            "<!-- __channel__:Security -->\n"
+            "<Events>\n"
+            "<Event><System><EventID>NOT_A_NUMBER</EventID></System></Event>\n"
+            '<Event><System><Provider Name="X"></Provider>\n'
+            "<EventID>4624</EventID>\n"
+            '<TimeCreated SystemTime="2024-01-01T00:00:00+00:00"></TimeCreated>\n'
+            "</System></Event>\n"
+            "</Events>"
+        )
+        rows = parse_evtx(xml)
+        # Garbage event skipped; valid event retained.
+        assert len(rows) == 1
+        assert rows[0]["event_id"] == 4624
 
 
 class TestParseRegripper:

@@ -19,6 +19,7 @@ These tests pin the architectural guardrail introduced in response:
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -324,6 +325,91 @@ class TestDispatchSubagentMcpConfigArg:
         )
         assert result.succeeded is False
         assert result.mcp_server_status.get("sift-guard") == sift_status
+
+    def test_timeout_reconstructs_partial_token_usage_and_events(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # Regression for the 2026-05-19 multi-host run: two
+        # disk_analyst dispatches timed out at 3600s and the
+        # orchestrator attributed them ``0 new findings, 0 tokens``,
+        # losing the streaming event log that DID make it through
+        # stdout before the kill. Now ``subprocess.TimeoutExpired``
+        # carries the captured stdout in ``exc.output``; the
+        # dispatcher parses it and reports partial usage + events.
+        cfg = tmp_path / ".mcp.json"
+        cfg.write_text('{"mcpServers": {}}')
+        monkeypatch.setenv("SIFT_GUARD_MCP_CONFIG", str(cfg))
+
+        # Two assistant turns happened before the kill; each has a
+        # usage block. No final ``result`` event because the subagent
+        # was killed mid-stream.
+        partial_stream = (
+            json.dumps(
+                {
+                    "type": "system",
+                    "session_id": "sid-partial",
+                    "mcp_servers": [{"name": "sift-guard", "status": "connected"}],
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "assistant",
+                    "session_id": "sid-partial",
+                    "message": {
+                        "content": [{"type": "tool_use"}],
+                        "usage": {
+                            "input_tokens": 1200,
+                            "cache_creation_input_tokens": 800,
+                            "cache_read_input_tokens": 200,
+                            "output_tokens": 50,
+                        },
+                    },
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "assistant",
+                    "session_id": "sid-partial",
+                    "message": {
+                        "content": [{"type": "tool_use"}],
+                        "usage": {
+                            "input_tokens": 900,
+                            "cache_creation_input_tokens": 0,
+                            "cache_read_input_tokens": 100,
+                            "output_tokens": 80,
+                        },
+                    },
+                }
+            )
+            + "\n"
+        )
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(
+                cmd=cmd, timeout=kwargs.get("timeout", 3600), output=partial_stream
+            )
+
+        with patch.object(dispatch_mod.subprocess, "run", side_effect=fake_run):
+            result = dispatch_subagent(
+                "process_analyst",
+                prompt="evidence_id: foo",
+                cwd=tmp_path,
+            )
+
+        assert result.stop_reason == "timeout"
+        assert result.session_id == "sid-partial"
+        assert result.num_turns == 2
+        # Sum of input + cache_creation + output across the two
+        # assistant turns: (1200+800+50) + (900+0+80) = 2050 + 980 = 3030.
+        assert result.tokens_uncached == 3030
+        # Three raw events captured (system + 2 assistant), no result.
+        assert len(result.raw_events) == 3
+        # stop_reason="timeout" is not in the success-set, so
+        # ``succeeded`` is False — but the orchestrator still
+        # benefits from the partial usage attribution.
+        assert result.succeeded is False
 
     def test_argv_omits_flag_when_no_config_resolvable(
         self, tmp_path: Path, monkeypatch

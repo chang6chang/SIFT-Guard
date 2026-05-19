@@ -1,0 +1,57 @@
+<!-- __channel__:Security -->
+<?xml version="1.1" encoding="utf-8" standalone="yes" ?>
+
+<Events>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><Provider Name="Microsoft-Windows-Security-Auditing"></Provider>
+<EventID>4624</EventID>
+<Level>0</Level>
+<Task>12544</Task>
+<Keywords>0x8020000000000000</Keywords>
+<TimeCreated SystemTime="2024-03-21 02:10:00+00:00"></TimeCreated>
+<EventRecordID>1234</EventRecordID>
+<Channel>Security</Channel>
+<Computer>HOST</Computer>
+</System>
+<EventData>
+<Data Name="TargetUserName">alice</Data>
+<Data Name="LogonType">10</Data>
+<Data Name="IpAddress">203.0.113.5</Data>
+</EventData>
+</Event>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><Provider Name="Microsoft-Windows-Security-Auditing"></Provider>
+<EventID>4625</EventID>
+<Level>0</Level>
+<Task>12544</Task>
+<Keywords>0x8010000000000000</Keywords>
+<TimeCreated SystemTime="2024-03-21 02:09:00+00:00"></TimeCreated>
+<EventRecordID>1235</EventRecordID>
+<Channel>Security</Channel>
+<Computer>HOST</Computer>
+</System>
+<EventData>
+<Data Name="TargetUserName">Administrator</Data>
+<Data Name="LogonType">10</Data>
+<Data Name="Status">0xc000006d</Data>
+</EventData>
+</Event>
+</Events>
+<!-- __channel__:System -->
+<?xml version="1.1" encoding="utf-8" standalone="yes" ?>
+
+<Events>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><Provider Name="Service Control Manager"></Provider>
+<EventID>7045</EventID>
+<Level>4</Level>
+<Task>0</Task>
+<Keywords>0x8080000000000000</Keywords>
+<TimeCreated SystemTime="2024-03-21 02:13:00+00:00"></TimeCreated>
+<EventRecordID>5678</EventRecordID>
+<Channel>System</Channel>
+<Computer>HOST</Computer>
+</System>
+<EventData>
+<Data Name="ServiceName">EvilSvc</Data>
+<Data Name="ImagePath">C:\Users\Public\evil.exe</Data>
+</EventData>
+</Event>
+</Events>

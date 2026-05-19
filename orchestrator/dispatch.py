@@ -546,9 +546,13 @@ def dispatch_subagent(
     the single-evidence path (no host scoping).
 
     Failure modes:
-      - Subprocess timeout → DispatchResult with stop_reason=None.
-        Loop should treat as a structural failure and STOP.
-      - Non-zero exit → same.
+      - Subprocess timeout → DispatchResult with stop_reason="timeout"
+        and partial token usage / events reconstructed from the
+        captured stdout up to the kill. Findings already in
+        findings.jsonl are picked up by the loop's
+        ``_count_draft_finding_ids_for`` delta; this dispatch is
+        marked unsucceeded so the orchestrator can warn.
+      - Non-zero exit → DispatchResult with stop_reason=None.
       - Missing result event (truncated stream) → same.
 
     All three propagate as DispatchResult.succeeded == False; the
@@ -629,23 +633,75 @@ def dispatch_subagent(
                 check=False,
                 env=subprocess_env,
             )
-        except subprocess.TimeoutExpired:
-            logger.error("subagent %s timed out after %ds", agent, timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            # Best-effort partial-result reconstruction. The 2026-05-19
+            # multi-host run logged two ``subagent disk_analyst timed
+            # out after 3600s`` events for nfury and nromanoff in
+            # iteration 1, and both were attributed ``0 new findings``
+            # — yet ``subprocess.TimeoutExpired`` carries the captured
+            # stdout/stderr up to the kill in ``exc.output``. Findings
+            # the subagent already committed are in findings.jsonl
+            # already; what we lose by treating the timeout as
+            # all-zero is the streaming event log (tool-call usage,
+            # session id, partial token usage). Parse what we have and
+            # populate the DispatchResult so the iteration summary
+            # reflects whatever work actually happened.
+            partial_stdout = exc.output or ""
+            partial_events, _ = _parse_stream_json(partial_stdout)
+            # Sum input/output/cache tokens across all assistant turns
+            # in the partial stream. The schema is the same as the
+            # final-result aggregate, just split across N message
+            # events; ``_parse_stream_json`` already kept every line.
+            partial_input_tok = 0
+            partial_cc_tok = 0
+            partial_cr_tok = 0
+            partial_out_tok = 0
+            session_id: str | None = None
+            num_turns = 0
+            for event in partial_events:
+                if not isinstance(event, dict):
+                    continue
+                if session_id is None and isinstance(event.get("session_id"), str):
+                    session_id = event["session_id"]
+                if event.get("type") == "assistant":
+                    num_turns += 1
+                    usage = event.get("message", {}).get("usage", {}) or {}
+                    partial_input_tok += int(usage.get("input_tokens", 0) or 0)
+                    partial_cc_tok += int(usage.get("cache_creation_input_tokens", 0) or 0)
+                    partial_cr_tok += int(usage.get("cache_read_input_tokens", 0) or 0)
+                    partial_out_tok += int(usage.get("output_tokens", 0) or 0)
+            partial_uncached = partial_input_tok + partial_cc_tok + partial_out_tok
+            logger.error(
+                "subagent %s timed out after %ds — reconstructed "
+                "%d event(s), %d assistant turn(s), %d uncached "
+                "token(s) from partial stdout; any findings already "
+                "committed to findings.jsonl are picked up by the "
+                "post-dispatch finding-count delta in the loop",
+                agent,
+                timeout_seconds,
+                len(partial_events),
+                num_turns,
+                partial_uncached,
+            )
             return DispatchResult(
                 agent=agent,
-                session_id=None,
-                stop_reason=None,
-                num_turns=0,
+                session_id=session_id,
+                # Sentinel stop_reason so the orchestrator and the
+                # CLI display can distinguish "timed out with no
+                # final-result event" from "completed cleanly with
+                # stop_reason=end_turn".
+                stop_reason="timeout",
+                num_turns=num_turns,
                 duration_ms=timeout_seconds * 1000,
                 duration_api_ms=0,
                 total_cost_usd=0.0,
-                input_tokens=0,
-                cache_creation_input_tokens=0,
-                cache_read_input_tokens=0,
-                output_tokens=0,
-                tokens_uncached=0,
+                input_tokens=partial_input_tok,
+                cache_creation_input_tokens=partial_cc_tok,
+                cache_read_input_tokens=partial_cr_tok,
+                output_tokens=partial_out_tok,
+                tokens_uncached=partial_uncached,
                 final_text="",
-                raw_events=[],
+                raw_events=partial_events,
             )
     finally:
         if synthesized_mcp_config is not None:
