@@ -238,12 +238,16 @@ class _MockDispatcher:
         )
 
 
-def _real_update_via_kwargs(case_cwd: Path, args: dict[str, Any]) -> dict[str, Any]:
-    """Adapter: the loop calls update_finding_fn(case_cwd, args). The
-    real tool takes a case_dir kwarg. Both case-data dirs sit at the
-    same path under tmp_path."""
+def _real_update_via_kwargs(
+    case_dir: Path, case_cwd: Path, args: dict[str, Any]
+) -> dict[str, Any]:
+    """Adapter: the loop calls update_finding_fn(case_dir, case_cwd,
+    args). The real tool takes a case_dir kwarg. The third positional
+    is unused here — it matches the production signature so the test
+    exercises the same call shape."""
+    del case_cwd  # not consulted by the in-process adapter
     result = _real_update_finding(
-        case_dir=str(case_cwd / "case-data"),
+        case_dir=str(case_dir),
         **args,
     )
     return result.model_dump(mode="json")

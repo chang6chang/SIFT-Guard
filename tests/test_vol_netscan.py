@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -145,7 +146,7 @@ class TestVolNetscanResolution:
         case_dir = _make_case_dir(tmp_path, artifact_class=ArtifactClass.UNKNOWN)
         with pytest.raises(ValueError) as exc_info:
             vol_netscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
-        assert str(exc_info.value) == "evidence is not a memory image"
+        assert "evidence is not a memory image" in str(exc_info.value)
         assert "unknown" not in str(exc_info.value).lower()
 
 
@@ -333,6 +334,88 @@ class TestVolNetscanRecordWarnings:
         assert lines[0]["evidence_id"] == VALID_EVIDENCE_ID
         assert lines[1]["tool_name"] == "vol_netscan"
         assert lines[1]["prev_line_hash"] == lines[0]["this_line_hash"]
+
+
+# ---------------------------------------------------------------------------
+# OS-coverage gap: Vol3 netscan unsupported on XP/2003. Regression for
+# 2026-05-14 xp-tdungan run — runner_failed + downstream
+# extraction_not_found cascade now resolves cleanly to an empty
+# extraction with a ``vol_netscan:unsupported_os`` audit suffix.
+# ---------------------------------------------------------------------------
+
+
+class TestVolNetscanUnsupportedOs:
+    def test_xp_image_returns_empty_summary_and_audits_unsupported_os(
+        self, tmp_path: Path
+    ):
+        # Vol3's exact stderr signature on an XP image.
+        xp_stderr = (
+            "Traceback (most recent call last):\n"
+            "  ...\n"
+            "NotImplementedError: This version of Windows is not "
+            "supported: 5.1 15.2600!\n"
+        )
+        exc = subprocess.CalledProcessError(
+            returncode=1,
+            cmd=["vol", "-f", "<image>", "-r", "json", "windows.netscan.NetScan"],
+            output="",
+            stderr=xp_stderr,
+        )
+        case_dir = _make_case_dir(tmp_path)
+
+        with (
+            patch("server.tools.memory.get_vol_version", return_value="2.27.0"),
+            patch("server.tools.memory.run_vol_plugin", side_effect=exc),
+        ):
+            summary = vol_netscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
+
+        # Empty extraction returned, NOT a raised ValueError. Downstream
+        # query_records will now succeed-but-empty instead of failing
+        # with extraction_not_found.
+        assert summary.extraction.record_count == 0
+        assert summary.extraction.plugin_name == "windows.netscan.NetScan"
+
+        # Audit chain: one :unsupported_os line + one success line.
+        audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
+        assert len(lines) == 2
+        assert lines[0]["tool_name"] == "vol_netscan:unsupported_os"
+        assert lines[0]["evidence_id"] == VALID_EVIDENCE_ID
+        assert lines[1]["tool_name"] == "vol_netscan"
+
+        # Empty extraction is on disk and load_extraction succeeds.
+        _, parsed = load_extraction(case_dir, VALID_EVIDENCE_ID, "windows.netscan.NetScan")
+        assert parsed["connections"] == []
+
+    def test_genuine_runner_crash_still_raises_runner_failed(self, tmp_path: Path):
+        # CalledProcessError without the OS-mismatch signature is a
+        # genuine runner crash and must continue raising. The flag is
+        # specifically gated on the stderr pattern.
+        crash_stderr = (
+            "Traceback (most recent call last):\n"
+            "  ...\n"
+            "MemoryError: out of memory while parsing pool tags\n"
+        )
+        exc = subprocess.CalledProcessError(
+            returncode=1,
+            cmd=["vol", "-f", "<image>", "-r", "json", "windows.netscan.NetScan"],
+            output="",
+            stderr=crash_stderr,
+        )
+        case_dir = _make_case_dir(tmp_path)
+
+        with (
+            patch("server.tools.memory.get_vol_version", return_value="2.27.0"),
+            patch("server.tools.memory.run_vol_plugin", side_effect=exc),
+        ):
+            with pytest.raises(ValueError):
+                vol_netscan(VALID_EVIDENCE_ID, case_dir=str(case_dir))
+
+        audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
+        # One audit line: the runner_failed suffix. No success.
+        assert any(line["tool_name"] == "vol_netscan:runner_failed" for line in lines)
+        assert not any(line["tool_name"] == "vol_netscan" for line in lines)
 
 
 # ---------------------------------------------------------------------------

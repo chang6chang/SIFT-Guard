@@ -225,6 +225,17 @@ def _build_payload(
         hypothesis=hypothesis,
     )
     if correlation_type == CorrelationType.CORROBORATES.value:
+        # Back-compat: the validator agent frequently emits
+        # ``finding_a_id`` + ``finding_b_id`` (the contradicts-style
+        # pair shape) on a corroborates call instead of the
+        # ``target_finding_ids`` list. The 2026-05-13 SRL-v2 run lost
+        # 37/65 correlations to this single mismatch — every rejected
+        # entry had non-null ``finding_a_id`` + ``finding_b_id`` and a
+        # null ``target_finding_ids``. Promote the pair into the list
+        # when the canonical field is missing so the legitimate
+        # correlation lands instead of triggering a 5-10K token retry.
+        if target_finding_ids is None and finding_a_id and finding_b_id:
+            target_finding_ids = [finding_a_id, finding_b_id]
         if target_finding_ids is None or strength is None:
             raise ValueError("corroborates requires target_finding_ids and strength")
         return CorroboratesCorrelation(
@@ -259,7 +270,33 @@ def _build_payload(
             raise ValueError("weakens requires target_finding_id")
         return WeakensCorrelation(**common, target_finding_id=target_finding_id)
     if correlation_type == CorrelationType.REQUEST_FOLLOWUP.value:
-        if target_analyst is None or related_finding_ids is None or rationale is None:
+        # Back-compat: the validator agent routinely emits the finding-id
+        # under one of the *other* finding-id field names instead of the
+        # canonical ``related_finding_ids``. The 2026-05-14 xp-tdungan run
+        # had 6/16 request_followup correlations rejected solely because of
+        # this field-name drift — the validator alternated between
+        # ``target_finding_id`` (singular), ``target_finding_ids`` (the
+        # corroborates-style list), and ``finding_a_id`` (the
+        # contradicts-style pair). Promote whichever shape arrived into
+        # ``related_finding_ids`` so the legitimate followup lands.
+        if related_finding_ids is None:
+            if isinstance(target_finding_ids, list) and target_finding_ids:
+                related_finding_ids = list(target_finding_ids)
+            elif target_finding_id:
+                related_finding_ids = [target_finding_id]
+            elif finding_a_id and finding_b_id:
+                related_finding_ids = [finding_a_id, finding_b_id]
+            elif finding_a_id:
+                related_finding_ids = [finding_a_id]
+        # Back-compat: when ``rationale`` is omitted, fall back to
+        # ``hypothesis`` — the two carry the same justification text from
+        # the validator's perspective, and ``hypothesis`` is already
+        # validated min_length=1 at the correlation call boundary. The
+        # schema requires ``rationale`` min_length=20, so guard against
+        # the hypothesis being too short before substituting.
+        if rationale is None and hypothesis and len(hypothesis) >= 20:
+            rationale = hypothesis
+        if target_analyst is None or not related_finding_ids or rationale is None:
             raise ValueError(
                 "request_followup requires target_analyst, related_finding_ids, and rationale"
             )
@@ -271,6 +308,10 @@ def _build_payload(
             rationale=rationale,
         )
     if correlation_type == CorrelationType.CROSS_HOST.value:
+        # Same back-compat as corroborates: accept the pair shape when
+        # the canonical list is missing.
+        if target_finding_ids is None and finding_a_id and finding_b_id:
+            target_finding_ids = [finding_a_id, finding_b_id]
         if target_finding_ids is None or host_ids is None or strength is None:
             raise ValueError("cross_host requires target_finding_ids, host_ids, and strength")
         return CrossHostCorrelation(

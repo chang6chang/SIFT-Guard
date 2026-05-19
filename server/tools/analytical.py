@@ -188,20 +188,67 @@ _PLUGIN_FIELD_ALIASES: dict[str, dict[str, str]] = {
     "windows.malfind.Malfind": {
         "start": "vad_start",
         "start_va": "vad_start",
+        "start_vad": "vad_start",
+        # Vol 3's malfind row exposes one VAD-start address; there is
+        # no end-of-VAD column. The analyst sometimes asks for one
+        # using ``end_va`` / ``end_vad`` (carried over from Vol 2
+        # output). Alias to ``vad_start`` so the row surfaces; the
+        # analyst can read ``hex_dump`` length to size the region.
+        # The 2026-05-13 SRL-v2 run had repeated ``end_va`` /
+        # ``end_vad`` rejections; aliasing is the cheap fix. The bare
+        # ``end`` is left unaliased — it's too generic and the
+        # alias-pass-through tests want it to fail-loudly.
+        "end_va": "vad_start",
+        "end_vad": "vad_start",
+        # The 2026-05-14 SRL-test-xp run logged 4 rejections where the
+        # agent asked for ``start_address`` (the natural English name
+        # — Vol 2's malfind plugin emitted this column). Alias to
+        # ``vad_start``.
+        "start_address": "vad_start",
         "tag": "vad_tag",
         "disasm": "disassembly",
         "hexdump": "hex_dump",
+        # The 2026-05-14 SRL-test-xp run logged 2 rejections where
+        # the agent asked for ``protect`` instead of ``protection``
+        # (short-form natural English). Alias both directions handled
+        # via the canonical name.
+        "protect": "protection",
+        # Analyst frequently carries ``image_file_name`` over from
+        # pslist queries when filtering malfind by process. Malfind's
+        # canonical column is ``process_name``.
+        "image_file_name": "process_name",
     },
     "windows.pslist.PsList": {
         # The analyst's natural name (matches malfind's actual field
         # name) maps to pslist's image_file_name column.
         "process_name": "image_file_name",
+        # Vol 3's process schema uses ``offset_v`` (the V is "virtual
+        # address" suffix). Analysts frequently shorten to ``offset``.
+        "offset": "offset_v",
     },
     "windows.psscan.PsScan": {
         "process_name": "image_file_name",
+        "offset": "offset_v",
     },
     "windows.pstree.PsTree": {
         "process_name": "image_file_name",
+        "offset": "offset_v",
+    },
+    "disk.registry.Registry": {
+        # Analyst frequently asks for ``last_written`` (the natural
+        # English phrasing for ``last_modified``). The 2026-05-14
+        # SRL-test-xp run logged 3 rejections with this shape. Alias
+        # to the canonical column so the filter / fields land.
+        "last_written": "last_modified",
+        # Generic ``timestamp`` — same intent; the 2026-05-19 v2 run
+        # surfaced 1 rejection with this shape.
+        "timestamp": "last_modified",
+    },
+    "disk.prefetch.Prefetch": {
+        # Vol 3 / pf2json output exposes ``last_run_times`` (plural —
+        # XP+ prefetch records up to 8 timestamps in a single .pf).
+        # Analyst frequently uses the singular shorthand.
+        "last_run_time": "last_run_times",
     },
     "windows.cmdline.CmdLine": {
         # The reverse: cmdline's canonical name is ``process_name`` but
@@ -214,6 +261,9 @@ _PLUGIN_FIELD_ALIASES: dict[str, dict[str, str]] = {
         # the analyst needs to join against pslist for that — but
         # surfacing the alias removes the lower-stakes confusion.
         "image_file_name": "process_name",
+        # Short form occasionally seen: agent writes ``process``
+        # instead of ``process_name``. Alias to the canonical column.
+        "process": "process_name",
         # ``args`` is sometimes asked alongside ``cmdline``: the
         # analyst conceptually wants "the arguments part of the
         # command line", but Vol 3's cmdline plugin only returns the
@@ -332,6 +382,21 @@ def _log_rejection(
     append_rejection_record(case_dir, entry, input_args)
 
 
+class _UnknownProjectionFieldsDroppedRecord(BaseModel):
+    """Audit payload for the soft-drop of unknown projection fields.
+
+    Emitted by ``_drop_unknown_projection_fields`` when a tier-2 call's
+    ``fields=`` list mixes valid columns with names outside the
+    plugin's schema. Distinct from ``:rejected_unknown_field`` — the
+    call still succeeded; this is telemetry for analyst drift, not a
+    refusal. Filter fields stay strict and continue to hard-reject.
+    """
+
+    evidence_id: str
+    plugin_name: str
+    dropped_fields: list[str]
+
+
 class _HashMismatchRecord(BaseModel):
     """Audit payload for a tier-2 cache-integrity failure.
 
@@ -413,6 +478,53 @@ def _validate_fields(
                 input_args,
             )
             raise ValueError("filter or projection references unknown field")
+
+
+def _drop_unknown_projection_fields(
+    case_dir_path: Path,
+    plugin_name: str,
+    canonical_fields: list[str],
+    tool_name: str,
+    evidence_id: str,
+    input_args: dict,
+) -> list[str]:
+    """Filter projection-fields permissively: drop unknown names instead
+    of hard-rejecting the call. The 2026-05-14 xp-tdungan / 2026-05-19
+    v2 runs surfaced 13 ``query_records:rejected_unknown_field`` events
+    where the analyst's filter fields were all valid but the projection
+    list mixed in a single non-schema name (``hash`` on prefetch,
+    ``vad_type`` on malfind, ``ppid`` on cmdline). Hard-rejecting the
+    whole call burns a 5-10K-token validator retry for one projection
+    column the agent could have done without. Drop the unknowns,
+    keep the valid projection, and emit one informational audit line
+    per call (not per dropped field — kept compact) so an operator
+    can grep the analyst-drift telemetry.
+
+    Filter fields stay strict via the original ``_validate_fields``
+    helper: silently ignoring a filter would mislead the analyst into
+    thinking it had restricted the row set when it hadn't.
+    """
+    allowed = _FIELDS_BY_PLUGIN[plugin_name]
+    kept = [f for f in canonical_fields if f in allowed]
+    dropped = [f for f in canonical_fields if f not in allowed]
+    if dropped:
+        record = _UnknownProjectionFieldsDroppedRecord(
+            evidence_id=evidence_id,
+            plugin_name=plugin_name,
+            dropped_fields=dropped,
+        )
+        append_audit_entry(
+            case_dir=case_dir_path,
+            tool_name=f"{tool_name}:unknown_projection_dropped",
+            evidence_id=evidence_id,
+            input_args={
+                "evidence_id": evidence_id,
+                "plugin_name": plugin_name,
+                "dropped_field_count": len(dropped),
+            },
+            output=record,
+        )
+    return kept
 
 
 def _load_or_reject(
@@ -582,11 +694,21 @@ def query_records(
     # extraction.
     canonical_filters = _canonicalize_filters(plugin_name, filters)
     canonical_fields = [_canonicalize_field(plugin_name, f) for f in fields]
-    referenced_fields = [f.field for f in canonical_filters] + canonical_fields
+    # Filter fields stay strict — silently ignoring a filter would
+    # mislead the analyst into thinking it restricted the row set
+    # when it hadn't. Projection fields are dropped permissively.
     _validate_fields(
         case_dir_path,
         plugin_name,
-        referenced_fields,
+        [f.field for f in canonical_filters],
+        _QUERY_RECORDS_TOOL,
+        evidence_id,
+        input_args,
+    )
+    canonical_fields = _drop_unknown_projection_fields(
+        case_dir_path,
+        plugin_name,
+        canonical_fields,
         _QUERY_RECORDS_TOOL,
         evidence_id,
         input_args,
@@ -841,11 +963,15 @@ def set_difference(
         # Projection is pulled from whichever plugin we return rows
         # from; both should know the field. For a_minus_b/symmetric
         # we pull from plugin_a; for b_minus_a from plugin_b.
+        # Projection-only — drop unknown names permissively (same
+        # contract as query_records / subtree). Key validation above
+        # is still strict.
         source_plugin = plugin_b if direction == "b_minus_a" else plugin_a
-        _validate_fields(
+        canonical_proj = [_canonicalize_field(source_plugin, f) for f in fields]
+        fields = _drop_unknown_projection_fields(
             case_dir_path,
             source_plugin,
-            fields,
+            canonical_proj,
             _SET_DIFFERENCE_TOOL,
             evidence_id,
             input_args,
@@ -1011,9 +1137,24 @@ def subtree(
     # routes to ``image_file_name``. ``canonical_fields`` is the
     # form used for validation and (later) projection; ``input_args``
     # preserves the analyst-supplied form for the audit chain.
-    canonical_fields = [_canonicalize_field(plugin_name, f) for f in fields]
+    #
+    # ``depth`` is a subtree-computed virtual field — every returned
+    # node carries it automatically (added below in the visit loop).
+    # The analyst may list it explicitly in ``fields=`` to ask for it
+    # in the projection, but it's not part of pstree's record schema,
+    # so filter it out before the plugin-schema validation. Regression
+    # for the 2026-05-14 xp-tdungan run: analyst called
+    # ``subtree(fields=["pid", "image_file_name", "ppid", "depth"])``
+    # and the call hard-rejected on ``depth``.
+    canonical_fields = [
+        f for f in (_canonicalize_field(plugin_name, f) for f in fields)
+        if f != "depth"
+    ]
     if canonical_fields:
-        _validate_fields(
+        # Projection-only — drop unknown names permissively. Subtree
+        # has no filter input, so there's no strict-validation path
+        # to preserve.
+        canonical_fields = _drop_unknown_projection_fields(
             case_dir_path,
             plugin_name,
             canonical_fields,

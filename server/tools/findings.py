@@ -197,6 +197,58 @@ def _log_rejection(
         append_rejection_record(case_dir, entry, raw_input)
 
 
+class _SourceToolCorrection(BaseModel):
+    """One ``(audit_line, claimed_tool, actual_tool)`` triple captured
+    by ``_log_source_tool_corrections`` when ``record_finding`` silently
+    auto-corrects an analyst's mis-named ``source_tool``."""
+
+    audit_line: int
+    claimed_source_tool: str
+    actual_source_tool: str
+
+
+class _SourceToolCorrectionRecord(BaseModel):
+    """Audit payload for one record_finding call where ≥1 evidence_ref
+    had a source_tool name corrected before construction. Telemetry —
+    operators grep ``record_finding:source_tool_corrected`` to gauge
+    analyst drift without it counting as a rejection."""
+
+    evidence_id: str
+    corrections: list[_SourceToolCorrection]
+
+
+def _log_source_tool_corrections(
+    case_dir: Path,
+    evidence_id: str,
+    corrections: list[tuple[int, str, str]],
+) -> None:
+    """Append one informational chain line for silently-corrected refs.
+
+    Distinct suffix ``:source_tool_corrected`` (no ``:rejected_`` infix)
+    so operators can grep analyst-drift telemetry independently of
+    rejection paths. The finding still lands successfully — this is a
+    side-channel signal, not a refusal.
+    """
+    record = _SourceToolCorrectionRecord(
+        evidence_id=evidence_id,
+        corrections=[
+            _SourceToolCorrection(
+                audit_line=line,
+                claimed_source_tool=claimed,
+                actual_source_tool=actual,
+            )
+            for line, claimed, actual in corrections
+        ],
+    )
+    append_audit_entry(
+        case_dir=case_dir,
+        tool_name=f"{_TOOL_NAME}:source_tool_corrected",
+        evidence_id=evidence_id,
+        input_args={"evidence_id": evidence_id, "correction_count": len(corrections)},
+        output=record,
+    )
+
+
 def _success_input_args(evidence_id: str, analyst: str, refs: list[EvidenceRef]) -> dict:
     """Build the audit `input_args` dict for a successful record_finding.
 
@@ -343,27 +395,74 @@ def record_finding(
     #    evidence-derived content under attacker control.
     audit_path = case_dir_path.joinpath(*_AUDIT_RELATIVE_PATH)
     audit_index = _read_audit_index(audit_path)
+    # Auto-correction back-compat: the 2026-05-14 xp-tdungan run logged
+    # 2 ``record_finding:rejected_invalid_audit_ref`` events where the
+    # analyst cited e.g. ``source_tool="vol_cmdline"`` at a line that
+    # actually contained a ``query_records`` call (the tier-2 query
+    # against the cmdline extraction). The intent is preserved either
+    # way: the finding cites audit_line X, the chain still proves what
+    # ran at X. Silently swap source_tool to the actual tool when the
+    # line exists AND the actual tool_name is in our allow-listed enum.
+    # We still reject fabricated audit_line numbers (line doesn't
+    # exist) and tool_names outside the enum.
+    corrected_refs: list[EvidenceRef] = []
+    corrections_made: list[tuple[int, str, str]] = []
     for ref in evidence_refs:
         actual = audit_index.get(ref.audit_line)
-        if actual is None or actual != ref.source_tool:
+        if actual is None:
+            # Line genuinely doesn't exist — fabricated audit_line. Hard
+            # reject; the chain is the source of truth.
             _log_rejection(
                 case_dir_path,
                 _RejectionReason.INVALID_AUDIT_REF,
                 evidence_id,
                 raw_input,
             )
-            actual_desc = (
-                f"tool_name={actual!r}"
-                if actual is not None
-                else "no such line in audit chain"
-            )
             raise ValueError(
                 f"evidence_ref claims source_tool={ref.source_tool!r} "
-                f"at audit_line={ref.audit_line}, but the audit chain has "
-                f"{actual_desc}. Use the audit_line returned by your own "
-                f"tool calls in THIS session — line numbers reflect the "
-                f"shared chain and shift as sibling analysts append."
+                f"at audit_line={ref.audit_line}, but no such line exists "
+                f"in the audit chain. Use the audit_line returned at the "
+                f"TOP LEVEL of your own tool calls in THIS session — line "
+                f"numbers reflect the shared chain and shift as sibling "
+                f"analysts append."
             )
+        if actual != ref.source_tool:
+            # Line exists but the analyst named the wrong tool. If the
+            # actual tool (or its base name, stripping a ``:cached`` /
+            # ``:fresh`` / similar status suffix) is in the
+            # allow-listed enum, auto-correct; otherwise reject
+            # (defensive: never accept a source_tool outside the
+            # schema's Literal — pydantic would reject the
+            # DraftFinding construction anyway).
+            # The 2026-05-19 v3 run hit ``disk_evtx:cached`` at line 10
+            # — the base tool ``disk_evtx`` is allowed, but the cached
+            # suffix kept the raw match out of the allow-list set.
+            actual_base = actual.split(":", 1)[0] if isinstance(actual, str) else actual
+            if actual_base in ALLOWED_SOURCE_TOOLS:
+                corrected = ref.model_copy(update={"source_tool": actual_base})
+                corrected_refs.append(corrected)
+                corrections_made.append((ref.audit_line, ref.source_tool, actual_base))
+                continue
+            _log_rejection(
+                case_dir_path,
+                _RejectionReason.INVALID_AUDIT_REF,
+                evidence_id,
+                raw_input,
+            )
+            raise ValueError(
+                f"evidence_ref claims source_tool={ref.source_tool!r} at "
+                f"audit_line={ref.audit_line}, but the audit chain has "
+                f"tool_name={actual!r} — outside the allow-listed source "
+                f"tools. Cite an audit_line whose tool produced an "
+                f"extraction the analyst tool family covers."
+            )
+        corrected_refs.append(ref)
+    if corrections_made:
+        # Telemetry: emit a soft audit suffix so operators can grep for
+        # analyst drift without it counting as a rejection. Failure mode
+        # is non-fatal — the finding still lands with the corrected refs.
+        _log_source_tool_corrections(case_dir_path, evidence_id, corrections_made)
+    evidence_refs = corrected_refs
 
     # 5. Construct the DraftFinding. Server-controlled fields are set
     #    here regardless of what the agent claimed elsewhere. pydantic

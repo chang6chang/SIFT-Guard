@@ -108,6 +108,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Iterable
@@ -146,7 +147,11 @@ _REGRIPPER_PROFILE_FOR_HIVE: dict[str, str] = {
 
 # Relative paths under the mount root for each artifact family. The
 # disk tools resolve these against the mount path returned by
-# `mount_disk_image`.
+# `mount_disk_image`. The literal casing here matches Win7+ — XP
+# (and other older Windows installs) use ``WINDOWS/`` with lowercase
+# ``system32`` / ``system`` / ``software``. ``_resolve_path_ci``
+# below walks the literal segment-by-segment and case-insensitively
+# matches whatever the on-disk filesystem actually has.
 RELATIVE_PREFETCH_DIR = "Windows/Prefetch"
 RELATIVE_EVTX_DIR = "Windows/System32/winevt/Logs"
 RELATIVE_REGISTRY_HIVES: dict[str, str] = {
@@ -157,10 +162,86 @@ RELATIVE_REGISTRY_HIVES: dict[str, str] = {
 # NTUSER.DAT is per-user; the parser enumerates every Users/<name>/
 # NTUSER.DAT it finds rather than expecting a single canonical path.
 
+
+def _resolve_path_ci(mount_path: str | Path, relative: str) -> Path | None:
+    """Resolve a relative Windows path against ``mount_path``
+    case-insensitively, segment by segment.
+
+    Why: ntfs-3g mounts NTFS as a case-sensitive POSIX filesystem,
+    but the on-disk casing varies by Windows version — XP / 2003 use
+    ``WINDOWS/`` with lowercase ``system32`` / ``system`` /
+    ``software``; Win7+ use ``Windows/`` with mixed casing; some
+    third-party imaging tools shift case in non-standard ways. The
+    2026-05-14 SRL-test-xp run hit this: ``ls Windows/Prefetch``
+    returned ``No such file or directory`` on the xp-tdungan mount
+    because the actual directory is ``WINDOWS/Prefetch``, and every
+    tier-1 disk plugin therefore returned zero records — surfacing as
+    a fake "Registry Hives Completely Empty" / "Prefetch Directory
+    Empty" finding in the analyst output.
+
+    Returns the resolved ``Path`` (existing on disk, original casing
+    preserved) when every segment matches case-insensitively; returns
+    ``None`` when any segment has no match. The empty-string segments
+    that ``"Windows/Prefetch/".split("/")`` produces are skipped so a
+    trailing slash in ``relative`` is harmless.
+
+    Walks the tree with a per-directory ``os.scandir`` rather than a
+    single ``rglob`` so the cost is O(segments × children-per-dir),
+    not O(every-file-under-mount).
+    """
+    current = Path(mount_path)
+    if not current.exists():
+        return None
+    for seg in relative.replace("\\", "/").split("/"):
+        if not seg:
+            continue
+        seg_lower = seg.lower()
+        try:
+            with os.scandir(current) as it:
+                match = None
+                for entry in it:
+                    if entry.name.lower() == seg_lower:
+                        match = entry.name
+                        break
+        except (NotADirectoryError, PermissionError, FileNotFoundError):
+            return None
+        if match is None:
+            return None
+        current = current / match
+    return current
+
 # In-process mount cache. Single-process server contract — see
 # `server.audit` for the same assumption. Maps evidence_id to the
 # resolved mount path so subsequent tool calls reuse the mount.
 _MOUNT_CACHE: dict[str, str] = {}
+
+# Per-evidence_id mount locks. The pre-extract phase runs the tier-1
+# disk plugins for the same evidence_id concurrently
+# (ThreadPoolExecutor with max_workers >= 2 will dispatch e.g.
+# disk_mft_timeline and disk_prefetch on the same evidence_id at the
+# same time). Without serialization both threads race into
+# `_try_ewfmount_then_loop`: the second `ewfmount` call lands a
+# "fuse: mountpoint is not empty" error because the first thread's
+# ewf1 file is already in the predictable target dir; the second
+# thread then falls through to guestmount which is not installed on
+# stock SIFT 2026.1 → MountError. The 2026-05-13 SRL-v2 run lost 7 of
+# 16 pre-extract tasks (every disk_evtx and every disk_mft_timeline)
+# to this race. The lock collapses N parallel mount attempts on the
+# same evidence_id into one serial mount; subsequent waiters hit the
+# in-process cache. Different evidence_ids continue to mount in
+# parallel.
+_MOUNT_LOCKS: dict[str, threading.Lock] = {}
+_MOUNT_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for_evidence(evidence_id: str) -> threading.Lock:
+    """Return (creating if needed) the per-evidence_id mount lock."""
+    with _MOUNT_LOCKS_GUARD:
+        lock = _MOUNT_LOCKS.get(evidence_id)
+        if lock is None:
+            lock = threading.Lock()
+            _MOUNT_LOCKS[evidence_id] = lock
+        return lock
 
 # Cache of intermediate ewfmount FUSE dirs keyed by evidence_id, so
 # the atexit teardown can fusermount them in reverse order of the
@@ -255,14 +336,39 @@ def _detect_image_format(absolute_path: str) -> str:
     return "raw"
 
 
-def _run_subprocess(argv: list[str], *, timeout_seconds: int = 60) -> tuple[str, str, float]:
+def _run_subprocess(
+    argv: list[str], *, timeout_seconds: int = 60, wrap_as_mount_error: bool = True
+) -> tuple[str, str, float]:
     """Run a subprocess and return ``(stdout, command_string,
     runtime_seconds)``.
 
     Wraps the call in `shlex.join` for the audit-trail string. Never
-    uses ``shell=True``. Failure modes (non-zero exit, timeout,
-    OSError) all raise ``MountError`` with sanitized message — never
-    echo `absolute_path` back at the agent.
+    uses ``shell=True``.
+
+    Failure-mode wrapping (controlled by ``wrap_as_mount_error``):
+
+      - ``True`` (default, for mount-step calls — ``ewfmount``,
+        ``mount -o ro,loop``, ``guestmount``): every subprocess error
+        becomes a sanitized ``MountError`` so the fallback chain in
+        ``mount_disk_image`` can iterate cleanly.
+      - ``False`` (for tool-runner calls — ``log2timeline.py``,
+        ``psort.py``, ``rip.pl``, ``pf2json``, ``evtx_dump.py``,
+        ``--version`` probes): ``CalledProcessError`` and
+        ``TimeoutExpired`` propagate untouched. The 2026-05-13 SRL-v2
+        run hit this: ``log2timeline.py`` timed out at 1800s inside a
+        runner step, ``_run_subprocess`` wrapped the
+        ``TimeoutExpired`` as ``MountError``, and the audit-chain
+        remediation hint then advised "every fallback tier failed
+        (ewfmount → sudo → guestmount)" — pointing the operator at
+        FUSE/sudo wiring when the actual cause was a plaso runtime
+        too short for a 13 GB E01. Untouched propagation lets
+        ``_remediation_for_disk_exc`` produce the correct
+        "raise the per-tool timeout" hint instead.
+
+    ``OSError`` / ``FileNotFoundError`` remain wrapped in either mode
+    because there is no portable subprocess-specific equivalent;
+    ``_remediation_for_disk_exc`` keys off the ``MountError`` parent
+    and produces the binary-not-on-PATH hint regardless.
     """
     start = time.monotonic()
     try:
@@ -274,8 +380,12 @@ def _run_subprocess(argv: list[str], *, timeout_seconds: int = 60) -> tuple[str,
             check=True,
         )
     except subprocess.CalledProcessError as exc:
+        if not wrap_as_mount_error:
+            raise
         raise MountError(f"subprocess {argv[0]!r} exited non-zero") from exc
     except subprocess.TimeoutExpired as exc:
+        if not wrap_as_mount_error:
+            raise
         raise MountError(f"subprocess {argv[0]!r} timed out after {timeout_seconds}s") from exc
     except (OSError, FileNotFoundError) as exc:
         raise MountError(f"subprocess {argv[0]!r} could not be executed") from exc
@@ -454,7 +564,17 @@ def _try_ewfmount_then_loop(
     ewf_dir = _allocate_mount_dir(evidence_id, suffix="-ewf")
 
     _, ewf_cmd, ewf_elapsed = _run_subprocess(
-        ["sudo", ewfmount_bin, absolute_path, str(ewf_dir)],
+        # -X allow_other so the loop-mount step (which reads
+        # ``ewf_dir/ewf1`` via sudo) and any sibling tool call
+        # under the invoking user can both see the FUSE entry.
+        # Default ewfmount limits visibility to the mounting uid
+        # (root, here, via sudo), which then masks ewf1 from the
+        # non-root user — masking prevented downstream tooling like
+        # ``ls`` audits from inspecting the intermediate dir at all.
+        # The 2026-05-13 SRL-v2 cleanup audit captured this: ewf1
+        # appeared only to root, so non-root tooling couldn't
+        # introspect the intermediate FUSE layer.
+        ["sudo", ewfmount_bin, "-X", "allow_other", absolute_path, str(ewf_dir)],
         timeout_seconds=120,
     )
     _EWF_DIR_CACHE[evidence_id] = str(ewf_dir)
@@ -525,6 +645,25 @@ def mount_disk_image(evidence_id: str, absolute_path: str) -> str:
 
     Sanitized: messages never echo `absolute_path` or `evidence_id`
     back per the 2026-05-05 MCP error-message sanitization rule.
+
+    Concurrency: serialized per-evidence_id via ``_lock_for_evidence``.
+    Different evidence_ids mount in parallel. Same evidence_id from
+    multiple threads (the pre-extract phase's typical case) collapses
+    to one mount + cache hits for the waiters. See ``_MOUNT_LOCKS``
+    docstring for the race this prevents.
+    """
+    with _lock_for_evidence(evidence_id):
+        return _mount_disk_image_locked(evidence_id, absolute_path)
+
+
+def _mount_disk_image_locked(evidence_id: str, absolute_path: str) -> str:
+    """Implementation of ``mount_disk_image`` under the per-evidence
+    lock. Split out so the locked region is explicit at every call
+    site and tests can monkeypatch around it. The lock is acquired by
+    the public wrapper only — internal helpers (``_cleanup_partial_mount``,
+    ``_force_unmount``, etc.) do not re-acquire it; calling them while
+    holding the lock is safe because they only touch caches we already
+    own.
     """
     cached = _MOUNT_CACHE.get(evidence_id)
     if cached is not None:
@@ -756,7 +895,11 @@ def run_log2timeline_mft(
     jsonl_out = plaso_storage.with_suffix(".jsonl")
 
     try:
-        version_stdout, _, _ = _run_subprocess([log2timeline_bin, "--version"], timeout_seconds=30)
+        version_stdout, _, _ = _run_subprocess(
+            [log2timeline_bin, "--version"],
+            timeout_seconds=30,
+            wrap_as_mount_error=False,
+        )
         tool_version = version_stdout.strip().splitlines()[-1] if version_stdout else "plaso"
 
         _, l2t_cmd, l2t_elapsed = _run_subprocess(
@@ -769,6 +912,7 @@ def run_log2timeline_mft(
                 mount_path,
             ],
             timeout_seconds=timeout_seconds,
+            wrap_as_mount_error=False,
         )
         _, psort_cmd, psort_elapsed = _run_subprocess(
             [
@@ -780,6 +924,7 @@ def run_log2timeline_mft(
                 str(plaso_storage),
             ],
             timeout_seconds=timeout_seconds,
+            wrap_as_mount_error=False,
         )
         stdout = jsonl_out.read_text(encoding="utf-8")
     finally:
@@ -801,15 +946,23 @@ def run_prefetch(mount_path: str, *, timeout_seconds: int = 300) -> tuple[str, s
     object per .pf file). When no .pf files are present, returns
     empty stdout — the parser handles that as a zero-record
     extraction.
+
+    Path resolution is case-insensitive via ``_resolve_path_ci`` so
+    XP/2003 mounts (``WINDOWS/Prefetch``) and Win7+ mounts
+    (``Windows/Prefetch``) both resolve.
     """
     prefetch_cmd = os.environ.get(SIFT_DISK_PREFETCH_CMD_ENV, _DEFAULT_PREFETCH_CMD)
-    prefetch_dir = Path(mount_path) / RELATIVE_PREFETCH_DIR
-    if not prefetch_dir.exists():
-        return "", f"{prefetch_cmd} {prefetch_dir}", 0.0, "missing"
+    prefetch_dir = _resolve_path_ci(mount_path, RELATIVE_PREFETCH_DIR)
+    if prefetch_dir is None or not prefetch_dir.exists():
+        # Use the literal expected path in the recorded command for
+        # operator readability; the actual on-disk casing is captured
+        # only when the resolve succeeds.
+        return "", f"{prefetch_cmd} {Path(mount_path) / RELATIVE_PREFETCH_DIR}", 0.0, "missing"
 
     stdout, command_string, elapsed = _run_subprocess(
         [prefetch_cmd, str(prefetch_dir)],
         timeout_seconds=timeout_seconds,
+        wrap_as_mount_error=False,
     )
     return stdout, command_string, elapsed, prefetch_cmd
 
@@ -830,18 +983,30 @@ def run_evtx_dump(
     them out without re-reading file-paths.
     """
     cmd = os.environ.get(SIFT_DISK_EVTX_DUMP_CMD_ENV, _DEFAULT_EVTX_DUMP_CMD)
-    log_dir = Path(mount_path) / RELATIVE_EVTX_DIR
+    # Case-insensitive lookup so Win7+ (``Windows/System32/winevt/Logs``)
+    # and any non-standard imaging-tool casing both resolve. XP/2003
+    # mounts have no ``winevt/Logs`` at all (XP uses
+    # ``WINDOWS/system32/config/*.Evt`` — different .evt format, not
+    # supported by python-evtx) so this resolver returns None there
+    # and the channel-loop yields a zero-record extraction.
+    log_dir = _resolve_path_ci(mount_path, RELATIVE_EVTX_DIR)
 
     pieces: list[str] = []
     cmd_pieces: list[str] = []
     cumulative_elapsed = 0.0
+    if log_dir is None:
+        return "", f"{cmd} (no winevt/Logs dir)", 0.0, cmd
     for channel in channels:
-        log_path = log_dir / f"{channel}.evtx"
-        if not log_path.exists():
+        # Case-insensitive lookup for the channel file too — Win7+
+        # writes ``Security.evtx`` but stripped/normalized copies
+        # downstream sometimes appear lowercase.
+        log_path = _resolve_path_ci(log_dir, f"{channel}.evtx")
+        if log_path is None or not log_path.exists():
             continue
         stdout, command_string, elapsed = _run_subprocess(
             [cmd, "-o", "json", str(log_path)],
             timeout_seconds=timeout_seconds,
+            wrap_as_mount_error=False,
         )
         cmd_pieces.append(command_string)
         cumulative_elapsed += elapsed
@@ -881,31 +1046,42 @@ def run_regripper(mount_path: str, *, timeout_seconds: int = 600) -> tuple[str, 
     cmd_pieces: list[str] = []
     cumulative_elapsed = 0.0
 
-    # System-wide hives.
+    # System-wide hives. Case-insensitive resolve handles both Win7+
+    # (Windows/System32/config/SYSTEM) and XP/2003
+    # (WINDOWS/system32/config/system — note the lowercase hive
+    # filenames). RegRipper itself doesn't care about case once given
+    # the resolved path.
     for hive_name in ("SYSTEM", "SOFTWARE", "SAM"):
-        hive_path = Path(mount_path) / RELATIVE_REGISTRY_HIVES[hive_name]
-        if not hive_path.exists():
+        hive_path = _resolve_path_ci(mount_path, RELATIVE_REGISTRY_HIVES[hive_name])
+        if hive_path is None or not hive_path.exists():
             continue
         profile = _REGRIPPER_PROFILE_FOR_HIVE[hive_name]
         stdout, command_string, elapsed = _run_subprocess(
             [rip_bin, "-r", str(hive_path), "-f", profile],
             timeout_seconds=timeout_seconds,
+            wrap_as_mount_error=False,
         )
         pieces.append(f"# === HIVE: {hive_name} ===")
         pieces.append(stdout)
         cmd_pieces.append(command_string)
         cumulative_elapsed += elapsed
 
-    # Per-user NTUSER.DAT hives.
-    users_dir = Path(mount_path) / "Users"
-    if users_dir.exists():
-        for user_dir in sorted(users_dir.iterdir()):
-            ntuser = user_dir / "NTUSER.DAT"
-            if not ntuser.exists():
+    # Per-user NTUSER.DAT hives. ``Users/`` on Win7+, ``Documents and
+    # Settings/`` on XP (different layout entirely — XP has profile
+    # dirs directly under ``Documents and Settings``; Win7 moved them
+    # to ``Users``). Probe both, case-insensitive.
+    user_root = _resolve_path_ci(mount_path, "Users") or _resolve_path_ci(
+        mount_path, "Documents and Settings"
+    )
+    if user_root is not None and user_root.exists():
+        for user_dir in sorted(user_root.iterdir()):
+            ntuser = _resolve_path_ci(user_dir, "NTUSER.DAT")
+            if ntuser is None or not ntuser.exists():
                 continue
             stdout, command_string, elapsed = _run_subprocess(
                 [rip_bin, "-r", str(ntuser), "-f", "ntuser"],
                 timeout_seconds=timeout_seconds,
+                wrap_as_mount_error=False,
             )
             pieces.append(f"# === HIVE: NTUSER.DAT ({user_dir.name}) ===")
             pieces.append(stdout)
@@ -1133,34 +1309,82 @@ def parse_regripper(stdout: str) -> list[dict]:
     """Parse RegRipper's concatenated plugin output to RegistryRecord
     dicts.
 
-    Best-effort line-based parser. Each `# === HIVE: ===` banner
-    switches the active hive_name; subsequent `Key:` lines start a
-    new key block; `<name> -> <value>` and `<name>: <value>` lines
-    inside a key block produce one record each. Lines we cannot
-    structure are silently skipped.
+    Best-effort line-based parser. Plugins on SIFT 2026.1's installed
+    RegRipper emit a mix of formats — different plugins, different
+    conventions — so the parser stays loose and recognizes several
+    key-boundary signals:
 
-    `last_modified` is parsed from the `LastWrite Time = <ISO>`
-    line associated with the active key. RegRipper plugins format
-    timestamps differently across versions; when the format is not
-    a recognizable ISO timestamp we leave `last_modified` as None
-    (the schema accepts that).
+      - ``# === HIVE: SYSTEM ===`` (our own banner) switches hives.
+      - ``Key: ControlSet001\\...`` (older plugin convention) sets
+        the active key path. Most current plugins don't emit it.
+      - A bare line that *looks like* a registry path (contains
+        ``\\`` and no leading ``=`` / ``->`` / lowercase value-name
+        pattern) is treated as the active key path. This is the
+        only signal the most-frequently-firing plugins (``routes``,
+        ``shimcache``, ``services``, ``run``) actually emit.
+      - ``----------`` plugin separators reset the per-plugin state
+        but preserve the active hive.
+
+    Value lines: ``name -> value`` and ``name = value`` and
+    ``name: value`` patterns. Timestamp parsing covers both
+    ``LastWrite Time = ...``, ``LastWrite Time: ...``, and
+    ``LastWrite: ...`` (no "Time"); each plugin picks one.
+
+    The 2026-05-14 SRL-test-xp run hit the old parser hard: rip.pl
+    ran for 29s and produced ~150 KB of stdout containing thousands
+    of value lines, but the parser produced zero records because it
+    required a leading ``Key:`` prefix that no plugin in the
+    SIFT 2026.1 RegRipper install actually emits. The result: the
+    disk_analyst saw "registry returned 0 records" and the case
+    reported "Registry Hives Completely Empty" as an anti-forensics
+    finding. Loosening the parser is the fix.
+
+    `last_modified` is parsed against the active key's timestamp;
+    schema enforces UTC, so we only emit values successfully parsed
+    to UTC and pass None otherwise.
     """
     from datetime import datetime, timezone
+    import re
 
     rows: list[dict] = []
     active_hive: str | None = None
     active_key_path: str = ""
     active_last_modified: str | None = None
 
+    # Heuristic: a registry path line contains at least one ``\\``,
+    # has no leading whitespace, doesn't look like a value
+    # (``name = ...``, ``name -> ...``, ``name: ...``), and isn't a
+    # narrative sentence (the plugin descriptions often contain
+    # ``\\Wbem`` etc.). Require the line to *start* with a path-like
+    # token (alnum + backslash) so descriptive prose doesn't trip.
+    key_path_re = re.compile(r"^[A-Za-z0-9_$#\.\-{}]+\\")
+    # LastWrite line variants the parser accepts. The order matters:
+    # ``LastWrite Time`` must be probed BEFORE ``LastWrite`` so the
+    # ``Time`` variant gets the longer prefix consumed.
+    lastwrite_prefixes = ("LastWrite Time", "LastWrite")
+
+    def parse_lastwrite(s: str) -> str | None:
+        """Return ISO-format UTC string for ``LastWrite`` value, or
+        None if unparseable."""
+        try:
+            parsed = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.isoformat()
+
     for raw in stdout.splitlines():
         line = raw.rstrip()
         if not line:
             continue
+        # Plugin separator: reset key context (but keep hive).
+        if line.startswith("----------") and len(set(line)) <= 2:
+            active_key_path = ""
+            active_last_modified = None
+            continue
         if line.startswith(_REGRIPPER_HIVE_BANNER_PREFIX):
-            # `# === HIVE: SYSTEM ===` or
-            # `# === HIVE: NTUSER.DAT (alice) ===`
             inner = line[len(_REGRIPPER_HIVE_BANNER_PREFIX) :].rstrip(" =")
-            # Strip per-user suffix (preserve hive name only).
             paren = inner.find(" (")
             hive_name = inner[:paren] if paren != -1 else inner
             active_hive = hive_name.strip()
@@ -1168,46 +1392,58 @@ def parse_regripper(stdout: str) -> list[dict]:
             active_last_modified = None
             continue
         stripped = line.strip()
+        # Old ``Key:`` prefix shape (some plugins still emit it).
         if stripped.startswith(_REGRIPPER_KEY_HEADER_RE):
             active_key_path = stripped[len(_REGRIPPER_KEY_HEADER_RE) :].strip()
             active_last_modified = None
             continue
-        if stripped.startswith(_REGRIPPER_LASTWRITE_RE):
-            # `LastWrite Time = 2024-01-01T00:00:00Z` or
-            # `LastWrite Time: Thu Jan  1 00:00:00 2024`
-            eq_idx = stripped.find("=")
-            colon_idx = stripped.find(":")
-            sep = max(eq_idx, colon_idx)
-            if sep > 0:
-                active_last_modified = stripped[sep + 1 :].strip()
+        # LastWrite lines. The order of probes matters — ``Time``
+        # variant has the longer prefix.
+        matched_lastwrite = False
+        for prefix in lastwrite_prefixes:
+            if stripped.startswith(prefix):
+                remainder = stripped[len(prefix) :].strip()
+                # Strip an optional separator: ``=``, ``:``, or both.
+                if remainder.startswith(("=", ":")):
+                    remainder = remainder[1:].strip()
+                # Some plugins wrap the ts in ``[...]``.
+                if remainder.startswith("[") and remainder.endswith("]"):
+                    remainder = remainder[1:-1].strip()
+                active_last_modified = remainder
+                matched_lastwrite = True
+                break
+        if matched_lastwrite:
             continue
-        # Value line: try `name -> data` first, then `name: data`.
+        # Bare-line key path? Use the heuristic.
+        if not stripped.startswith(("(", "#", "[", "-", "=")) and key_path_re.match(
+            stripped
+        ):
+            # Reject lines that are clearly values (``name -> ...``
+            # or ``name = ...``) — those have separators farther in.
+            if " -> " not in stripped and " = " not in stripped:
+                active_key_path = stripped
+                active_last_modified = None
+                continue
+        # Value line: try `name -> data` first, then `name = data`,
+        # then `name: data`. ``=`` was added because most current
+        # plugins emit values that way.
         if active_hive is None or active_key_path == "":
             continue
         sep_idx = stripped.find(" -> ")
-        if sep_idx > 0:
-            value_name = stripped[:sep_idx].strip()
-            value_data = stripped[sep_idx + 4 :].strip()
-        else:
+        sep_len = 4
+        if sep_idx <= 0:
+            sep_idx = stripped.find(" = ")
+            sep_len = 3
+        if sep_idx <= 0:
             sep_idx = stripped.find(": ")
-            if sep_idx <= 0:
-                continue
-            value_name = stripped[:sep_idx].strip()
-            value_data = stripped[sep_idx + 2 :].strip()
-        # Reject obvious non-value lines (banner text, blank labels).
+            sep_len = 2
+        if sep_idx <= 0:
+            continue
+        value_name = stripped[:sep_idx].strip()
+        value_data = stripped[sep_idx + sep_len :].strip()
         if not value_name or value_name.startswith("#"):
             continue
-        # Try to parse the timestamp; pydantic enforces UTC, so we
-        # only pass through values we successfully parse to UTC.
-        last_modified_iso: str | None = None
-        if active_last_modified:
-            try:
-                parsed = datetime.fromisoformat(active_last_modified.replace("Z", "+00:00"))
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=timezone.utc)
-                last_modified_iso = parsed.isoformat()
-            except (ValueError, TypeError):
-                last_modified_iso = None
+        last_modified_iso = parse_lastwrite(active_last_modified) if active_last_modified else None
         rows.append(
             {
                 "hive_name": active_hive,

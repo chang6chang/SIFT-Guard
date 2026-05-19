@@ -293,16 +293,31 @@ class TestQueryRecordsRejections:
         last = json.loads(audit[-1])
         assert last["tool_name"] == "query_records:rejected_unknown_field"
 
-    def test_rejects_unknown_projection_field(self, tmp_path: Path):
+    def test_unknown_projection_field_is_silently_dropped(self, tmp_path: Path):
+        # Regression for the 2026-05-19 v2 run: 13 rejections where
+        # the filter set was valid but a single projection column was
+        # outside the plugin schema (``hash`` on prefetch, ``vad_type``
+        # on malfind, ``ppid`` on cmdline). The all-or-nothing reject
+        # burned 5-10K tokens of validator retry per call. Projection
+        # fields are now soft-dropped with a telemetry suffix; filter
+        # fields stay strict (covered by the test above).
         case_dir = _seed_case_dir(tmp_path)
         _seed_pslist(case_dir, [_pr(4, 0, "System")])
-        with pytest.raises(ValueError, match="unknown field"):
-            query_records(
-                evidence_id=EVIDENCE_ID,
-                plugin_name="windows.pslist.PsList",
-                fields=["pid", "not_a_field"],
-                case_dir=str(case_dir),
-            )
+        result = query_records(
+            evidence_id=EVIDENCE_ID,
+            plugin_name="windows.pslist.PsList",
+            fields=["pid", "not_a_field"],
+            case_dir=str(case_dir),
+        )
+        # The unknown name is gone from the projection; pid survives.
+        assert result.returned_count == 1
+        assert set(result.records[0].keys()) == {"pid"}
+        # Audit chain shows the soft-drop telemetry line.
+        audit = (case_dir / "audit" / "sift-guard-mcp.jsonl").read_text().splitlines()
+        tools = [json.loads(line)["tool_name"] for line in audit]
+        assert "query_records:unknown_projection_dropped" in tools
+        # Last line is the success, not a rejection.
+        assert tools[-1] == "query_records"
 
     def test_rejects_limit_above_cap(self, tmp_path: Path):
         case_dir = _seed_case_dir(tmp_path)

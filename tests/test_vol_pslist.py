@@ -156,7 +156,7 @@ class TestVolPslistResolution:
         case_dir = _make_case_dir(tmp_path, artifact_class=ArtifactClass.UNKNOWN)
         with pytest.raises(ValueError) as exc_info:
             vol_pslist(VALID_EVIDENCE_ID, case_dir=str(case_dir))
-        assert str(exc_info.value) == "evidence is not a memory image"
+        assert "evidence is not a memory image" in str(exc_info.value)
         # Sanitized: the actual artifact_class value is internal state.
         assert "unknown" not in str(exc_info.value).lower()
 

@@ -233,17 +233,54 @@ class TestSubtreeRejections:
                 case_dir=str(case_dir),
             )
 
-    def test_unknown_field_in_projection_rejected(self, tmp_path: Path):
+    def test_unknown_field_in_projection_is_silently_dropped(self, tmp_path: Path):
+        # Mirrors the query_records soft-drop contract — subtree's
+        # ``fields=`` is projection-only with no filter input. Unknown
+        # names are dropped with a telemetry audit line instead of
+        # hard-rejecting the whole call.
         case_dir = _seed_case_dir(tmp_path)
         _seed_pstree(case_dir, [_node(4, 0, "System")])
-        with pytest.raises(ValueError, match="unknown field"):
-            subtree(
-                evidence_id=EVIDENCE_ID,
-                plugin_name="windows.pstree.PsTree",
-                root_pid=4,
-                fields=["pid", "not_a_field"],
-                case_dir=str(case_dir),
-            )
+        result = subtree(
+            evidence_id=EVIDENCE_ID,
+            plugin_name="windows.pstree.PsTree",
+            root_pid=4,
+            fields=["pid", "not_a_field"],
+            case_dir=str(case_dir),
+        )
+        assert result.root_found is True
+        # Unknown name gone; pid survives; depth auto-added.
+        assert all("not_a_field" not in n for n in result.nodes)
+        audit = (case_dir / "audit" / "sift-guard-mcp.jsonl").read_text().splitlines()
+        tools = [json.loads(line)["tool_name"] for line in audit]
+        assert "subtree:unknown_projection_dropped" in tools
+        assert tools[-1] == "subtree"
+
+    def test_depth_virtual_field_accepted_in_projection(self, tmp_path: Path):
+        # Regression for the 2026-05-14 xp-tdungan run: analyst called
+        # ``subtree(fields=["pid", "image_file_name", "ppid", "depth"])``
+        # and the call hard-rejected with
+        # ``subtree:rejected_unknown_field``. ``depth`` is a
+        # subtree-computed virtual field — every returned node carries
+        # it. The pre-filter strips it before pstree-schema validation.
+        case_dir = _seed_case_dir(tmp_path)
+        tree = _node(
+            4, 0, "System", [_node(440, 4, "smss.exe", [_node(550, 440, "csrss.exe")])]
+        )
+        _seed_pstree(case_dir, [tree])
+        result = subtree(
+            evidence_id=EVIDENCE_ID,
+            plugin_name="windows.pstree.PsTree",
+            root_pid=4,
+            fields=["pid", "image_file_name", "ppid", "depth"],
+            case_dir=str(case_dir),
+        )
+        assert result.root_found is True
+        # Projection narrowed: only the four requested fields appear.
+        for node in result.nodes:
+            assert set(node.keys()) <= {"pid", "image_file_name", "ppid", "depth"}
+        # Depths are still computed.
+        depths = sorted(n["depth"] for n in result.nodes)
+        assert depths == [0, 1, 2]
 
 
 # ---------------------------------------------------------------------------

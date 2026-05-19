@@ -318,19 +318,39 @@ class ProgressDisplay:
                 with audit_path.open("rb") as f:
                     f.seek(offset)
                     chunk = f.read(size - offset)
-                    offset = size
-                # Hand the new bytes off to the renderer. The
-                # remainder (a trailing partial line) is unlikely
-                # in the project's atomic-append writer, but we
-                # defensively requeue any incomplete tail.
-                text = chunk.decode("utf-8", errors="replace")
-                lines = text.splitlines(keepends=False)
-                if text and not text.endswith("\n"):
-                    # Last line is incomplete — back off offset to
-                    # re-read it next tick.
-                    offset -= len(lines[-1].encode("utf-8"))
-                    lines = lines[:-1]
-                for raw in lines:
+                # Find the last complete-line boundary in raw bytes
+                # *before* decoding. The 2026-05-13 SRL-v2 run hit a
+                # garbled progress line ("win2008R2-controller
+                # �n2008R2-controller ...") whose root cause was
+                # the prior decode-then-rollback path: a UTF-8
+                # multi-byte sequence split across the chunk boundary
+                # decoded to ``�`` (one char, three bytes when
+                # re-encoded) and the rollback ``offset -= len(...)``
+                # used the re-encoded length, overshooting the
+                # original 1-2 partial source bytes by up to 2 bytes.
+                # The next tick then re-read bytes from the middle of
+                # a complete prior line, producing duplicated host
+                # names and replacement chars. Doing the split on raw
+                # bytes (whose lengths are exact) eliminates the
+                # rollback skew entirely.
+                if b"\n" in chunk:
+                    last_nl = chunk.rfind(b"\n")
+                    complete = chunk[: last_nl + 1]
+                    remainder = chunk[last_nl + 1 :]
+                    offset += len(complete)  # advance only over complete lines
+                else:
+                    complete = b""
+                    remainder = chunk
+                if remainder:
+                    # Keep the partial trailing bytes; re-read them
+                    # next tick when more bytes (hopefully the rest
+                    # of the line) have landed.
+                    pass
+                if not complete:
+                    self._stop_event.wait(_TICK_SECONDS)
+                    continue
+                text = complete.decode("utf-8", errors="replace")
+                for raw in text.splitlines():
                     self._render_audit_line(raw)
             except Exception as exc:  # noqa: BLE001
                 self._print(f"[{_hms()}] WARN   audit tail: {exc}")

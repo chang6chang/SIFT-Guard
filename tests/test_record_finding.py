@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import BaseModel
 
 from server.audit import append_audit_entry
 from server.schemas import (
@@ -335,16 +336,110 @@ class TestRejectInvalidAuditRef:
         assert audit_lines[-1]["tool_name"] == ("record_finding:rejected_invalid_audit_ref")
         assert not (case_dir / "findings.jsonl").exists()
 
-    def test_source_tool_does_not_match_actual_audit_entry(self, tmp_path: Path):
-        # The seeded line 1 is `vol_pslist`. Pointing source_tool at
-        # vol_netscan must reject — the finding can't claim a tool
-        # call that didn't fire.
+    def test_source_tool_mismatch_is_auto_corrected_for_allow_listed_actual(
+        self, tmp_path: Path
+    ):
+        # Regression for the 2026-05-14 xp-tdungan run: the analyst
+        # cited ``source_tool="vol_cmdline"`` at a line that actually
+        # contained a tier-2 ``query_records`` call (the query against
+        # the cmdline extraction). The intent is preserved either way —
+        # the finding cites audit_line X, and the audit chain still
+        # proves what ran at X. The auto-correction shim silently swaps
+        # source_tool to the actual tool when the line exists AND the
+        # actual tool_name is in the allow-list, AND emits an
+        # informational ``:source_tool_corrected`` audit suffix so the
+        # operator console can render the analyst-drift signal.
         case_dir = _seed_case_dir(tmp_path)
+        # Seed an extra line: line 2 is `query_records`. We seed it via
+        # the audit helper so the underlying chain is consistent.
+
+        class _Stub(BaseModel):
+            stub: str = "ok"
+
+        append_audit_entry(
+            case_dir=case_dir,
+            tool_name="query_records",
+            evidence_id=VALID_EVIDENCE_ID,
+            input_args={"evidence_id": VALID_EVIDENCE_ID},
+            output=_Stub(),
+        )
+
+        # Analyst claims source_tool=vol_cmdline at line 2, but the
+        # chain has query_records at line 2 — same family of evidence
+        # citation. Auto-correction applies.
+        bad_refs = [
+            EvidenceRef(
+                source_tool="vol_cmdline",
+                audit_line=2,
+                detail="cited tier-1 plugin instead of the tier-2 query at that line",
+            )
+        ]
+        finding = record_finding(
+            **_good_args(evidence_refs=bad_refs),
+            case_dir=str(case_dir),
+        )
+
+        # Finding lands successfully; the on-disk ref has the corrected
+        # source_tool.
+        assert finding.evidence_refs[0].source_tool == "query_records"
+        assert finding.evidence_refs[0].audit_line == 2
+
+        # Audit chain shows the soft correction line before the success.
+        audit_lines = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
+        # Last lines should be: ...query_records (line 2), :source_tool_corrected, record_finding
+        tool_names = [line["tool_name"] for line in audit_lines]
+        assert "record_finding:source_tool_corrected" in tool_names
+        assert tool_names[-1] == "record_finding"  # success still lands last
+        assert ":rejected_" not in tool_names[-2]
+
+    def test_source_tool_with_cached_suffix_is_auto_corrected(self, tmp_path: Path):
+        # Regression for 2026-05-19 v3 run: ``disk_evtx:cached`` at the
+        # cited audit_line wasn't in the bare allow-list, so the analyst's
+        # ``source_tool="vol_netscan"`` mismatch hard-rejected instead of
+        # auto-correcting. The shim now strips ``:cached`` /
+        # ``:fresh`` / status suffixes before the allow-list check.
+        case_dir = _seed_case_dir(tmp_path)
+
+        class _Stub(BaseModel):
+            stub: str = "ok"
+
+        # Seed line 2 as ``disk_evtx:cached`` — a cache-hit suffix on a
+        # legitimate source_tool. The base ``disk_evtx`` is in the
+        # allow-list; the raw match isn't.
+        append_audit_entry(
+            case_dir=case_dir,
+            tool_name="disk_evtx:cached",
+            evidence_id=VALID_EVIDENCE_ID,
+            input_args={"evidence_id": VALID_EVIDENCE_ID},
+            output=_Stub(),
+        )
+
         bad_refs = [
             EvidenceRef(
                 source_tool="vol_netscan",
-                audit_line=1,
-                detail="line 1 is actually vol_pslist not vol_netscan",
+                audit_line=2,
+                detail="analyst cited a different tool at the cached line",
+            )
+        ]
+        finding = record_finding(
+            **_good_args(evidence_refs=bad_refs),
+            case_dir=str(case_dir),
+        )
+        # Auto-corrected to the base tool name, not the cached suffix.
+        assert finding.evidence_refs[0].source_tool == "disk_evtx"
+
+    def test_fabricated_audit_line_still_rejected(self, tmp_path: Path):
+        # Auto-correction does NOT apply when the audit_line doesn't
+        # exist in the chain — fabricated line numbers are a hard
+        # reject because there's no actual tool to swap in. Regression
+        # check that the auto-correction shim doesn't accidentally
+        # accept fabrications.
+        case_dir = _seed_case_dir(tmp_path)
+        bad_refs = [
+            EvidenceRef(
+                source_tool="vol_pslist",
+                audit_line=9999,  # no such line exists in seeded chain
+                detail="fabricated audit_line",
             )
         ]
         with pytest.raises(ValueError) as exc_info:
@@ -352,13 +447,9 @@ class TestRejectInvalidAuditRef:
                 **_good_args(evidence_refs=bad_refs),
                 case_dir=str(case_dir),
             )
-        # Error message identifies the claimed tool, the line, and
-        # what's actually there — so an analyst can correct or pick
-        # a different audit_line.
         msg = str(exc_info.value)
-        assert "vol_netscan" in msg
-        assert "audit_line=1" in msg
-        assert "vol_pslist" in msg
+        assert "audit_line=9999" in msg
+        assert "no such line exists" in msg
         audit_lines = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
         assert audit_lines[-1]["tool_name"] == ("record_finding:rejected_invalid_audit_ref")
 

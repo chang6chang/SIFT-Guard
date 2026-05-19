@@ -106,7 +106,7 @@ class TestVolCmdlineResolution:
         case_dir = _make_case_dir(tmp_path, artifact_class=ArtifactClass.UNKNOWN)
         with pytest.raises(ValueError) as exc_info:
             vol_cmdline(VALID_EVIDENCE_ID, case_dir=str(case_dir))
-        assert str(exc_info.value) == "evidence is not a memory image"
+        assert "evidence is not a memory image" in str(exc_info.value)
         assert "unknown" not in str(exc_info.value).lower()
 
 

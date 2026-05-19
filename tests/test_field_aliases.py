@@ -196,15 +196,26 @@ class TestQueryRecordsAliasing:
         assert result.matched_count == 1
         assert result.records[0]["pid"] == 6404
 
-    def test_truly_unknown_field_still_rejects(self, tmp_path: Path):
+    def test_truly_unknown_projection_field_is_dropped_not_rejected(
+        self, tmp_path: Path
+    ):
+        # Updated behavior (2026-05-19): unknown projection fields are
+        # soft-dropped rather than hard-rejected. The call succeeds
+        # with the unknown name absent from the records; a telemetry
+        # audit suffix marks the drop. Filter fields still hard-reject
+        # — covered by the existing
+        # ``test_unknown_filter_field_rejects`` test.
         case_dir = _make_case_with_malfind(tmp_path)
-        with pytest.raises(ValueError, match="unknown field"):
-            query_records(
-                evidence_id=VALID_EVIDENCE_ID,
-                plugin_name="windows.malfind.Malfind",
-                fields=["pid", "commit_charge"],
-                case_dir=str(case_dir),
-            )
+        result = query_records(
+            evidence_id=VALID_EVIDENCE_ID,
+            plugin_name="windows.malfind.Malfind",
+            fields=["pid", "commit_charge"],
+            case_dir=str(case_dir),
+        )
+        # commit_charge is gone from the projection; pid survives.
+        for record in result.records:
+            assert "commit_charge" not in record
+            assert "pid" in record
 
     def test_audit_input_args_preserve_original_alias(self, tmp_path: Path):
         """Operators reading the audit chain see what the analyst

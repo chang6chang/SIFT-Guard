@@ -491,6 +491,38 @@ class TestRejectInvalidPayload:
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
         assert audit[-1]["tool_name"] == ("record_correlation:rejected_invalid_payload")
 
+    def test_corroborates_with_finding_pair_shape_is_accepted(
+        self, tmp_path: Path
+    ):
+        # Regression for the 2026-05-13 SRL-v2 run: 37/65 correlations
+        # were rejected because the validator emitted the
+        # contradicts-style ``finding_a_id`` + ``finding_b_id`` pair
+        # on a ``corroborates`` call instead of the canonical
+        # ``target_finding_ids`` list. The back-compat shim now
+        # promotes the pair into the list when the canonical field is
+        # missing. This test pins that behavior so a future
+        # tightening doesn't silently regress the validator.
+        case_dir = _seed_case_dir(tmp_path)
+        _seed_finding(case_dir, FID_B)
+        result = record_correlation(
+            case_id="case-rocba",
+            iteration_number=0,
+            correlation_type="corroborates",
+            evidence_refs=_refs(),
+            hypothesis=(
+                "Pair-shape back-compat: finding_a_id + finding_b_id "
+                "are promoted into target_finding_ids when the "
+                "canonical list is absent on a corroborates call."
+            ),
+            # No target_finding_ids — uses the pair instead.
+            finding_a_id=FID_A,
+            finding_b_id=FID_B,
+            strength="strong",
+            case_dir=str(case_dir),
+        )
+        assert result.correlation_type == "corroborates"
+        assert set(result.target_finding_ids) == {FID_A, FID_B}
+
     def test_contradicts_with_corroborates_field_is_silently_ignored(
         self, tmp_path: Path
     ):
@@ -533,7 +565,97 @@ class TestRejectInvalidPayload:
         assert audit[-1]["tool_name"] == "record_correlation"
         assert ":rejected_" not in audit[-1]["tool_name"]
 
-    def test_request_followup_without_rationale_rejected(self, tmp_path: Path):
+    def test_request_followup_without_rationale_falls_back_to_hypothesis(
+        self, tmp_path: Path
+    ):
+        # Regression for the 2026-05-14 xp-tdungan run: 6/16
+        # request_followup correlations were rejected with rationale
+        # absent. The validator's ``hypothesis`` already carries the
+        # justification text — hypothesis is min_length=50 at the
+        # correlation level — so the shim substitutes it when
+        # rationale is omitted.
+        case_dir = _seed_case_dir(tmp_path)
+        result = record_correlation(
+            case_id="case-rocba",
+            iteration_number=1,
+            correlation_type="request_followup",
+            evidence_refs=_refs(),
+            hypothesis=(
+                "Two NTUSER.DAT entries both show VBAWarnings globally "
+                "enabled — this is not a default configuration and "
+                "warrants a disk_analyst follow-up."
+            ),
+            target_analyst="disk_analyst",
+            related_finding_ids=[FID_A],
+            focus_context={"technique_candidates": ["T1137"]},
+            # rationale omitted — should fall back to hypothesis.
+            case_dir=str(case_dir),
+        )
+        assert result.correlation_type == "request_followup"
+        assert result.rationale.startswith("Two NTUSER.DAT entries")
+
+    def test_request_followup_with_target_finding_id_promoted(
+        self, tmp_path: Path
+    ):
+        # The validator routinely emits the singular ``target_finding_id``
+        # (strengthens/weakens shape) on a request_followup call.
+        # Promote into the canonical ``related_finding_ids`` list.
+        case_dir = _seed_case_dir(tmp_path)
+        result = record_correlation(
+            case_id="case-rocba",
+            iteration_number=1,
+            correlation_type="request_followup",
+            evidence_refs=_refs(),
+            hypothesis=(
+                "Singular target_finding_id was emitted instead of "
+                "related_finding_ids — back-compat shim should promote "
+                "it into a one-element list."
+            ),
+            target_analyst="process_analyst",
+            target_finding_id=FID_A,
+            focus_context={"pids": [7900]},
+            rationale=(
+                "Pidfile analysis indicates a hidden process that "
+                "warrants re-investigation by the process_analyst."
+            ),
+            case_dir=str(case_dir),
+        )
+        assert result.correlation_type == "request_followup"
+        assert result.related_finding_ids == [FID_A]
+
+    def test_request_followup_with_finding_pair_promoted(self, tmp_path: Path):
+        # finding_a_id + finding_b_id (contradicts shape) on a
+        # request_followup should be promoted into the two-element
+        # ``related_finding_ids`` list.
+        case_dir = _seed_case_dir(tmp_path)
+        _seed_finding(case_dir, FID_B)
+        result = record_correlation(
+            case_id="case-rocba",
+            iteration_number=1,
+            correlation_type="request_followup",
+            evidence_refs=_refs(),
+            hypothesis=(
+                "Contradicts-shape finding pair on a request_followup "
+                "should be promoted into related_finding_ids list."
+            ),
+            target_analyst="disk_analyst",
+            finding_a_id=FID_A,
+            finding_b_id=FID_B,
+            rationale=(
+                "Pair-shape back-compat regression — the validator's "
+                "pair fields should land on related_finding_ids."
+            ),
+            case_dir=str(case_dir),
+        )
+        assert result.correlation_type == "request_followup"
+        assert set(result.related_finding_ids) == {FID_A, FID_B}
+
+    def test_request_followup_without_target_analyst_rejected(
+        self, tmp_path: Path
+    ):
+        # target_analyst has no plausible fallback — its absence
+        # should still reject so the orchestrator never receives an
+        # un-routable followup.
         case_dir = _seed_case_dir(tmp_path)
         with pytest.raises(ValueError):
             record_correlation(
@@ -541,11 +663,16 @@ class TestRejectInvalidPayload:
                 iteration_number=1,
                 correlation_type="request_followup",
                 evidence_refs=_refs(),
-                hypothesis="Test that rationale is required for request_followup.",
-                target_analyst="process_analyst",
+                hypothesis=(
+                    "Missing target_analyst — no plausible default "
+                    "exists, so the request_followup must be rejected."
+                ),
                 related_finding_ids=[FID_A],
-                focus_context={"pids": [7900]},
-                # rationale=None — required, missing
+                rationale=(
+                    "Rationale text long enough to satisfy the schema's "
+                    "min_length=20 constraint comfortably."
+                ),
+                # target_analyst=None — required, no fallback
                 case_dir=str(case_dir),
             )
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")

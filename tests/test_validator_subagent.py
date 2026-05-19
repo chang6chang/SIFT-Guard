@@ -124,9 +124,12 @@ def _ok_dispatch_result(agent: str, tokens: int = 5000) -> DispatchResult:
     )
 
 
-def _real_update_via_kwargs(case_cwd: Path, args: dict[str, Any]) -> dict[str, Any]:
+def _real_update_via_kwargs(
+    case_dir: Path, case_cwd: Path, args: dict[str, Any]
+) -> dict[str, Any]:
+    del case_cwd  # signature matches production; case_dir is what we need
     result = _real_update_finding(
-        case_dir=str(case_cwd / "case-data"),
+        case_dir=str(case_dir),
         **args,
     )
     return result.model_dump(mode="json")

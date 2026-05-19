@@ -604,6 +604,20 @@ def dispatch_subagent(
         mcp_config,
     )
 
+    # Bump claude's per-server MCP connection timeout. The default
+    # is 30000ms; the sift-guard MCP server cold-start on the SIFT
+    # 2026.1 image measures ~7s for a single instance and climbs to
+    # 20-30s under the parallel-analyst case (3-12 stdio MCP servers
+    # importing the schema graph + pydantic + the Volatility 3 typing
+    # stubs simultaneously, all racing for CPU). The 2026-05-14
+    # SRL-test-xp run hit this: every analyst's MCP connection timed
+    # out at exactly 30000ms, the analyst saw "no MCP tools attached"
+    # and returned 0 findings without touching evidence. 120s is safe
+    # headroom on a cold parallel start; operators can override by
+    # exporting MCP_TIMEOUT before invoking sift-guard.
+    subprocess_env = dict(os.environ)
+    subprocess_env.setdefault("MCP_TIMEOUT", "120000")
+
     try:
         try:
             proc = subprocess.run(
@@ -613,6 +627,7 @@ def dispatch_subagent(
                 text=True,
                 timeout=timeout_seconds,
                 check=False,
+                env=subprocess_env,
             )
         except subprocess.TimeoutExpired:
             logger.error("subagent %s timed out after %ds", agent, timeout_seconds)

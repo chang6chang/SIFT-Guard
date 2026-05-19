@@ -331,7 +331,18 @@ def _resolve_and_mount(
             _RejectionReason.WRONG_ARTIFACT_CLASS,
             evidence_id,
         )
-        raise ValueError("evidence is not a disk image")
+        # Mirror the memory.py rejection wording: keep the original
+        # phrase as the leading sentence (sanitized-message tests
+        # assert it verbatim and that artifact_class isn't echoed),
+        # then add a generic tool-family hint so the agent re-routes
+        # on the first try instead of retrying the same wrong shape.
+        raise ValueError(
+            "evidence is not a disk image — disk_* tools accept "
+            "disk_image evidence only; if this evidence_id is a "
+            "memory image, use vol_* tools instead (vol_pslist, "
+            "vol_psscan, vol_pstree, vol_netscan, vol_cmdline, "
+            "vol_malfind)"
+        )
 
     try:
         mount_path = mount_disk_image(evidence_id, record.absolute_path)

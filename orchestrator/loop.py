@@ -313,29 +313,27 @@ def _unresolved_set(case_dir: Path) -> frozenset[str]:
     return frozenset(out)
 
 
-async def _call_update_finding_async(case_cwd: Path, args: dict[str, Any]) -> dict[str, Any]:
+async def _call_update_finding_async(
+    case_dir: Path, case_cwd: Path, args: dict[str, Any]
+) -> dict[str, Any]:
     """Spawn a fresh MCP server stdio session and call update_finding.
 
-    ``SIFT_GUARD_CASE_DIR`` is set explicitly so the MCP server reads
-    from the correct case. Without it the server falls through to its
-    default ``"case-data"`` relative path (see ``server/main.py:117``),
-    which under our cwd resolves to ``<case_cwd>/case-data/`` — a
-    directory that does not exist. The 2026-05-13 SRL-v2 run made
-    this very visible: 14 R3 promotions decided across two iterations,
-    every single one logged ``applied=False, update_id=None`` because
-    the server couldn't find the finding_ids in the wrong directory
-    and the rejection (silent in the structured-content return) was
-    interpreted as "no update_id, so not applied". Zero ``update_finding``
-    audit lines on the wire confirmed the diagnosis. This mirrors the
-    fix the CLI applies for analyst dispatch (per-case ``.mcp.json``
-    env block) — the orchestrator's own direct MCP spawn now does the
-    same thing.
+    ``SIFT_GUARD_CASE_DIR`` is set to ``case_dir`` (the actual case
+    directory holding ``findings.jsonl`` / ``correlations.jsonl``),
+    not ``case_cwd``. The 2026-05-13 SRL-v2 run hit this: the env
+    var was being set to ``case_dir.parent`` (the CLI's working
+    cwd), so the MCP server's update_finding couldn't find the
+    finding_ids — every R3/R4 promotion logged ``applied=False`` and
+    zero ``update_finding`` audit lines hit the chain. The subprocess
+    cwd is ``case_cwd`` (matches the analyst-dispatch convention so
+    relative-path debugging is consistent), but the case data path is
+    pinned via the env var.
     """
     python_exe = str(PROJECT_ROOT / ".venv" / "bin" / "python")
     env = {
         **os.environ,
         "PYTHONPATH": str(PROJECT_ROOT),
-        "SIFT_GUARD_CASE_DIR": str(case_cwd),
+        "SIFT_GUARD_CASE_DIR": str(case_dir),
     }
     params = StdioServerParameters(
         command=python_exe,
@@ -361,8 +359,10 @@ async def _call_update_finding_async(case_cwd: Path, args: dict[str, Any]) -> di
     return {}
 
 
-def _call_update_finding(case_cwd: Path, args: dict[str, Any]) -> dict[str, Any]:
-    return asyncio.run(_call_update_finding_async(case_cwd, args))
+def _call_update_finding(
+    case_dir: Path, case_cwd: Path, args: dict[str, Any]
+) -> dict[str, Any]:
+    return asyncio.run(_call_update_finding_async(case_dir, case_cwd, args))
 
 
 def _step_analyze(
@@ -507,6 +507,7 @@ def _step_promote(
 
         try:
             response = update_fn(
+                case_dir,
                 case_cwd,
                 {
                     "finding_id": fid,

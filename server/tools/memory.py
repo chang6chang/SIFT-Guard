@@ -181,6 +181,13 @@ class _RejectionReason(StrEnum):
     # ``<tool>:hash_mismatch`` tool_name suffix per the week-5
     # cache contract.
     HASH_MISMATCH = "hash_mismatch"
+    # Vol3 plugin doesn't support the image's OS version. The 2026-05-14
+    # xp-tdungan run hit this for ``windows.netscan.NetScan`` against an
+    # XP image — Vol3 ships netscan symbols for Vista+ only. Distinct
+    # from a runner crash; the call ran cleanly, the OS just isn't
+    # covered. Audited under ``<tool>:unsupported_os`` so the operator
+    # console renders an informational gap, not a failure.
+    UNSUPPORTED_OS = "unsupported_os"
 
 
 class _RejectionRecord(BaseModel):
@@ -405,7 +412,20 @@ def _resolve_and_validate(
             _RejectionReason.WRONG_ARTIFACT_CLASS,
             evidence_id,
         )
-        raise ValueError("evidence is not a memory image")
+        # Keep the base "evidence is not a memory image" phrase as the
+        # leading sentence — the sanitized-message tests assert it
+        # appears verbatim AND that the actual artifact_class value is
+        # NOT echoed. The disk-tool hint is generic (no artifact_class
+        # mentioned) and helps the analyst re-route without a retry.
+        # The 2026-05-13 SRL-v2 run logged 9 such rejections (vol_*
+        # tools called against disk_image evidence_ids); the hint is
+        # what prevents the same shape from repeating next iteration.
+        raise ValueError(
+            "evidence is not a memory image — vol_* tools accept "
+            "memory_image evidence only; if this evidence_id is a "
+            "disk image, use disk_* tools instead (disk_evtx, "
+            "disk_mft_timeline, disk_prefetch, disk_registry)"
+        )
 
     return record, record.absolute_path
 
@@ -611,6 +631,59 @@ def _serve_cached(
     return summary
 
 
+_OS_UNSUPPORTED_STDERR_PATTERNS = (
+    "This version of Windows is not supported",
+    "NotImplementedError: This version of Windows",
+)
+
+
+def _stderr_indicates_unsupported_os(exc: BaseException) -> bool:
+    """Detect Vol3's OS-incompatibility signature in a CalledProcessError.
+
+    Vol3's ``windows.netscan.NetScan`` plugin only ships symbol tables
+    for Vista+ — running it against a Windows XP image raises
+    ``NotImplementedError: This version of Windows is not supported: 5.1
+    15.2600!`` and the runner exits 1. Captured here as a one-shot
+    classification helper so the per-plugin opt-in handler in
+    ``_serve_fresh`` doesn't have to know Vol3's stderr conventions.
+
+    Returns False for non-CalledProcessError exceptions (timeouts,
+    OSError, etc.) — those are genuine runner failures, not OS gaps.
+    """
+    if not isinstance(exc, subprocess.CalledProcessError):
+        return False
+    stderr = getattr(exc, "stderr", None) or ""
+    if not isinstance(stderr, str):
+        try:
+            stderr = stderr.decode("utf-8", errors="replace")
+        except (AttributeError, UnicodeDecodeError):
+            return False
+    return any(pattern in stderr for pattern in _OS_UNSUPPORTED_STDERR_PATTERNS)
+
+
+def _log_os_unsupported(
+    case_dir: Path, tool_name: str, evidence_id: str
+) -> None:
+    """Append a clean ``<tool>:unsupported_os`` line to the audit chain.
+
+    Distinct suffix from ``:runner_failed`` so operators can grep for
+    OS-coverage gaps independently of subprocess crashes. The
+    rejection record carries the dedicated reason so the side-channel
+    rejections log surfaces it without leaking stderr content.
+    """
+    record = _RejectionRecord(
+        reason=_RejectionReason.UNSUPPORTED_OS,
+        evidence_id=evidence_id,
+    )
+    append_audit_entry(
+        case_dir=case_dir,
+        tool_name=f"{tool_name}:unsupported_os",
+        evidence_id=evidence_id,
+        input_args={"evidence_id": evidence_id},
+        output=record,
+    )
+
+
 def _serve_fresh(
     case_dir_path: Path,
     evidence_id: str,
@@ -623,6 +696,8 @@ def _serve_fresh(
     result_cls: type[BaseModel],
     summary_fn: Callable[[ExtractionRef, list[dict]], BaseModel],
     timeout_seconds: int | None = None,
+    *,
+    os_unsupported_returns_empty: bool = False,
 ) -> BaseModel:
     """Cache-miss path. Invokes Volatility, validates each row, persists
     the typed result, recomputes the summary, audits ``<tool>``.
@@ -654,6 +729,48 @@ def _serve_fresh(
                 plugin_name, image_path, timeout_seconds=timeout_seconds
             )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, RuntimeError) as exc:
+        # Vol3 OS-coverage gap (currently: netscan on XP/2003) — Vol3
+        # exits non-zero with a specific NotImplementedError stderr.
+        # When the per-tool opt-in flag is set, classify as
+        # ``:unsupported_os`` and serve an empty extraction so
+        # downstream ``query_records`` calls succeed-but-empty rather
+        # than rejecting with ``extraction_not_found``. The 2026-05-14
+        # xp-tdungan run logged 2 ``vol_netscan:runner_failed`` + 2
+        # ``query_records:rejected_extraction_not_found`` from this
+        # single OS-coverage gap; the empty-extraction path eliminates
+        # both downstream rejections.
+        if os_unsupported_returns_empty and _stderr_indicates_unsupported_os(exc):
+            command_string = f"vol -f <image> -r json {plugin_name}"
+            runtime_seconds = 0.0
+            _log_os_unsupported(case_dir_path, tool_name, evidence_id)
+            result_kwargs_empty = {
+                list_field_name: [],
+                "evidence_id": evidence_id,
+                "plugin_name": plugin_name,
+                "volatility_version": volatility_version,
+                "command_executed": command_string,
+                "runtime_seconds": runtime_seconds,
+                "invoked_at": invoked_at,
+            }
+            empty_result = result_cls(**result_kwargs_empty)
+            audit_line = peek_next_line_number(case_dir_path)
+            ref = write_extraction(
+                case_dir=case_dir_path,
+                evidence_id=evidence_id,
+                plugin_name=plugin_name,
+                result=empty_result,
+                runtime_seconds=runtime_seconds,
+                audit_line=audit_line,
+            )
+            summary = summary_fn(ref, [])
+            append_audit_entry(
+                case_dir=case_dir_path,
+                tool_name=tool_name,
+                evidence_id=evidence_id,
+                input_args={"evidence_id": evidence_id},
+                output=summary,
+            )
+            return summary
         # Plugin name is server-controlled (typed enum), not agent-
         # supplied — safe to include in the command shape. The image
         # path is the registered absolute_path, which we deliberately
@@ -903,6 +1020,11 @@ def vol_netscan(evidence_id: str, case_dir: str = "case-data") -> NetscanSummary
         NetscanResult,
         summary_fn,
         timeout_seconds=_NETSCAN_TIMEOUT_SECONDS,
+        # Vol3 netscan ships symbols for Vista+ only; XP/2003 images
+        # raise NotImplementedError. Treat as a clean empty extraction
+        # instead of a runner crash so the analyst sees "no rows" via
+        # query_records rather than a cascade of rejections.
+        os_unsupported_returns_empty=True,
     )
 
 

@@ -69,7 +69,7 @@ class TestDiskPrefetchResolution:
         case_dir = _make_case_dir(tmp_path, artifact_class=ArtifactClass.MEMORY_IMAGE)
         with pytest.raises(ValueError) as exc_info:
             disk_prefetch(VALID_EVIDENCE_ID, case_dir=str(case_dir))
-        assert str(exc_info.value) == "evidence is not a disk image"
+        assert "evidence is not a disk image" in str(exc_info.value)
 
 
 class TestDiskPrefetchHappyPath:
