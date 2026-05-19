@@ -114,10 +114,15 @@ def resolve_mcp_config_path() -> Path | None:
 
 
 def _synthesize_host_scoped_mcp_config(
-    base_config_path: Path, cwd: Path, host_id: str
+    base_config_path: Path,
+    cwd: Path,
+    host_id: str,
+    *,
+    allowed_evidence_ids: list[str] | None = None,
 ) -> Path | None:
     """Write a per-dispatch .mcp.json that adds ``SIFT_GUARD_HOST_ID``
-    to the sift-guard server's ``env`` block, and return the new path.
+    and (optionally) ``SIFT_GUARD_ALLOWED_EVIDENCE_IDS`` to the
+    sift-guard server's ``env`` block, and return the new path.
 
     Claude Code does NOT forward the parent process's environment to a
     stdio-launched MCP server child — the child's env is sourced from
@@ -125,6 +130,18 @@ def _synthesize_host_scoped_mcp_config(
     lives there, see ``cli.py``'s per-case config synthesis). So
     per-dispatch host scoping has to land in a per-dispatch config file
     rather than being passed through ``subprocess.run``'s env=.
+
+    ``allowed_evidence_ids`` is the per-dispatch evidence-id allow-list
+    enforced by every tier-1 and tier-2 tool's resolver. The 2026-05-19
+    multi-host run logged 11 ``*:rejected_wrong_artifact_class`` events
+    where the analyst called a tier-1 tool with an evidence_id from a
+    *sibling* host's findings (carried across via ``findings_by_host``).
+    The allow-list short-circuits those before the (slower) CASE.yaml
+    resolution and emits a distinct ``:rejected_evidence_id_out_of_scope``
+    audit suffix so operators can grep cross-host id leakage
+    independently of artifact-class mismatches. ``None`` leaves the
+    allow-list unset (single-evidence runs and the validator dispatch,
+    which legitimately needs every host's evidence_ids visible).
 
     The synthesized file lives under ``cwd / .mcp-dispatch /`` with a
     UUID suffix so concurrent workers can't collide. Cleanup is the
@@ -153,6 +170,8 @@ def _synthesize_host_scoped_mcp_config(
         return None
     env_block = dict(sift_guard.get("env") or {})
     env_block["SIFT_GUARD_HOST_ID"] = host_id
+    if allowed_evidence_ids:
+        env_block["SIFT_GUARD_ALLOWED_EVIDENCE_IDS"] = ",".join(allowed_evidence_ids)
     sift_guard["env"] = env_block
 
     dispatch_dir = cwd / _DISPATCH_MCP_SUBDIR
@@ -529,6 +548,7 @@ def dispatch_subagent(
     max_budget_usd: float = 5.0,
     timeout_seconds: int = 1800,
     host_id: str | None = None,
+    allowed_evidence_ids: list[str] | None = None,
 ) -> DispatchResult:
     """Spawn `claude -p --agent <name>` and capture the run.
 
@@ -575,7 +595,10 @@ def dispatch_subagent(
     synthesized_mcp_config: Path | None = None
     if base_mcp_config is not None and host_id is not None:
         synthesized_mcp_config = _synthesize_host_scoped_mcp_config(
-            base_mcp_config, cwd, host_id
+            base_mcp_config,
+            cwd,
+            host_id,
+            allowed_evidence_ids=allowed_evidence_ids,
         )
         if synthesized_mcp_config is not None:
             mcp_config = synthesized_mcp_config
@@ -815,6 +838,16 @@ def dispatch_analyst(
     surface as a "You are analyzing evidence from host:" line at the
     top of the analyst's prompt. Single-evidence runs leave them
     None and the prompt is unchanged.
+
+    The per-dispatch evidence-id allow-list is set to
+    ``[evidence_id]`` — each analyst sees only the evidence it was
+    dispatched against. Tier-1 and tier-2 tool calls with any other
+    evidence_id short-circuit at the server with a distinct
+    ``:rejected_evidence_id_out_of_scope`` audit suffix. The 2026-05-19
+    multi-host run logged 11 ``*:rejected_wrong_artifact_class``
+    events where the analyst carried an evidence_id across from a
+    sibling host's findings; the allow-list eliminates that class
+    of drift by construction.
     """
     if timeout_seconds is None:
         timeout_seconds = _default_timeout_for(agent)
@@ -834,6 +867,7 @@ def dispatch_analyst(
         max_budget_usd=max_budget_usd,
         timeout_seconds=timeout_seconds,
         host_id=host_id,
+        allowed_evidence_ids=[evidence_id],
     )
 
 

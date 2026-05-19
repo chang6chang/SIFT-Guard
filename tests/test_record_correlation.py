@@ -678,6 +678,94 @@ class TestRejectInvalidPayload:
         audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
         assert audit[-1]["tool_name"] == ("record_correlation:rejected_invalid_payload")
 
+    def test_cross_host_without_strength_defaults_moderate(self, tmp_path: Path):
+        # Regression for the 2026-05-19 multi-host run: 12 cross_host
+        # correlations rejected solely because ``strength`` was null
+        # — the validator filled in target_finding_ids / host_ids /
+        # shared_indicator / rationale but omitted the qualitative
+        # strength label. Default to "moderate" so the legitimate
+        # cross-host correlation lands; the validator can downgrade
+        # to "weak" explicitly when needed.
+        case_dir = _seed_case_dir(tmp_path)
+        _seed_finding(case_dir, FID_B)
+        result = record_correlation(
+            case_id="case-rocba",
+            iteration_number=1,
+            correlation_type="cross_host",
+            evidence_refs=_refs(),
+            hypothesis=(
+                "Same indicator across two hosts: identical path "
+                "system32/dllhost/svchost.exe appears on both. Strong "
+                "evidence of cross-host attacker activity."
+            ),
+            target_finding_ids=[FID_A, FID_B],
+            host_ids=["host-a", "host-b"],
+            shared_indicator={"type": "path", "value": "system32/dllhost"},
+            # strength omitted — shim should default to "moderate".
+            case_dir=str(case_dir),
+        )
+        assert result.correlation_type == "cross_host"
+        assert result.strength == "moderate"
+
+    def test_cross_host_with_finding_pair_promoted_to_list(
+        self, tmp_path: Path
+    ):
+        # Validator emitted contradicts-shape finding_a_id+finding_b_id
+        # instead of target_finding_ids on a cross_host call. The shim
+        # promotes the pair into the list when the canonical field is
+        # missing.
+        case_dir = _seed_case_dir(tmp_path)
+        _seed_finding(case_dir, FID_B)
+        result = record_correlation(
+            case_id="case-rocba",
+            iteration_number=1,
+            correlation_type="cross_host",
+            evidence_refs=_refs(),
+            hypothesis=(
+                "Pair-shape promoted on cross_host — finding_a_id + "
+                "finding_b_id became target_finding_ids list."
+            ),
+            finding_a_id=FID_A,
+            finding_b_id=FID_B,
+            host_ids=["host-a", "host-b"],
+            shared_indicator={"type": "ttp", "id": "T1055"},
+            strength="strong",
+            case_dir=str(case_dir),
+        )
+        assert result.correlation_type == "cross_host"
+        assert set(result.target_finding_ids) == {FID_A, FID_B}
+
+    def test_contradicts_without_severity_maps_from_strength(
+        self, tmp_path: Path
+    ):
+        # Regression for the 2026-05-19 multi-host run: 4 contradicts
+        # rejections where the validator passed ``strength`` (a
+        # corroborates field) instead of ``severity``. Map
+        # strong→fundamental, moderate→material, weak→minor;
+        # default ``resolvable_by_followup`` to True.
+        case_dir = _seed_case_dir(tmp_path)
+        _seed_finding(case_dir, FID_B)
+        result = record_correlation(
+            case_id="case-rocba",
+            iteration_number=1,
+            correlation_type="contradicts",
+            evidence_refs=_refs(),
+            hypothesis=(
+                "Contradicts called with strength instead of severity "
+                "— shim should map strong→fundamental and default "
+                "resolvable_by_followup=True so the legitimate "
+                "contradiction lands."
+            ),
+            finding_a_id=FID_A,
+            finding_b_id=FID_B,
+            strength="strong",
+            # severity + resolvable_by_followup omitted.
+            case_dir=str(case_dir),
+        )
+        assert result.correlation_type == "contradicts"
+        assert result.severity == "fundamental"
+        assert result.resolvable_by_followup is True
+
     def test_short_hypothesis_rejected(self, tmp_path: Path):
         # min_length on hypothesis is 50; pydantic ValidationError
         # surfaces as `:rejected_invalid_payload`.

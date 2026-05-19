@@ -182,6 +182,34 @@ class TestQueryRecordsAliasing:
         assert "disasm" not in first
         assert "hexdump" not in first
 
+    def test_uppercase_field_names_resolved_case_insensitively(
+        self, tmp_path: Path
+    ):
+        # Regression for the 2026-05-19 multi-host run: analyst typed
+        # uppercase ``PID`` / ``PPID`` (from Volatility's column
+        # headers) on filter fields and the call hard-rejected because
+        # the canonical column is ``pid`` / ``ppid`` and filter
+        # validation is strict. ``_canonicalize_field`` now does a
+        # case-insensitive fallback against the plugin's schema
+        # fields, so these uppercase shapes resolve cleanly.
+        case_dir = _make_case_with_malfind(tmp_path)
+        result = query_records(
+            evidence_id=VALID_EVIDENCE_ID,
+            plugin_name="windows.malfind.Malfind",
+            filters=[FieldFilter(field="PID", op="eq", value=6404)],
+            fields=["PID", "VAD_TAG", "Disasm"],
+            case_dir=str(case_dir),
+        )
+        # Filter matched the row with pid=6404 (case-folded match).
+        assert result.matched_count == 1
+        first = result.records[0]
+        # Projected keys are canonical (lowercase / aliased), not
+        # the analyst's uppercase form — same contract as the
+        # case-sensitive alias test below.
+        assert "pid" in first
+        assert "vad_tag" in first
+        assert "disassembly" in first
+
     def test_malfind_alias_filter(self, tmp_path: Path):
         case_dir = _make_case_with_malfind(tmp_path)
         result = query_records(

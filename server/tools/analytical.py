@@ -34,6 +34,7 @@ existence.
 
 from __future__ import annotations
 
+import os
 from collections import Counter
 from enum import StrEnum
 from pathlib import Path
@@ -279,10 +280,35 @@ def _canonicalize_field(plugin_name: str, name: str) -> str:
     """Return the canonical field name for ``plugin_name`` if ``name``
     is a known alias; otherwise return ``name`` unchanged.
 
-    Unknown names continue to flow through ``_validate_fields`` and
-    get rejected — aliasing only resolves the *known* synonyms.
+    Resolution is case-insensitive on the input — analysts routinely
+    type ``PID`` / ``PPID`` (uppercase from Volatility's column
+    headers) on filter fields, which would otherwise hard-reject
+    because the canonical column is ``pid`` / ``ppid``. The 2026-05-19
+    multi-host run logged 4 ``query_records:rejected_unknown_field``
+    events with this exact shape on cmdline / pstree filters. Walks
+    the per-plugin alias table first (case-sensitive — the table is
+    canonical-keyed), then falls back to a case-folded match against
+    the schema's canonical field set. Unknown names continue to flow
+    through ``_validate_fields`` and get rejected on filter fields,
+    or soft-dropped on projection fields (see
+    ``_drop_unknown_projection_fields``).
     """
-    return _PLUGIN_FIELD_ALIASES.get(plugin_name, {}).get(name, name)
+    aliases = _PLUGIN_FIELD_ALIASES.get(plugin_name, {})
+    if name in aliases:
+        return aliases[name]
+    # Case-insensitive fallback against the plugin's canonical fields.
+    name_lower = name.lower()
+    canonical_fields = _FIELDS_BY_PLUGIN.get(plugin_name, frozenset())
+    for canonical in canonical_fields:
+        if canonical.lower() == name_lower:
+            return canonical
+    # Last resort: case-insensitive alias-table match (covers
+    # ``PROCESS_NAME`` / ``Process_Name`` typos on the alias keys
+    # themselves, not just the canonical fields).
+    for alias_key, canonical in aliases.items():
+        if alias_key.lower() == name_lower:
+            return canonical
+    return name
 
 
 def _canonicalize_filters(
@@ -336,6 +362,28 @@ class _RejectionReason(StrEnum):
     INVALID_KEY = "invalid_key"
     SAME_PLUGIN = "same_plugin"
     ROOT_NOT_FOUND = "root_not_found"
+    # Per-dispatch evidence-id allow-list violation. Same
+    # contract as the memory and disk module variants — the
+    # orchestrator injects ``SIFT_GUARD_ALLOWED_EVIDENCE_IDS``
+    # so the tier-2 tool can short-circuit cross-host
+    # evidence_id leakage before extracting anything.
+    EVIDENCE_ID_OUT_OF_SCOPE = "evidence_id_out_of_scope"
+
+
+_ALLOWED_EVIDENCE_IDS_ENV = "SIFT_GUARD_ALLOWED_EVIDENCE_IDS"
+
+
+def _allowed_evidence_ids_from_env() -> frozenset[str] | None:
+    """Per-dispatch allow-list parsed from the MCP env. None when
+    unset; analytical tier-2 tools then skip the check (used in
+    single-evidence and out-of-orchestrator contexts)."""
+    raw = os.environ.get(_ALLOWED_EVIDENCE_IDS_ENV)
+    if not raw:
+        return None
+    items = [tok.strip() for tok in raw.split(",") if tok.strip()]
+    if not items:
+        return None
+    return frozenset(items)
 
 
 class _RejectionRecord(BaseModel):
@@ -435,13 +483,33 @@ def _validate_evidence_id(
     tool_name: str,
     input_args: dict,
 ) -> None:
-    """Common gate: evidence must be registered in CASE.yaml.
+    """Common gate: evidence must be registered in CASE.yaml AND in
+    the per-dispatch allow-list when one is set.
 
     Tier-2 tools don't enforce artifact_class — the act of having a
     stored extraction for a plugin already implies tier-1 ran the
     plugin successfully (which means artifact_class was right at
     that point). Re-checking would be redundant.
+
+    The allow-list check short-circuits cross-host evidence_id
+    leakage; see ``server.tools.memory._enforce_evidence_id_allowlist``
+    for the contract.
     """
+    allowed = _allowed_evidence_ids_from_env()
+    if allowed is not None and evidence_id not in allowed:
+        _log_rejection(
+            case_dir_path,
+            tool_name,
+            _RejectionReason.EVIDENCE_ID_OUT_OF_SCOPE,
+            evidence_id,
+            input_args,
+        )
+        raise ValueError(
+            "evidence_id is not in this dispatch's allow-list — your "
+            "subagent was scoped to a specific host's evidence; call "
+            "tier-2 tools only against the evidence_id provided in "
+            "your dispatch prompt"
+        )
     if _resolve_evidence(evidence_id, case_dir_path) is None:
         _log_rejection(
             case_dir_path,

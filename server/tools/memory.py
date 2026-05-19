@@ -188,6 +188,56 @@ class _RejectionReason(StrEnum):
     # covered. Audited under ``<tool>:unsupported_os`` so the operator
     # console renders an informational gap, not a failure.
     UNSUPPORTED_OS = "unsupported_os"
+    # Per-dispatch evidence-id allow-list violation. The orchestrator
+    # injects ``SIFT_GUARD_ALLOWED_EVIDENCE_IDS`` into each analyst's
+    # MCP env so the analyst sees only the evidence_id(s) it was
+    # dispatched for. When the analyst calls a tier-1 tool with an
+    # evidence_id from a sibling host's findings (carried across via
+    # ``findings_by_host`` in the validator's prompt, or simply
+    # hallucinated), the call short-circuits here instead of falling
+    # through to the artifact-class gate.
+    EVIDENCE_ID_OUT_OF_SCOPE = "evidence_id_out_of_scope"
+
+
+_ALLOWED_EVIDENCE_IDS_ENV = "SIFT_GUARD_ALLOWED_EVIDENCE_IDS"
+
+
+def _allowed_evidence_ids_from_env() -> frozenset[str] | None:
+    """Parse the per-dispatch allow-list from the MCP env, or None if
+    unset (single-evidence runs and any out-of-orchestrator caller see
+    no allow-list and skip the check).
+    """
+    raw = os.environ.get(_ALLOWED_EVIDENCE_IDS_ENV)
+    if not raw:
+        return None
+    items = [tok.strip() for tok in raw.split(",") if tok.strip()]
+    if not items:
+        return None
+    return frozenset(items)
+
+
+def _enforce_evidence_id_allowlist(
+    case_dir_path: Path, evidence_id: str, tool_name: str
+) -> None:
+    """Short-circuit the call when the analyst supplied an evidence_id
+    outside its dispatch allow-list. Audits the rejection and raises
+    a sanitized ValueError. No-op when the env var is unset.
+    """
+    allowed = _allowed_evidence_ids_from_env()
+    if allowed is None or evidence_id in allowed:
+        return
+    _log_tool_rejection(
+        case_dir_path,
+        tool_name,
+        _RejectionReason.EVIDENCE_ID_OUT_OF_SCOPE,
+        evidence_id,
+    )
+    raise ValueError(
+        "evidence_id is not in this dispatch's allow-list — your "
+        "subagent was scoped to a specific host's evidence; call "
+        "the tier-1 tool only against the evidence_id provided in "
+        "your dispatch prompt"
+    )
 
 
 class _RejectionRecord(BaseModel):
@@ -395,6 +445,22 @@ def _resolve_and_validate(
     what "confinement" means. disk.py never had this redundant
     check; memory.py now matches.
     """
+    # Per-dispatch evidence-id allow-list. The orchestrator injects
+    # ``SIFT_GUARD_ALLOWED_EVIDENCE_IDS=<comma-separated>`` into the
+    # subagent's MCP env, so each dispatch sees only the evidence_id(s)
+    # it was given. The 2026-05-19 multi-host run logged 11 rejections
+    # of the shape "analyst on host X called tier-1 tool with
+    # evidence_id from host Y" — the analyst carried an id across from
+    # a sibling host's findings in `findings_by_host` and tripped the
+    # artifact_class gate. The allow-list short-circuits that path
+    # before the (slower) CASE.yaml resolution and emits a distinct
+    # rejection suffix so operators can grep cross-evidence drift
+    # independently of the artifact-class mismatches the gate below
+    # still catches.
+    _enforce_evidence_id_allowlist(
+        case_dir_path, evidence_id, tool_name
+    )
+
     record = _resolve_evidence(evidence_id, case_dir_path)
     if record is None:
         _log_tool_rejection(

@@ -40,6 +40,7 @@ The agent cannot construct a path through this surface.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from collections import Counter
 from datetime import datetime, timezone
@@ -136,6 +137,48 @@ class _RejectionReason(StrEnum):
     WRONG_ARTIFACT_CLASS = "wrong_artifact_class"
     MOUNT_FAILED = "mount_failed"
     HASH_MISMATCH = "hash_mismatch"
+    # Per-dispatch allow-list violation — see
+    # ``server.tools.memory._enforce_evidence_id_allowlist``.
+    EVIDENCE_ID_OUT_OF_SCOPE = "evidence_id_out_of_scope"
+
+
+_ALLOWED_EVIDENCE_IDS_ENV = "SIFT_GUARD_ALLOWED_EVIDENCE_IDS"
+
+
+def _allowed_evidence_ids_from_env() -> frozenset[str] | None:
+    """Parse the per-dispatch allow-list from the MCP env. See
+    ``server.tools.memory._allowed_evidence_ids_from_env`` for the
+    contract — duplicated here so the disk module doesn't import
+    from the memory module."""
+    raw = os.environ.get(_ALLOWED_EVIDENCE_IDS_ENV)
+    if not raw:
+        return None
+    items = [tok.strip() for tok in raw.split(",") if tok.strip()]
+    if not items:
+        return None
+    return frozenset(items)
+
+
+def _enforce_evidence_id_allowlist(
+    case_dir_path: Path, evidence_id: str, tool_name: str
+) -> None:
+    """Disk-tool variant of the memory module's allow-list check.
+    No-op when the env var is unset (single-evidence runs)."""
+    allowed = _allowed_evidence_ids_from_env()
+    if allowed is None or evidence_id in allowed:
+        return
+    _log_tool_rejection(
+        case_dir_path,
+        tool_name,
+        _RejectionReason.EVIDENCE_ID_OUT_OF_SCOPE,
+        evidence_id,
+    )
+    raise ValueError(
+        "evidence_id is not in this dispatch's allow-list — your "
+        "subagent was scoped to a specific host's evidence; call "
+        "the tier-1 tool only against the evidence_id provided in "
+        "your dispatch prompt"
+    )
 
 
 class _RejectionRecord(BaseModel):
@@ -316,6 +359,9 @@ def _resolve_and_mount(
     ``ValueError`` whose message does NOT echo the offending
     evidence_id back at the agent.
     """
+    # Per-dispatch allow-list: short-circuit cross-host id leakage
+    # before mounting anything. See ``_enforce_evidence_id_allowlist``.
+    _enforce_evidence_id_allowlist(case_dir_path, evidence_id, tool_name)
     record = _resolve_evidence(evidence_id, case_dir_path)
     if record is None:
         _log_tool_rejection(

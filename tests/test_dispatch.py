@@ -555,6 +555,42 @@ class TestDispatchSubagentHostScoping:
         assert not Path(synthesized_payload["path"]).exists()
         assert result.succeeded
 
+    def test_synthesized_config_carries_allowed_evidence_ids(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # Regression for the 2026-05-19 multi-host run: 11
+        # ``*:rejected_wrong_artifact_class`` events where the
+        # analyst carried an evidence_id across from a sibling host's
+        # findings. dispatch_subagent now writes
+        # SIFT_GUARD_ALLOWED_EVIDENCE_IDS into the per-dispatch env so
+        # the MCP server short-circuits the cross-host id before the
+        # artifact-class gate.
+        base_cfg = self._seed_base_config(tmp_path, monkeypatch)
+        synthesized_payload: dict[str, dict] = {}
+
+        def fake_run(cmd, **kwargs):
+            idx = cmd.index("--mcp-config")
+            cfg_path = Path(cmd[idx + 1])
+            synthesized_payload["content"] = json.loads(
+                cfg_path.read_text(encoding="utf-8")
+            )
+            return self._fake_proc()
+
+        with patch.object(dispatch_mod.subprocess, "run", side_effect=fake_run):
+            dispatch_subagent(
+                "process_analyst",
+                prompt="evidence_id: foo",
+                cwd=tmp_path,
+                host_id="nfury",
+                allowed_evidence_ids=["a-uuid", "b-uuid"],
+            )
+
+        env = synthesized_payload["content"]["mcpServers"]["sift-guard"]["env"]
+        assert env["SIFT_GUARD_HOST_ID"] == "nfury"
+        assert env["SIFT_GUARD_ALLOWED_EVIDENCE_IDS"] == "a-uuid,b-uuid"
+        # Pre-existing keys still survive.
+        assert env["SIFT_GUARD_CASE_DIR"] == "/case"
+
     def test_argv_uses_base_config_when_host_id_omitted(
         self, tmp_path: Path, monkeypatch
     ):

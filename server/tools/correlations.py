@@ -244,12 +244,36 @@ def _build_payload(
             strength=strength,  # type: ignore[arg-type]
         )
     if correlation_type == CorrelationType.CONTRADICTS.value:
+        # Back-compat: the 2026-05-19 multi-host run logged 4 contradicts
+        # rejections where the validator passed the corroborates-style
+        # ``strength`` (or null) instead of the canonical
+        # ``severity`` + ``resolvable_by_followup`` pair. Map strength
+        # to severity (strong→fundamental, moderate→material,
+        # weak→minor) when severity is missing; default
+        # ``resolvable_by_followup`` to True (more permissive — the
+        # orchestrator can dispatch a followup; a contradiction the
+        # validator declared unresolvable would be the unusual case).
+        _STRENGTH_TO_SEVERITY = {
+            "strong": "fundamental",
+            "moderate": "material",
+            "weak": "minor",
+        }
+        if severity is None and strength is not None:
+            severity = _STRENGTH_TO_SEVERITY.get(strength, "material")
+        if severity is None:
+            severity = "material"
+        if resolvable_by_followup is None:
+            resolvable_by_followup = True
+        # Promote target_finding_ids pair to a/b when the validator
+        # emitted the corroborates shape instead of the contradicts pair.
         if (
             finding_a_id is None
-            or finding_b_id is None
-            or severity is None
-            or resolvable_by_followup is None
+            and finding_b_id is None
+            and isinstance(target_finding_ids, list)
+            and len(target_finding_ids) >= 2
         ):
+            finding_a_id, finding_b_id = target_finding_ids[0], target_finding_ids[1]
+        if finding_a_id is None or finding_b_id is None:
             raise ValueError(
                 "contradicts requires finding_a_id, finding_b_id, "
                 "severity, and resolvable_by_followup"
@@ -312,8 +336,18 @@ def _build_payload(
         # the canonical list is missing.
         if target_finding_ids is None and finding_a_id and finding_b_id:
             target_finding_ids = [finding_a_id, finding_b_id]
-        if target_finding_ids is None or host_ids is None or strength is None:
-            raise ValueError("cross_host requires target_finding_ids, host_ids, and strength")
+        # 2026-05-19 multi-host: 12 cross_host correlations rejected
+        # solely because ``strength`` was null — the validator omitted
+        # it on calls that otherwise carried target_finding_ids/host_ids
+        # /shared_indicator/rationale. ``strength`` exists to gate
+        # promotion (R3 / R6 use it); a missing value isn't a content
+        # bug, it's a schema-field-omission bug. Default to "moderate":
+        # the orchestrator still promotes via R3, and the validator can
+        # explicitly downgrade with ``strength="weak"`` when needed.
+        if strength is None:
+            strength = "moderate"
+        if target_finding_ids is None or host_ids is None:
+            raise ValueError("cross_host requires target_finding_ids and host_ids")
         return CrossHostCorrelation(
             **common,
             target_finding_ids=target_finding_ids,

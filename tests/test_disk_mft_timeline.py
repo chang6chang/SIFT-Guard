@@ -83,6 +83,54 @@ class TestDiskMftResolution:
             disk_mft_timeline(VALID_EVIDENCE_ID, case_dir=str(case_dir))
         assert "evidence is not a disk image" in str(exc_info.value)
 
+    def test_evidence_id_outside_allowlist_rejected(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # Regression for the 2026-05-19 multi-host run: analysts
+        # called tier-1 tools with evidence_ids from sibling hosts'
+        # findings. The per-dispatch allow-list (injected by the
+        # orchestrator into SIFT_GUARD_ALLOWED_EVIDENCE_IDS)
+        # short-circuits the call before the (slower) CASE.yaml
+        # resolution; emits a distinct
+        # ``:rejected_evidence_id_out_of_scope`` audit suffix.
+        case_dir = _make_case_dir(tmp_path)
+        # The legitimately-registered evidence_id is VALID_EVIDENCE_ID;
+        # we set the allow-list to a DIFFERENT id so the call short-
+        # circuits.
+        monkeypatch.setenv(
+            "SIFT_GUARD_ALLOWED_EVIDENCE_IDS",
+            "00000000-0000-4000-8000-000000000000",
+        )
+        with pytest.raises(ValueError) as exc_info:
+            disk_mft_timeline(VALID_EVIDENCE_ID, case_dir=str(case_dir))
+        assert "not in this dispatch's allow-list" in str(exc_info.value)
+
+        audit_path = case_dir / "audit" / "sift-guard-mcp.jsonl"
+        lines = [json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
+        assert (
+            lines[-1]["tool_name"]
+            == "disk_mft_timeline:rejected_evidence_id_out_of_scope"
+        )
+
+    def test_evidence_id_inside_allowlist_proceeds_normally(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # Same env, but the registered evidence_id IS in the allow-list
+        # — the call must proceed past the allow-list gate. We don't
+        # mock the mount so this will still fail on wrong_artifact_class
+        # or similar; the assertion is that the rejection isn't
+        # :evidence_id_out_of_scope.
+        case_dir = _make_case_dir(tmp_path, artifact_class=ArtifactClass.MEMORY_IMAGE)
+        monkeypatch.setenv(
+            "SIFT_GUARD_ALLOWED_EVIDENCE_IDS",
+            f"some-other-id,{VALID_EVIDENCE_ID},yet-another",
+        )
+        with pytest.raises(ValueError) as exc_info:
+            disk_mft_timeline(VALID_EVIDENCE_ID, case_dir=str(case_dir))
+        # Falls through to the artifact-class check, not the allow-list.
+        assert "not in this dispatch's allow-list" not in str(exc_info.value)
+        assert "evidence is not a disk image" in str(exc_info.value)
+
 
 # ---------------------------------------------------------------------------
 # Rejection audit lines

@@ -215,3 +215,9 @@ unless a specific observation justifies further drill-down.
 - Do not investigate disk artifacts — none are registered.
 - Do not run tools you don't have access to (you only have the
   eleven above).
+- Do not call MCP tools with an `evidence_id` other than the one in
+  your dispatch prompt. In multi-host runs you may see references
+  to other hosts' evidence_ids in correlation context — those are
+  not callable from this dispatch. The server enforces a
+  per-dispatch allow-list and rejects out-of-scope evidence_id
+  with `:rejected_evidence_id_out_of_scope`.

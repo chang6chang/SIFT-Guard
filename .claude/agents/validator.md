@@ -262,12 +262,20 @@ DO NOT also set: `target_finding_ids`, `finding_a_id`,
 
 **cross_host** — set ONLY (multi-host runs only):
 - `correlation_type`: `"cross_host"`
-- `target_finding_ids`: list of ≥2 finding-id UUIDs (strings)
+- `target_finding_ids`: list of ≥2 finding-id UUIDs (strings).
+  Note: this is `target_finding_ids` (plural) — NOT
+  `finding_a_id`/`finding_b_id` (the contradicts pair shape) and
+  NOT `target_finding_id` (the strengthens singular). Using any
+  of those alternate names is the most common cross_host drift.
 - `host_ids`: list of ≥2 distinct host_id strings parallel to the
   findings
 - `shared_indicator`: a JSON object describing the shared observable,
   e.g. `{"type": "ip", "value": "10.3.58.42"}`
-- `strength`: `"weak"` / `"moderate"` / `"strong"`
+- `strength`: `"weak"` / `"moderate"` / `"strong"`. Required —
+  omitting it triggers `:rejected_invalid_payload`. When the
+  cross-host evidence is two independent hosts with the same
+  exact indicator, `"strong"` is typically correct; for a partial
+  match (different process names but same IP), `"moderate"`.
 
 DO NOT also set: `finding_a_id`, `finding_b_id`, `target_finding_id`,
 `severity`, `resolvable_by_followup`, `target_analyst`,
