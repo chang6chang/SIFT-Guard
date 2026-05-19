@@ -203,7 +203,12 @@ class TestBuildPayloadDispatch:
         # Overflow field did not land on the typed record.
         assert getattr(payload, "finding_a_id", None) is None
 
-    def test_cross_host_requires_host_ids_and_strength(self):
+    def test_cross_host_requires_host_ids(self):
+        # Updated behavior (2026-05-19): ``strength`` is no longer
+        # required — the shim defaults to "moderate" so the legitimate
+        # correlation lands. ``host_ids`` is still required because
+        # there's no plausible default; the validator must explicitly
+        # name which hosts share the indicator.
         with pytest.raises(ValueError):
             _build_payload(
                 correlation_id=str(uuid4()),
@@ -218,16 +223,48 @@ class TestBuildPayloadDispatch:
                 finding_a_id=None,
                 finding_b_id=None,
                 target_finding_id=None,
-                strength=None,  # missing
+                strength="moderate",
                 severity=None,
                 resolvable_by_followup=None,
                 target_analyst=None,
                 related_finding_ids=None,
                 focus_context=None,
                 rationale=None,
-                host_ids=["nfury", "controller"],
+                host_ids=None,  # missing — must reject
                 shared_indicator=None,
             )
+
+    def test_cross_host_without_strength_defaults_moderate(self):
+        # Regression for the 2026-05-19 multi-host run: validator
+        # omitted ``strength`` on 12 cross_host correlations; shim
+        # defaults to "moderate" so legitimate cross-host evidence
+        # lands instead of burning a retry on a field-omission error.
+        f1, f2 = str(uuid4()), str(uuid4())
+        payload = _build_payload(
+            correlation_id=str(uuid4()),
+            correlation_type="cross_host",
+            case_id="case-data",
+            iteration_number=1,
+            created_at=NOW_UTC,
+            audit_line=1,
+            evidence_refs=_refs(),
+            hypothesis="x" * 60,
+            target_finding_ids=[f1, f2],
+            finding_a_id=None,
+            finding_b_id=None,
+            target_finding_id=None,
+            strength=None,  # shim defaults to "moderate"
+            severity=None,
+            resolvable_by_followup=None,
+            target_analyst=None,
+            related_finding_ids=None,
+            focus_context=None,
+            rationale=None,
+            host_ids=["nfury", "controller"],
+            shared_indicator=None,
+        )
+        assert isinstance(payload, CrossHostCorrelation)
+        assert payload.strength == "moderate"
 
     def test_corroborates_silently_ignores_host_ids(self):
         # Per the 2026-05-13 SRL-v2 lenient-payload patch, irrelevant
