@@ -336,6 +336,17 @@ def _build_payload(
         # the canonical list is missing.
         if target_finding_ids is None and finding_a_id and finding_b_id:
             target_finding_ids = [finding_a_id, finding_b_id]
+        # 2026-05-19 multi-host re-run: 2 cross_host correlations
+        # rejected because the validator emitted the request_followup-
+        # style ``related_finding_ids`` instead of the canonical
+        # ``target_finding_ids``. Promote the alternate shape when
+        # the canonical field is missing.
+        if (
+            target_finding_ids is None
+            and isinstance(related_finding_ids, list)
+            and len(related_finding_ids) >= 2
+        ):
+            target_finding_ids = list(related_finding_ids)
         # 2026-05-19 multi-host: 12 cross_host correlations rejected
         # solely because ``strength`` was null — the validator omitted
         # it on calls that otherwise carried target_finding_ids/host_ids

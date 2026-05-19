@@ -265,6 +265,11 @@ _PLUGIN_FIELD_ALIASES: dict[str, dict[str, str]] = {
         # Short form occasionally seen: agent writes ``process``
         # instead of ``process_name``. Alias to the canonical column.
         "process": "process_name",
+        # 2026-05-19 multi-host run: ``name`` appeared as a filter
+        # field on cmdline ("show rows where name=foo.exe"). The
+        # canonical column is ``process_name``; the analyst's shorter
+        # form is intuitively the same intent.
+        "name": "process_name",
         # ``args`` is sometimes asked alongside ``cmdline``: the
         # analyst conceptually wants "the arguments part of the
         # command line", but Vol 3's cmdline plugin only returns the

@@ -707,6 +707,35 @@ class TestRejectInvalidPayload:
         assert result.correlation_type == "cross_host"
         assert result.strength == "moderate"
 
+    def test_cross_host_with_related_finding_ids_promoted(
+        self, tmp_path: Path
+    ):
+        # Regression for the 2026-05-19 multi-host re-run: validator
+        # emitted ``related_finding_ids`` (the request_followup-shape
+        # name) instead of the canonical ``target_finding_ids`` on a
+        # cross_host call. The shim promotes related_finding_ids → the
+        # canonical list when the canonical field is missing.
+        case_dir = _seed_case_dir(tmp_path)
+        _seed_finding(case_dir, FID_B)
+        result = record_correlation(
+            case_id="case-rocba",
+            iteration_number=1,
+            correlation_type="cross_host",
+            evidence_refs=_refs(),
+            hypothesis=(
+                "Related-finding-ids back-compat on cross_host — the "
+                "validator's request_followup-style field name should "
+                "promote into target_finding_ids."
+            ),
+            related_finding_ids=[FID_A, FID_B],
+            host_ids=["host-a", "host-b"],
+            shared_indicator={"type": "process", "value": "evil.exe"},
+            strength="strong",
+            case_dir=str(case_dir),
+        )
+        assert result.correlation_type == "cross_host"
+        assert set(result.target_finding_ids) == {FID_A, FID_B}
+
     def test_cross_host_with_finding_pair_promoted_to_list(
         self, tmp_path: Path
     ):

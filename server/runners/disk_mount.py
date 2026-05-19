@@ -1131,7 +1131,7 @@ def run_evtx_dump(
     mount_path: str,
     channels: Iterable[str] = ("Security", "System"),
     *,
-    timeout_seconds: int = 600,
+    timeout_seconds: int = 1800,
 ) -> tuple[str, str, float, str]:
     """Dump the requested EVTX channels under the mount.
 

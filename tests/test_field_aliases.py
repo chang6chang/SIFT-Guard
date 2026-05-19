@@ -182,6 +182,24 @@ class TestQueryRecordsAliasing:
         assert "disasm" not in first
         assert "hexdump" not in first
 
+    def test_cmdline_name_alias_resolves_to_process_name(
+        self, tmp_path: Path
+    ):
+        # Regression for the 2026-05-19 multi-host re-run: analyst
+        # used ``name`` (the shortest natural form) as a filter
+        # field on cmdline. Canonical is ``process_name``. Alias
+        # added to _PLUGIN_FIELD_ALIASES.
+        # We piggyback on the malfind case-builder; the malfind
+        # plugin doesn't have ``name`` aliased — only cmdline does
+        # — so we use a tiny inline cmdline extraction for this
+        # test instead of reusing the malfind fixture.
+        from server.tools.analytical import _canonicalize_field
+
+        assert (
+            _canonicalize_field("windows.cmdline.CmdLine", "name")
+            == "process_name"
+        )
+
     def test_uppercase_field_names_resolved_case_insensitively(
         self, tmp_path: Path
     ):
