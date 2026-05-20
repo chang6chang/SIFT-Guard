@@ -142,6 +142,22 @@ class TestCanonicalize:
             _canonicalize_field("windows.malfind.Malfind", "vad_start") == "vad_start"
         )
 
+    def test_mft_path_alias_resolves(self):
+        # 2026-05-19 multi-host run: disk analyst repeatedly typed
+        # ``path`` (the intuitive short form) as both filter and
+        # projection field on disk.mft.MftTimeline. Canonical column
+        # is ``full_path``.
+        assert (
+            _canonicalize_field("disk.mft.MftTimeline", "path") == "full_path"
+        )
+        assert (
+            _canonicalize_field("disk.mft.MftTimeline", "mtime") == "timestamp"
+        )
+        assert (
+            _canonicalize_field("disk.mft.MftTimeline", "last_modified")
+            == "timestamp"
+        )
+
     def test_unknown_alias_passes_through(self):
         # Truly unknown — still gets passed to _validate_fields and
         # rejected there. The map only resolves what we know.

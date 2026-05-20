@@ -235,6 +235,23 @@ _PLUGIN_FIELD_ALIASES: dict[str, dict[str, str]] = {
         "process_name": "image_file_name",
         "offset": "offset_v",
     },
+    "disk.mft.MftTimeline": {
+        # 2026-05-19 multi-host run: ``path`` appeared as both filter
+        # and projection field across iter 1 and iter 2 on the MFT
+        # timeline plugin (e.g. ``filters=[{"field":"path","op":"contains","value":"fsh.sys"}]``).
+        # The canonical column is ``full_path`` — Vol-style MFT
+        # extractions store the absolute path under that key. ``path``
+        # is the intuitive short form a disk analyst types when writing
+        # the filter; surfacing the alias removes a recurring rejection
+        # category.
+        "path": "full_path",
+        # Vol 3 / pytsk3-derived MFT records carry the file system's
+        # last-modified timestamp under ``timestamp`` (the canonical
+        # column). Analysts occasionally ask for ``last_modified`` or
+        # ``mtime`` — same intent, different name.
+        "last_modified": "timestamp",
+        "mtime": "timestamp",
+    },
     "disk.registry.Registry": {
         # Analyst frequently asks for ``last_written`` (the natural
         # English phrasing for ``last_modified``). The 2026-05-14

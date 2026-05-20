@@ -829,6 +829,154 @@ class TestRejectUnknownFinding:
 
 
 # ---------------------------------------------------------------------------
+# Truncated UUID-prefix resolver — validator drift handler
+# ---------------------------------------------------------------------------
+
+
+class TestFindingIdPrefixResolution:
+    """The validator routinely sends 8-char hex prefixes of finding-ids
+    (e.g. ``"d441ae99"`` instead of the full UUID v4) as a
+    token-saving shorthand. The resolver maps unique prefixes back to
+    full ids before pydantic's UUID v4 validator runs; ambiguous or
+    unmatched prefixes flow through and reject cleanly. The 2026-05-19
+    multi-host run logged 10+ ``:rejected_invalid_payload`` events with
+    this exact shape — this suite is the regression."""
+
+    def test_corroborates_with_8char_prefix_resolves(self, tmp_path: Path):
+        case_dir = _seed_case_dir(tmp_path)
+        _seed_finding(case_dir, FID_B)
+        prefix_a = FID_A[:8]
+        prefix_b = FID_B[:8]
+        result = record_correlation(
+            case_id="case-rocba",
+            iteration_number=0,
+            correlation_type="corroborates",
+            evidence_refs=_refs(),
+            hypothesis=(
+                "Validator sent 8-char hex prefixes of the finding ids "
+                "instead of full UUIDs — the resolver should land the "
+                "correlation against the canonical full ids."
+            ),
+            target_finding_ids=[prefix_a, prefix_b],
+            strength="moderate",
+            case_dir=str(case_dir),
+        )
+        # Prefixes were swapped for full ids before pydantic ran.
+        assert set(result.target_finding_ids) == {FID_A, FID_B}
+        # Telemetry line emitted alongside the success line.
+        audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
+        tool_names = [row["tool_name"] for row in audit]
+        assert "record_correlation:finding_id_prefix_resolved" in tool_names
+
+    def test_contradicts_with_prefix_pair_resolves(self, tmp_path: Path):
+        case_dir = _seed_case_dir(tmp_path)
+        _seed_finding(case_dir, FID_B)
+        result = record_correlation(
+            case_id="case-rocba",
+            iteration_number=1,
+            correlation_type="contradicts",
+            evidence_refs=_refs(),
+            hypothesis=(
+                "Contradicts with prefix shorthand on both finding_a_id "
+                "and finding_b_id — the resolver expands each."
+            ),
+            finding_a_id=FID_A[:8],
+            finding_b_id=FID_B[:8],
+            severity="material",
+            resolvable_by_followup=True,
+            case_dir=str(case_dir),
+        )
+        assert result.finding_a_id == FID_A
+        assert result.finding_b_id == FID_B
+
+    def test_request_followup_with_prefix_list_resolves(self, tmp_path: Path):
+        case_dir = _seed_case_dir(tmp_path)
+        _seed_finding(case_dir, FID_B)
+        result = record_correlation(
+            case_id="case-rocba",
+            iteration_number=1,
+            correlation_type="request_followup",
+            evidence_refs=_refs(),
+            hypothesis=(
+                "Validator names the related findings by prefix on a "
+                "request_followup; resolver lifts them to full UUIDs."
+            ),
+            target_analyst="process_analyst",
+            related_finding_ids=[FID_A[:10], FID_B[:12]],
+            rationale=(
+                "Re-run the process analyst with a focus on the "
+                "named findings to confirm the suspected linkage."
+            ),
+            case_dir=str(case_dir),
+        )
+        assert set(result.related_finding_ids) == {FID_A, FID_B}
+
+    def test_cross_host_with_prefix_target_list_resolves(self, tmp_path: Path):
+        case_dir = _seed_case_dir(tmp_path)
+        _seed_finding(case_dir, FID_B)
+        result = record_correlation(
+            case_id="case-rocba",
+            iteration_number=1,
+            correlation_type="cross_host",
+            evidence_refs=_refs(),
+            hypothesis=(
+                "Cross-host correlation with prefix-shorthand finding "
+                "ids — same indicator on two hosts surfaces under both."
+            ),
+            target_finding_ids=[FID_A[:8], FID_B[:8]],
+            host_ids=["host-a", "host-b"],
+            shared_indicator={"type": "ip", "value": "10.0.0.5"},
+            strength="strong",
+            case_dir=str(case_dir),
+        )
+        assert set(result.target_finding_ids) == {FID_A, FID_B}
+
+    def test_full_uuid_passes_through_unchanged(self, tmp_path: Path):
+        # When the validator emits the canonical full UUID, the
+        # resolver must NOT touch it, NOT walk findings.jsonl
+        # gratuitously, and NOT emit the telemetry line. This is
+        # the no-drift hot path — must stay quiet.
+        case_dir = _seed_case_dir(tmp_path)
+        record_correlation(**_good_corroborates(), case_dir=str(case_dir))
+        audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
+        tool_names = [row["tool_name"] for row in audit]
+        assert "record_correlation:finding_id_prefix_resolved" not in tool_names
+
+    def test_unknown_prefix_rejects_cleanly(self, tmp_path: Path):
+        # An 8-char prefix that doesn't resolve to any finding stays
+        # as-is; pydantic's UUID v4 validator then rejects it via the
+        # `:rejected_invalid_payload` path. The side-channel
+        # rejections log preserves the original drift shape so an
+        # operator can debug it.
+        case_dir = _seed_case_dir(tmp_path)
+        with pytest.raises(ValueError):
+            record_correlation(
+                **_good_corroborates(target_finding_ids=["deadbeef"]),
+                case_dir=str(case_dir),
+            )
+        audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
+        assert audit[-1]["tool_name"] == "record_correlation:rejected_invalid_payload"
+
+    def test_ambiguous_prefix_not_resolved(self, tmp_path: Path):
+        # If two findings share the same 8-char prefix, the resolver
+        # must NOT silently route the validator's shorthand onto
+        # whichever happened to be first in iteration order — let
+        # pydantic reject the (now non-UUID-shaped) string cleanly.
+        case_dir = _seed_case_dir(tmp_path)
+        # FID_A = "11111111-1111-4111-8111-111111111111"
+        # Seed a second finding sharing the same 8-char prefix.
+        twin = FID_A[:8] + "-2222-4222-8222-222222222222"
+        _seed_finding(case_dir, twin)
+        with pytest.raises(ValueError):
+            record_correlation(
+                **_good_corroborates(target_finding_ids=[FID_A[:8]]),
+                case_dir=str(case_dir),
+            )
+        audit = _read_jsonl(case_dir / "audit" / "sift-guard-mcp.jsonl")
+        assert audit[-1]["tool_name"] == "record_correlation:rejected_invalid_payload"
+
+
+# ---------------------------------------------------------------------------
 # Chain continuity across two consecutive successful calls
 # ---------------------------------------------------------------------------
 

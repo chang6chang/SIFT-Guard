@@ -85,6 +85,23 @@ class _RejectionRecord(BaseModel):
     correlation_type: str | None
 
 
+class _PrefixResolutionRecord(BaseModel):
+    """Audit payload for the soft-resolution of truncated finding-id
+    prefixes (analyst drift telemetry).
+
+    Emitted by ``_resolve_finding_id_prefixes`` whenever one or more
+    finding-id-typed fields on a record_correlation call arrive as a
+    UUID *prefix* (8..35 chars) instead of a full UUID v4 (36 chars
+    with dashes) and resolve uniquely against findings.jsonl. The
+    call still proceeds with the resolved full ids; this is telemetry
+    for analyst drift, not a rejection.
+    """
+
+    case_id: str
+    correlation_type: str
+    resolutions: list[dict[str, str]]
+
+
 def _resolve_case_id(case_dir: Path) -> str | None:
     """Return the registered `case_id` from CASE.yaml, or None if the
     file is missing or malformed. The agent's `case_id` argument must
@@ -153,6 +170,158 @@ def _log_rejection(
     )
     if raw_input is not None:
         append_rejection_record(case_dir, entry, raw_input)
+
+
+# Validator drift handler: truncated UUID prefixes on finding-id fields.
+#
+# The 2026-05-19 multi-host run (and prior runs going back to 2026-05-13)
+# logged 10+ ``record_correlation:rejected_invalid_payload`` events where
+# the validator emitted an 8-character UUID prefix (e.g. ``"d441ae99"``)
+# in place of a full UUID v4 string. Same drift shape across every
+# correlation type — the validator was likely token-saving by quoting
+# the leading hex group of the UUID, treating it as a "short id" like
+# git's commit prefixes. The schema requires full UUID v4 (validated
+# by pydantic at construction time), so every truncated prefix burns
+# a 5-10K-token validator retry while contributing nothing — the
+# finding *exists*, the analyst just named it by prefix.
+#
+# Soft-resolve any string that's 8..35 chars (i.e. shorter than a full
+# 36-char UUID, longer than a meaningless 1-7 char fragment) against
+# findings.jsonl. Unique prefix → swap in the full id, emit one
+# ``:finding_id_prefix_resolved`` audit line per call so an operator
+# can see the drift telemetry. Ambiguous prefix (multiple findings
+# share the leading substring) or no match → leave the string alone;
+# pydantic's UUID v4 validator will reject it cleanly via
+# ``:rejected_invalid_payload`` and the operator still sees the
+# original drift in the side-channel rejections log. The 8-char floor
+# is conservative: 32 bits of hex collision is large enough that an
+# 80-finding case will almost never see overlap, while a 4-char prefix
+# would routinely collide.
+
+_PREFIX_MIN_LENGTH = 8
+_FULL_UUID_LENGTH = 36
+
+
+def _build_finding_id_prefix_index(case_dir_path: Path) -> dict[str, str]:
+    """Build a ``{prefix: full_finding_id}`` index from findings.jsonl.
+
+    Only prefixes that resolve to exactly one finding are included so
+    an ambiguous prefix flows through to pydantic's UUID v4 validator
+    and lands cleanly in ``:rejected_invalid_payload`` (with the
+    original prefix preserved in the side-channel rejections log) —
+    rather than getting silently mapped onto whichever finding the
+    iteration order surfaced first.
+
+    Indexes every leading substring of length 8..35 on every full
+    finding-id, so the validator's natural 8-char hex prefix shape
+    resolves alongside the dash-included prefixes (``d441ae99``,
+    ``d441ae99-3f1a``, etc).
+    """
+    finding_ids = read_finding_ids(case_dir_path)
+    counts: dict[str, list[str]] = {}
+    for fid in finding_ids:
+        for length in range(_PREFIX_MIN_LENGTH, _FULL_UUID_LENGTH):
+            counts.setdefault(fid[:length], []).append(fid)
+    return {p: matches[0] for p, matches in counts.items() if len(matches) == 1}
+
+
+def _resolve_finding_id_prefixes(
+    case_dir_path: Path,
+    target_finding_ids: list[str] | None,
+    finding_a_id: str | None,
+    finding_b_id: str | None,
+    target_finding_id: str | None,
+    related_finding_ids: list[str] | None,
+) -> tuple[
+    list[str] | None,
+    str | None,
+    str | None,
+    str | None,
+    list[str] | None,
+    list[tuple[str, str]],
+]:
+    """Resolve any short-prefix finding-id fields against findings.jsonl.
+
+    Returns a tuple matching the input shape plus a `resolutions` list
+    of ``(prefix, full_id)`` pairs for audit telemetry. The findings.jsonl
+    scan is deferred until at least one field has a short value, so
+    correlations with full UUIDs don't pay the I/O cost.
+    """
+
+    def _is_short(v: str | None) -> bool:
+        return isinstance(v, str) and _PREFIX_MIN_LENGTH <= len(v.strip()) < _FULL_UUID_LENGTH
+
+    needs_resolve = (
+        _is_short(finding_a_id)
+        or _is_short(finding_b_id)
+        or _is_short(target_finding_id)
+        or (isinstance(target_finding_ids, list) and any(_is_short(v) for v in target_finding_ids))
+        or (isinstance(related_finding_ids, list) and any(_is_short(v) for v in related_finding_ids))
+    )
+    if not needs_resolve:
+        return (
+            target_finding_ids,
+            finding_a_id,
+            finding_b_id,
+            target_finding_id,
+            related_finding_ids,
+            [],
+        )
+
+    index = _build_finding_id_prefix_index(case_dir_path)
+    resolutions: list[tuple[str, str]] = []
+
+    def _resolve_scalar(v: str | None) -> str | None:
+        if not _is_short(v):
+            return v
+        candidate = v.strip()
+        full = index.get(candidate) or index.get(candidate.lower())
+        if full is None:
+            return v
+        resolutions.append((candidate, full))
+        return full
+
+    def _resolve_list(items: list[str] | None) -> list[str] | None:
+        if not isinstance(items, list):
+            return items
+        return [_resolve_scalar(item) for item in items]
+
+    return (
+        _resolve_list(target_finding_ids),
+        _resolve_scalar(finding_a_id),
+        _resolve_scalar(finding_b_id),
+        _resolve_scalar(target_finding_id),
+        _resolve_list(related_finding_ids),
+        resolutions,
+    )
+
+
+def _log_prefix_resolutions(
+    case_dir_path: Path,
+    case_id: str,
+    correlation_type: str,
+    resolutions: list[tuple[str, str]],
+) -> None:
+    """Append one informational audit line per call that resolved at
+    least one prefix. No-op when ``resolutions`` is empty."""
+    if not resolutions:
+        return
+    record = _PrefixResolutionRecord(
+        case_id=case_id,
+        correlation_type=correlation_type,
+        resolutions=[{"prefix": p, "full_id": f} for p, f in resolutions],
+    )
+    append_audit_entry(
+        case_dir=case_dir_path,
+        tool_name=f"{_TOOL_NAME}:finding_id_prefix_resolved",
+        evidence_id=None,
+        input_args={
+            "case_id": case_id,
+            "correlation_type": correlation_type,
+            "resolution_count": len(resolutions),
+        },
+        output=record,
+    )
 
 
 def _success_input_args(
@@ -502,6 +671,30 @@ def record_correlation(
                 raw_input,
             )
             raise ValueError("evidence_ref does not match audit chain")
+
+    # 3b. Resolve any truncated UUID prefixes against findings.jsonl.
+    #     Validator drift handler — see ``_resolve_finding_id_prefixes``
+    #     docstring above. Runs after the audit-ref check so a call with
+    #     mismatched audit refs doesn't pay the findings.jsonl scan cost.
+    #     ``raw_input`` was snapshotted at the top of the function, so
+    #     a rejection further down still echoes the original analyst
+    #     prefix to the side-channel rejections log.
+    (
+        target_finding_ids,
+        finding_a_id,
+        finding_b_id,
+        target_finding_id,
+        related_finding_ids,
+        _prefix_resolutions,
+    ) = _resolve_finding_id_prefixes(
+        case_dir_path,
+        target_finding_ids,
+        finding_a_id,
+        finding_b_id,
+        target_finding_id,
+        related_finding_ids,
+    )
+    _log_prefix_resolutions(case_dir_path, case_id, correlation_type, _prefix_resolutions)
 
     # 4. Per-type payload construction. The dispatcher rejects
     #    cross-type field overflows + missing required fields with a
