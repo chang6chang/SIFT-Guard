@@ -391,3 +391,33 @@ class TestServerMainCaseDirEnv:
 
         importlib.reload(server_main)
         assert server_main.CASE_DIR == "case-data"
+
+
+class TestVirtualDiskArtifactClass:
+    """VMDK / QCOW2 / VDI magic-byte detection (ported from the
+    enterprise branch) — register_evidence classifies virtual disks
+    as DISK_IMAGE so the dispatch plan activates disk_analyst."""
+
+    def test_vmdk_magic_classifies_disk_image(self, case_dir: Path):
+        f = case_dir / "evidence" / "host.vmdk"
+        f.write_bytes(b"KDMV" + b"\x00" * 200)
+        record = register_evidence(str(f), case_dir=str(case_dir))
+        assert record.artifact_class == ArtifactClass.DISK_IMAGE
+
+    def test_qcow2_magic_classifies_disk_image(self, case_dir: Path):
+        f = case_dir / "evidence" / "host.bin"
+        f.write_bytes(b"QFI\xfb" + b"\x00" * 200)
+        record = register_evidence(str(f), case_dir=str(case_dir))
+        assert record.artifact_class == ArtifactClass.DISK_IMAGE
+
+    def test_vdi_signature_classifies_disk_image(self, case_dir: Path):
+        f = case_dir / "evidence" / "host.bin"
+        f.write_bytes(b"\x00" * 0x40 + b"\x7f\x10\xda\xbe" + b"\x00" * 200)
+        record = register_evidence(str(f), case_dir=str(case_dir))
+        assert record.artifact_class == ArtifactClass.DISK_IMAGE
+
+    def test_vhd_extension_classifies_disk_image(self, case_dir: Path):
+        f = case_dir / "evidence" / "host-c-drive.vhd"
+        f.write_bytes(b"\x00" * 512)
+        record = register_evidence(str(f), case_dir=str(case_dir))
+        assert record.artifact_class == ArtifactClass.DISK_IMAGE

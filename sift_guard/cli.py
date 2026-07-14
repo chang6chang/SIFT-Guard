@@ -112,7 +112,8 @@ def _parser() -> argparse.ArgumentParser:
         "evidence_dir",
         type=Path,
         help="Directory containing evidence files (any mix of .raw, "
-        ".mem, .vmem, .lime, .001, .E01, .dd, .vhdx, .img, .aff4).",
+        ".mem, .vmem, .lime, .001, .E01, .dd, .vhdx, .vhd, .img, "
+        ".vmdk, .qcow2, .vdi, .aff4).",
     )
     analyze.add_argument(
         "--output-dir",

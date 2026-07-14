@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from orchestrator.inventory import (
+    _detect_evidence_type_by_extension,
     _extract_host_token,
     _refine_evidence_type_by_magic,
     format_inventory_table,
@@ -60,6 +61,34 @@ class TestRefineByMagic:
         p = tmp_path / "x.raw"
         p.write_bytes(b"\x00" * 16)
         assert _refine_evidence_type_by_magic(p, "memory") == "memory"
+
+
+class TestVirtualDiskMagicDetection:
+    def test_vmdk_magic(self, tmp_path: Path):
+        p = tmp_path / "host-c-drive.bin"
+        p.write_bytes(b"KDMV" + b"\x00" * 100)
+        assert _refine_evidence_type_by_magic(p, "unknown") == "disk"
+
+    def test_qcow2_magic(self, tmp_path: Path):
+        p = tmp_path / "host.bin"
+        p.write_bytes(b"QFI\xfb" + b"\x00" * 100)
+        assert _refine_evidence_type_by_magic(p, "unknown") == "disk"
+
+    def test_vdi_text_magic(self, tmp_path: Path):
+        p = tmp_path / "host.bin"
+        p.write_bytes(b"<<< Oracle VM VirtualBox Disk Image >>>" + b"\x00" * 100)
+        assert _refine_evidence_type_by_magic(p, "unknown") == "disk"
+
+    def test_vdi_signature_at_0x40(self, tmp_path: Path):
+        p = tmp_path / "host.bin"
+        p.write_bytes(b"\x00" * 0x40 + b"\x7f\x10\xda\xbe" + b"\x00" * 24)
+        assert _refine_evidence_type_by_magic(p, "unknown") == "disk"
+
+    def test_virtual_disk_extensions_guess_disk(self, tmp_path: Path):
+        for ext in (".vmdk", ".qcow2", ".vdi", ".vhd"):
+            p = tmp_path / f"host-c-drive{ext}"
+            p.write_bytes(b"\x00" * 16)
+            assert _detect_evidence_type_by_extension(p) == "disk", ext
 
 
 class TestScanEvidenceDirectory:
