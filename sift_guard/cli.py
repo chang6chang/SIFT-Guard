@@ -65,6 +65,7 @@ from orchestrator.manifest import (
     write_manifest,
 )
 from reporting.summary import build_summary, write_reports
+from server.integrity import EvidenceIntegrityError
 from server.tools.evidence import register_evidence
 from sift_guard.display import ProgressDisplay, replay_events
 from sift_guard.preflight import preflight_check_image
@@ -756,6 +757,17 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
             parallel=parallel,
             parallel_max_workers=parallel_max_workers,
         )
+    except EvidenceIntegrityError as exc:
+        print(
+            "\nEVIDENCE INTEGRITY FAILURE — the end-of-run re-hash "
+            f"did not match registration:\n  {exc}\n"
+            "The case is NOT trustworthy. See "
+            "audit/sift-guard-mcp.jsonl "
+            "(verify_evidence_integrity:mismatch lines) for details.",
+            file=sys.stderr,
+        )
+        display.stop_audit_tail()
+        return 3
     except Exception:
         logger.exception("loop crashed")
         display.stop_audit_tail()

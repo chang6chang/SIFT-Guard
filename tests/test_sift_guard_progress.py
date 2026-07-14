@@ -14,6 +14,7 @@ Verifies:
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import time
@@ -146,13 +147,17 @@ def test_loop_emits_expected_event_sequence(tmp_path: Path):
     case_dir.mkdir()
     (case_dir / "evidence").mkdir()
     (case_dir / "audit").mkdir()
+    # Real file + real hash: the loop's end-of-run integrity re-hash
+    # (server.integrity) verifies CASE.yaml entries against disk.
+    (case_dir / "evidence" / "a.raw").write_bytes(b"\x00" * 1024)
+    real_sha = hashlib.sha256(b"\x00" * 1024).hexdigest()
     case_yaml = (
         "case_id: test-case\n"
         "evidence:\n"
         "  - evidence_id: 550e8400-e29b-41d4-a716-446655440000\n"
         "    original_filename: a.raw\n"
         "    absolute_path: " + str(case_dir / "evidence" / "a.raw") + "\n"
-        "    sha256: " + ("a" * 64) + "\n"
+        "    sha256: " + real_sha + "\n"
         "    size_bytes: 1024\n"
         "    artifact_class: memory_image\n"
         "    registered_at: " + _NOW.isoformat() + "\n"
