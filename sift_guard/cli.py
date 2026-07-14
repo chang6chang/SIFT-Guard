@@ -66,6 +66,7 @@ from orchestrator.manifest import (
 )
 from reporting.summary import build_summary, write_reports
 from server.integrity import EvidenceIntegrityError
+from sift_guard.config import Config, apply_to_environment, load_config
 from server.tools.evidence import register_evidence
 from sift_guard.display import ProgressDisplay, replay_events
 from sift_guard.preflight import preflight_check_image
@@ -97,6 +98,15 @@ def _parser() -> argparse.ArgumentParser:
         "real-time progress display is independent of this — it's "
         "always on for `analyze`.",
     )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to a sift-guard.yaml. Default: auto-discover "
+        "./sift-guard.yaml, ~/.config/sift-guard.yaml, "
+        "/etc/sift-guard.yaml. CLI flags always override config "
+        "values; config values override built-in defaults.",
+    )
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
     analyze = sub.add_parser(
@@ -127,8 +137,10 @@ def _parser() -> argparse.ArgumentParser:
     analyze.add_argument(
         "--max-iterations",
         type=int,
-        default=_DEFAULT_MAX_ITERATIONS,
-        help=f"Hard cap on loop iterations. Default: {_DEFAULT_MAX_ITERATIONS}.",
+        default=None,
+        help=f"Hard cap on loop iterations. Default: "
+        f"{_DEFAULT_MAX_ITERATIONS} (or the config file's "
+        "analysis.max_iterations).",
     )
     analyze.add_argument(
         "--token-budget",
@@ -507,6 +519,18 @@ def _hms() -> str:
 
 
 def _cmd_analyze(args: argparse.Namespace) -> int:
+    # Config-file fallbacks: only fill values the operator did not
+    # pass as flags (flag > config > default).
+    config = getattr(args, "config_obj", None) or Config()
+    if args.max_iterations is None:
+        args.max_iterations = config.analysis.max_iterations or _DEFAULT_MAX_ITERATIONS
+    if args.token_budget is None and config.analysis.token_budget:
+        args.token_budget = config.analysis.token_budget
+    if args.output_dir is None and config.output.dir:
+        args.output_dir = Path(config.output.dir).expanduser()
+    if not config.output.generate_report:
+        args.no_report = True
+
     evidence_dir = args.evidence_dir.resolve()
     if not evidence_dir.is_dir():
         print(f"error: evidence directory not found: {evidence_dir}", file=sys.stderr)
@@ -1009,6 +1033,18 @@ def main(argv: list[str] | None = None) -> int:
         level=getattr(logging, args.log_level),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    # Optional YAML config: CLI flags > config file > built-in
+    # defaults. `apply_to_environment` exports the tool-path /
+    # symbols / model settings as the env vars the runtime modules
+    # consult; the analyze-scoped values are resolved in _cmd_analyze.
+    try:
+        config = load_config(args.config)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"sift-guard: config error: {exc}", file=sys.stderr)
+        return 2
+    apply_to_environment(config)
+    args.config_obj = config
 
     if args.subcommand == "analyze":
         return _cmd_analyze(args)

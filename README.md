@@ -67,8 +67,17 @@ Most common flags:
 | `--scan-only` | off | Show the host-grouping manifest and exit. No tokens. |
 | `--yes` | off | Skip the 5-second manifest review pause. |
 | `--verbose` | off | Show every MCP tool call in the live UI. |
+| `--config PATH` | auto-discover | YAML config file (see `sift-guard.yaml.example`). |
 
 Full surface: `sift-guard analyze --help`.
+
+Persistent settings live in an optional `sift-guard.yaml`
+(`--config PATH`, or auto-discovered from `./`, `~/.config/`,
+`/etc/`). It pins tool paths (Volatility, plaso, ewfmount…), the
+symbols directory, the model, iteration/token budgets, and the
+output directory — see
+[`sift-guard.yaml.example`](sift-guard.yaml.example). CLI flags
+always win over config values.
 
 ## Architecture
 

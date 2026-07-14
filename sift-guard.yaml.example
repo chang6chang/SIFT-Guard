@@ -1,0 +1,30 @@
+# sift-guard.yaml — optional operator configuration.
+# Discovery order: ./sift-guard.yaml, ~/.config/sift-guard.yaml,
+# /etc/sift-guard.yaml — or pass --config PATH.
+# Precedence: CLI flags > this file > built-in defaults.
+# Every key is optional; omit anything to keep the default.
+
+volatility:
+  # path: /usr/bin/vol                  # explicit vol binary (SIFT_VOL_PATH)
+  # python: /opt/volatility3/bin/python3
+  # symbols_dir: /opt/volatility3/symbols
+
+disk_tools:
+  # log2timeline: /usr/bin/log2timeline.py
+  # psort: /usr/bin/psort.py
+  # evtx_dump: /usr/bin/evtx_dump.py
+  # regripper: /usr/bin/rip.pl
+  # ewfmount: /usr/bin/ewfmount
+  # guestmount: /usr/bin/guestmount
+  # mount: /usr/bin/mount
+  # prefetch_cmd: prefetch-parser
+  # premounted_path: /mnt/sift_disk     # skip mounting entirely
+
+analysis:
+  # max_iterations: 6
+  # token_budget: 2000000               # overrides 500K + 250K/host heuristic
+  # model: claude-sonnet-5              # exported as ANTHROPIC_MODEL
+
+output:
+  # dir: ~/sift-guard-results
+  # generate_report: true
