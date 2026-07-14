@@ -162,8 +162,10 @@ the resolver rejects any id not present in the registered
 - Disk images mounted via `ewfmount` / `affuse` with explicit `-o ro`
 - MCP server validates mount is read-only by checking `/proc/mounts`
   before every read
-- Audit log re-hashes evidence at the end of every run; mismatch is a
-  fatal error and a reportable finding
+- Evidence is re-hashed at the end of every run
+  (`server.integrity.assert_evidence_integrity`, called at loop
+  termination); every re-hash lands on the audit chain and a mismatch
+  is a fatal error (`verify_evidence_integrity:mismatch` + CLI exit 3)
 
 ## Audit log integrity
 

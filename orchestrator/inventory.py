@@ -75,7 +75,9 @@ logger = logging.getLogger(__name__)
 # Extension → preliminary evidence-type guess. Magic bytes refine
 # this, but a lot of files are extension-only by convention.
 _MEMORY_EXTENSIONS: frozenset[str] = frozenset({".raw", ".mem", ".lime", ".vmem"})
-_DISK_EXTENSIONS: frozenset[str] = frozenset({".e01", ".dd", ".vhdx", ".img"})
+_DISK_EXTENSIONS: frozenset[str] = frozenset(
+    {".e01", ".dd", ".vhdx", ".vhd", ".img", ".vmdk", ".qcow2", ".vdi"}
+)
 # .aff4 can be either memory or disk (it's a container format).
 # Treat as unknown so the operator must annotate post-scan, OR the
 # magic-byte detector resolves it to one of the two.
@@ -142,12 +144,22 @@ _NON_EVIDENCE_DIR_TOKENS: frozenset[str] = frozenset({"baseline", "precooked"})
 _NON_EVIDENCE_FILENAME_TOKENS: frozenset[str] = frozenset({"baseline"})
 
 
-# Magic-byte signatures (read from the first 16 bytes of the file).
+# Magic-byte signatures (read from the first 68 bytes of the file).
 _LIME_MAGIC = b"\x4c\x69\x4d\x45"  # b"LiME"
 _E01_MAGIC = b"\x45\x56\x46\x09\x0d\x0a\xff\x00"  # EVF\t\r\n\xff\x00
 _VHDX_MAGIC = b"\x76\x68\x64\x78\x66\x69\x6c\x65"  # b"vhdxfile"
+_VMDK_MAGIC = b"KDMV"  # VMware sparse / streamOptimized header
+_QCOW2_MAGIC = b"QFI\xfb"  # QEMU copy-on-write v2/v3 header
+# VDI carries a leading ASCII "image_info" text on every standard
+# build (Oracle, Sun xVM, Innotek); the authoritative 4-byte
+# image_signature sits at offset 0x40. Probe both.
+_VDI_TEXT_MAGIC = b"<<< Oracle VM VirtualBox Disk Image >>>"
+_VDI_SIGNATURE = b"\x7f\x10\xda\xbe"  # little-endian 0xbeda107f
+_VDI_SIGNATURE_OFFSET = 0x40
 
-_MAGIC_PROBE_BYTES = 16
+# 68 bytes covers the VDI signature at 0x40 + 4; every other
+# signature we recognize sits inside the first 16.
+_MAGIC_PROBE_BYTES = 68
 
 
 # Filename hostname-extraction heuristic. Common DFIR-case naming
@@ -290,7 +302,7 @@ def _filename_matches_non_evidence_token(path: Path) -> bool:
 
 
 def _refine_evidence_type_by_magic(path: Path, ext_guess: EvidenceType) -> EvidenceType:
-    """Read the first 16 bytes; bump the guess to a stronger
+    """Read the first 68 bytes; bump the guess to a stronger
     classification when a magic-byte signature matches.
 
     Magic-byte hits are authoritative; we never override a
@@ -307,6 +319,17 @@ def _refine_evidence_type_by_magic(path: Path, ext_guess: EvidenceType) -> Evide
     if head.startswith(_E01_MAGIC):
         return "disk"
     if head.startswith(_VHDX_MAGIC):
+        return "disk"
+    if head.startswith(_VMDK_MAGIC):
+        return "disk"
+    if head.startswith(_QCOW2_MAGIC):
+        return "disk"
+    if head.startswith(_VDI_TEXT_MAGIC):
+        return "disk"
+    if (
+        len(head) >= _VDI_SIGNATURE_OFFSET + 4
+        and head[_VDI_SIGNATURE_OFFSET : _VDI_SIGNATURE_OFFSET + 4] == _VDI_SIGNATURE
+    ):
         return "disk"
     return ext_guess
 

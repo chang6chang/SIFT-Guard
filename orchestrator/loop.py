@@ -80,6 +80,7 @@ from orchestrator.iterations_log import (
 from orchestrator.manifest import CaseManifest
 from orchestrator.promotion import promote
 from server.findings_log import read_finding_state
+from server.integrity import assert_evidence_integrity
 from server.schemas import (
     ContradictsCorrelation,
     CorrelationChainEntry,
@@ -334,6 +335,8 @@ async def _call_update_finding_async(
         **os.environ,
         "PYTHONPATH": str(PROJECT_ROOT),
         "SIFT_GUARD_CASE_DIR": str(case_dir),
+        # Server-side role gate: update_finding is orchestrator-only.
+        "SIFT_GUARD_ROLE": "orchestrator",
     }
     params = StdioServerParameters(
         command=python_exe,
@@ -709,6 +712,11 @@ def run_loop(
         prior_disputed = _disputed_set(case_dir)
         pending_analysts = next_analysts
         pending_focus = next_focus if next_focus else None
+
+    # End-of-run evidence re-hash (CLAUDE.md integrity closure).
+    # Audits one line per evidence file; raises EvidenceIntegrityError
+    # on any mismatch — fatal by contract, AFTER the audit lines land.
+    assert_evidence_integrity(case_dir)
 
     return LoopOutcome(
         iterations=iteration_records,
@@ -1346,6 +1354,10 @@ def run_loop_multi_host(
         prior_disputed = _disputed_set(case_dir)
         pending_host_ids = next_host_ids if next_host_ids else None
         pending_focus = next_focus if next_focus else None
+
+    # End-of-run evidence re-hash — same integrity closure as the
+    # single-evidence loop.
+    assert_evidence_integrity(case_dir)
 
     return LoopOutcome(
         iterations=iteration_records,

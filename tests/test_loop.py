@@ -52,7 +52,7 @@ from server.tools.findings import update_finding as _real_update_finding
 
 _NOW = datetime(2026, 5, 7, 12, 0, 0, tzinfo=timezone.utc)
 EVID = "550e8400-e29b-41d4-a716-446655440000"
-SHA = "eb33bdf63730858a805463d171245b233335dd6d89ed458bc681f7d282e10563"
+SHA = "5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef"
 
 
 def _seed_case(tmp_path: Path) -> Path:

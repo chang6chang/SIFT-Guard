@@ -34,6 +34,7 @@ that rejection cannot become an unrecorded probe channel:
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
@@ -75,6 +76,19 @@ class _RejectionReason(StrEnum):
     INVALID_AUDIT_REF = "invalid_audit_ref"
     INVALID_PAYLOAD = "invalid_payload"
     UNKNOWN_FINDING = "unknown_finding"
+    ROLE_NOT_PERMITTED = "role_not_permitted"
+
+
+# Caller-role gate — same SIFT_GUARD_ROLE contract as
+# server.tools.findings (duplicated per this module's loose-coupling
+# convention; see _log_rejection's docstring). record_correlation is
+# validator-only; open when the env var is unset.
+_ROLE_ENV = "SIFT_GUARD_ROLE"
+
+
+def _caller_role() -> str | None:
+    role = os.environ.get(_ROLE_ENV, "").strip()
+    return role or None
 
 
 class _RejectionRecord(BaseModel):
@@ -633,6 +647,18 @@ def record_correlation(
         "host_ids": host_ids,
         "shared_indicator": shared_indicator,
     }
+
+    # 0. Caller-role gate — record_correlation is validator-only.
+    role = _caller_role()
+    if role is not None and role != "validator":
+        _log_rejection(
+            case_dir_path,
+            _RejectionReason.ROLE_NOT_PERMITTED,
+            case_id,
+            correlation_type,
+            raw_input,
+        )
+        raise ValueError("caller role not permitted for this tool")
 
     # 1. correlation_type membership.
     if correlation_type not in _VALID_CORRELATION_TYPES:

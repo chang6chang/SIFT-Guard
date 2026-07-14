@@ -36,6 +36,7 @@ returns a hit for that specific ID or nothing.
 
 from __future__ import annotations
 
+import os
 import re
 from enum import StrEnum
 from pathlib import Path
@@ -85,6 +86,19 @@ class _RejectionReason(StrEnum):
     TOP_K_TOO_LARGE = "top_k_too_large"
     QUERY_TOO_LONG = "query_too_long"
     TECHNIQUE_ID_BAD_SHAPE = "technique_id_bad_shape"
+    ROLE_NOT_PERMITTED = "role_not_permitted"
+
+
+# Caller-role gate — same SIFT_GUARD_ROLE contract as
+# server.tools.findings. rag_query is validator-only at the agent
+# surface; this makes it validator-only at the server too. Open when
+# the env var is unset.
+_ROLE_ENV = "SIFT_GUARD_ROLE"
+
+
+def _caller_role() -> str | None:
+    role = os.environ.get(_ROLE_ENV, "").strip()
+    return role or None
 
 
 class _RejectionRecord(BaseModel):
@@ -159,6 +173,12 @@ def rag_query(
         "semantic_query": semantic_query,
         "top_k": top_k,
     }
+
+    # 0. Caller-role gate — rag_query is validator-only.
+    role = _caller_role()
+    if role is not None and role != "validator":
+        _log_rejection(case_dir_path, _RejectionReason.ROLE_NOT_PERMITTED, input_args)
+        raise ValueError("caller role not permitted for this tool")
 
     # 1. Exactly-one-input shape.
     if technique_id is not None and semantic_query is not None:

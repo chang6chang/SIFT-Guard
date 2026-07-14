@@ -98,6 +98,7 @@ from server.tools.memory import (
     vol_pstree as _vol_pstree_impl,
 )
 from server.tools.rag import rag_query as _rag_query_impl
+from server.untrusted_boundary import wrap_untrusted_result
 
 
 # Fixed at server startup. The agent does NOT control where the case
@@ -159,7 +160,7 @@ def vol_pslist(evidence_id: str) -> PslistSummary:
     Cost: typically 5-15 seconds per first call against a 19 GB Windows
     10 image. Cache hits are essentially instant.
     """
-    return _vol_pslist_impl(evidence_id, case_dir=CASE_DIR)
+    return wrap_untrusted_result(_vol_pslist_impl(evidence_id, case_dir=CASE_DIR))
 
 
 @mcp.tool()
@@ -186,7 +187,7 @@ def vol_psscan(evidence_id: str) -> PsscanSummary:
     vol_pslist — pool-tag scanning walks the full memory layer. Do not
     call back-to-back redundantly. Cache hits are instant.
     """
-    return _vol_psscan_impl(evidence_id, case_dir=CASE_DIR)
+    return wrap_untrusted_result(_vol_psscan_impl(evidence_id, case_dir=CASE_DIR))
 
 
 @mcp.tool()
@@ -209,7 +210,7 @@ def vol_pstree(evidence_id: str) -> PstreeSummary:
     Cost: typically 25-45 seconds per first call against a 19 GB
     Windows 10 image (Rocba: 29.5s observed). Cache hits are instant.
     """
-    return _vol_pstree_impl(evidence_id, case_dir=CASE_DIR)
+    return wrap_untrusted_result(_vol_pstree_impl(evidence_id, case_dir=CASE_DIR))
 
 
 @mcp.tool()
@@ -235,7 +236,7 @@ def vol_netscan(evidence_id: str) -> NetscanSummary:
     because netscan pool-scans more object families. Do not call
     back-to-back redundantly. Cache hits are instant.
     """
-    return _vol_netscan_impl(evidence_id, case_dir=CASE_DIR)
+    return wrap_untrusted_result(_vol_netscan_impl(evidence_id, case_dir=CASE_DIR))
 
 
 @mcp.tool()
@@ -263,7 +264,7 @@ def vol_cmdline(evidence_id: str) -> CmdLineSummary:
     Windows 10 image; cmdline reads the same paged structures as
     pstree's `cmd` projection. Cache hits are instant.
     """
-    return _vol_cmdline_impl(evidence_id, case_dir=CASE_DIR)
+    return wrap_untrusted_result(_vol_cmdline_impl(evidence_id, case_dir=CASE_DIR))
 
 
 @mcp.tool()
@@ -293,7 +294,7 @@ def vol_malfind(evidence_id: str) -> MalfindSummary:
     process count. Typically completes in seconds-to-minutes against
     a 19 GB Windows 10 image. Cache hits are instant.
     """
-    return _vol_malfind_impl(evidence_id, case_dir=CASE_DIR)
+    return wrap_untrusted_result(_vol_malfind_impl(evidence_id, case_dir=CASE_DIR))
 
 
 @mcp.tool()
@@ -326,7 +327,7 @@ def disk_mft_timeline(evidence_id: str) -> MftTimelineSummary:
     seconds to several minutes depending on disk size. Cache hits
     are instant.
     """
-    return _disk_mft_timeline_impl(evidence_id, case_dir=CASE_DIR)
+    return wrap_untrusted_result(_disk_mft_timeline_impl(evidence_id, case_dir=CASE_DIR))
 
 
 @mcp.tool()
@@ -351,7 +352,7 @@ def disk_prefetch(evidence_id: str) -> PrefetchSummary:
     Same cache contract and sanitized rejection paths as
     `disk_mft_timeline`. Cache hits are instant.
     """
-    return _disk_prefetch_impl(evidence_id, case_dir=CASE_DIR)
+    return wrap_untrusted_result(_disk_prefetch_impl(evidence_id, case_dir=CASE_DIR))
 
 
 @mcp.tool()
@@ -377,7 +378,7 @@ def disk_evtx(evidence_id: str) -> EvtxSummary:
     truncated to 500 characters in the parser. Same cache contract
     and sanitized rejection paths as `disk_mft_timeline`.
     """
-    return _disk_evtx_impl(evidence_id, case_dir=CASE_DIR)
+    return wrap_untrusted_result(_disk_evtx_impl(evidence_id, case_dir=CASE_DIR))
 
 
 @mcp.tool()
@@ -403,7 +404,7 @@ def disk_registry(evidence_id: str) -> RegistrySummary:
     truncated to 500 characters in the parser. Same cache contract
     and sanitized rejection paths as `disk_mft_timeline`.
     """
-    return _disk_registry_impl(evidence_id, case_dir=CASE_DIR)
+    return wrap_untrusted_result(_disk_registry_impl(evidence_id, case_dir=CASE_DIR))
 
 
 @mcp.tool()
@@ -435,7 +436,7 @@ def query_records(
     The result stays under 10 KB by construction: the limit cap × the
     per-record projection size keeps the JSON return bounded.
     """
-    return _query_records_impl(
+    return wrap_untrusted_result(_query_records_impl(
         evidence_id=evidence_id,
         plugin_name=plugin_name,
         filters=filters,
@@ -443,7 +444,7 @@ def query_records(
         limit=limit,
         offset=offset,
         case_dir=CASE_DIR,
-    )
+    ))
 
 
 @mcp.tool()
@@ -470,14 +471,14 @@ def group_by(
 
     Same field validation and audited rejections as `query_records`.
     """
-    return _group_by_impl(
+    return wrap_untrusted_result(_group_by_impl(
         evidence_id=evidence_id,
         plugin_name=plugin_name,
         field=field,
         filters=filters,
         top_n=top_n,
         case_dir=CASE_DIR,
-    )
+    ))
 
 
 @mcp.tool()
@@ -512,7 +513,7 @@ def set_difference(
     `set_difference:rejected_extraction_not_found` — the agent must
     have invoked the matching tier-1 tool first.
     """
-    return _set_difference_impl(
+    return wrap_untrusted_result(_set_difference_impl(
         evidence_id=evidence_id,
         plugin_a=plugin_a,
         plugin_b=plugin_b,
@@ -521,7 +522,7 @@ def set_difference(
         fields=fields,
         limit=limit,
         case_dir=CASE_DIR,
-    )
+    ))
 
 
 @mcp.tool()
@@ -550,14 +551,14 @@ def subtree(
     plugin_name is not pstree (defense-in-depth — the MCP-level
     Literal should normally catch this).
     """
-    return _subtree_impl(
+    return wrap_untrusted_result(_subtree_impl(
         evidence_id=evidence_id,
         plugin_name=plugin_name,
         root_pid=root_pid,
         max_depth=max_depth,
         fields=fields,
         case_dir=CASE_DIR,
-    )
+    ))
 
 
 @mcp.tool()

@@ -116,9 +116,10 @@ def resolve_mcp_config_path() -> Path | None:
 def _synthesize_host_scoped_mcp_config(
     base_config_path: Path,
     cwd: Path,
-    host_id: str,
+    host_id: str | None,
     *,
     allowed_evidence_ids: list[str] | None = None,
+    role: str | None = None,
 ) -> Path | None:
     """Write a per-dispatch .mcp.json that adds ``SIFT_GUARD_HOST_ID``
     and (optionally) ``SIFT_GUARD_ALLOWED_EVIDENCE_IDS`` to the
@@ -169,9 +170,15 @@ def _synthesize_host_scoped_mcp_config(
     if not isinstance(sift_guard, dict):
         return None
     env_block = dict(sift_guard.get("env") or {})
-    env_block["SIFT_GUARD_HOST_ID"] = host_id
+    if host_id:
+        env_block["SIFT_GUARD_HOST_ID"] = host_id
     if allowed_evidence_ids:
         env_block["SIFT_GUARD_ALLOWED_EVIDENCE_IDS"] = ",".join(allowed_evidence_ids)
+    # ``role`` is the dispatched agent's name; the server's write/RAG
+    # tools enforce role separation against it (SIFT_GUARD_ROLE gate
+    # in server.tools.findings / correlations / rag).
+    if role:
+        env_block["SIFT_GUARD_ROLE"] = role
     sift_guard["env"] = env_block
 
     dispatch_dir = cwd / _DISPATCH_MCP_SUBDIR
@@ -180,7 +187,7 @@ def _synthesize_host_scoped_mcp_config(
     except OSError as exc:
         logger.warning("could not create %s for host scoping: %s", dispatch_dir, exc)
         return None
-    out_path = dispatch_dir / f"{host_id}-{uuid.uuid4().hex[:8]}.json"
+    out_path = dispatch_dir / f"{host_id or role or 'dispatch'}-{uuid.uuid4().hex[:8]}.json"
     try:
         out_path.write_text(json.dumps(content, indent=2), encoding="utf-8")
     except OSError as exc:
@@ -593,12 +600,13 @@ def dispatch_subagent(
     base_mcp_config = resolve_mcp_config_path()
     mcp_config = base_mcp_config
     synthesized_mcp_config: Path | None = None
-    if base_mcp_config is not None and host_id is not None:
+    if base_mcp_config is not None:
         synthesized_mcp_config = _synthesize_host_scoped_mcp_config(
             base_mcp_config,
             cwd,
             host_id,
             allowed_evidence_ids=allowed_evidence_ids,
+            role=agent,
         )
         if synthesized_mcp_config is not None:
             mcp_config = synthesized_mcp_config

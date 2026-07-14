@@ -27,7 +27,7 @@ from server.schemas import (
 )
 
 
-VALID_SHA256 = "eb33bdf63730858a805463d171245b233335dd6d89ed458bc681f7d282e10563"
+VALID_SHA256 = "5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef"
 NOW_UTC = datetime(2026, 5, 8, 12, 0, 0, tzinfo=timezone.utc)
 
 

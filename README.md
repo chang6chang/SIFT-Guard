@@ -67,8 +67,17 @@ Most common flags:
 | `--scan-only` | off | Show the host-grouping manifest and exit. No tokens. |
 | `--yes` | off | Skip the 5-second manifest review pause. |
 | `--verbose` | off | Show every MCP tool call in the live UI. |
+| `--config PATH` | auto-discover | YAML config file (see `sift-guard.yaml.example`). |
 
 Full surface: `sift-guard analyze --help`.
+
+Persistent settings live in an optional `sift-guard.yaml`
+(`--config PATH`, or auto-discovered from `./`, `~/.config/`,
+`/etc/`). It pins tool paths (Volatility, plaso, ewfmount…), the
+symbols directory, the model, iteration/token budgets, and the
+output directory — see
+[`sift-guard.yaml.example`](sift-guard.yaml.example). CLI flags
+always win over config values.
 
 ## Architecture
 
@@ -145,7 +154,11 @@ stable disputed set, max-iterations, or token-budget exhaustion.
 Role restrictions are enforced architecturally: each subagent's
 `.claude/agents/<role>.md` frontmatter lists only the tools that
 role is allowed to call, and the MCP server independently rejects
-out-of-role write attempts at the schema layer.
+out-of-role calls server-side — the orchestrator injects
+`SIFT_GUARD_ROLE` into every dispatch's MCP config, and
+`record_finding` / `record_correlation` / `update_finding` /
+`rag_query` refuse callers whose role doesn't match (audited as
+`*:rejected_role_not_permitted`).
 
 See [`docs/architecture-diagram.md`](docs/architecture-diagram.md)
 for the legend, the full tool-surface breakdown, and the loop-stage
