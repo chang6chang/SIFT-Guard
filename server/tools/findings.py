@@ -65,6 +65,20 @@ ALLOWED_ANALYSTS: frozenset[str] = frozenset(
     {"process_analyst", "network_analyst", "disk_analyst", "validator"}
 )
 
+# Caller-role gate. ``SIFT_GUARD_ROLE`` is injected per dispatch by
+# the orchestrator (same .mcp.json env-block mechanism as
+# SIFT_GUARD_HOST_ID). When set, the server enforces write-role
+# separation architecturally; when unset (single-evidence runs,
+# legacy configs, direct tool use) the gate is open — the harness
+# frontmatter allow-lists remain the outer layer.
+_ROLE_ENV = "SIFT_GUARD_ROLE"
+
+
+def _caller_role() -> str | None:
+    role = os.environ.get(_ROLE_ENV, "").strip()
+    return role or None
+
+
 # Source tools an EvidenceRef is allowed to point at. Mirrors the
 # EvidenceRefSourceTool Literal — duplicated here so the runtime check
 # can run before pydantic validation (we want the audit-on-rejection
@@ -104,6 +118,7 @@ class _RejectionReason(StrEnum):
     DISPUTED_SELF_MARKED = "disputed_self_marked"
     INVALID_AUDIT_REF = "invalid_audit_ref"
     SCHEMA_VALIDATION_FAILED = "schema_validation_failed"
+    ROLE_NOT_PERMITTED = "role_not_permitted"
 
 
 class _RejectionRecord(BaseModel):
@@ -338,6 +353,19 @@ def record_finding(
         "host_id": host_id,
     }
 
+    # 0b. Caller-role gate: an analyst may only write findings AS
+    #     itself. Runs before evidence resolution so a cross-role
+    #     probe cannot enumerate registered ids.
+    role = _caller_role()
+    if role is not None and role != analyst:
+        _log_rejection(
+            case_dir_path,
+            _RejectionReason.ROLE_NOT_PERMITTED,
+            evidence_id,
+            raw_input,
+        )
+        raise ValueError("caller role not permitted for this tool")
+
     # 1. Evidence-id resolution. Audit-on-reject before raising — same
     #    pattern as the memory tools, same probe-channel reasoning.
     record = _resolve_evidence(evidence_id, case_dir_path)
@@ -529,6 +557,7 @@ class _UpdateRejectionReason(StrEnum):
     UNKNOWN_RULE = "unknown_rule"
     INVALID_STATE_TRANSITION = "invalid_state_transition"
     SCHEMA_VALIDATION_FAILED = "schema_validation_failed"
+    ROLE_NOT_PERMITTED = "role_not_permitted"
     # R5 ("quiet stabilization") is the only rule whose definition
     # has no driving correlations. Any other rule with an empty
     # driving_correlation_ids list is rejected here so the audit
@@ -622,6 +651,19 @@ def update_finding(
         update_finding:rejected_empty_correlations_for_non_R5
     """
     case_dir_path = Path(case_dir).resolve()
+
+    # 0. Caller-role gate — update_finding is orchestrator-only.
+    #    Same SIFT_GUARD_ROLE contract as record_finding; open when
+    #    the env var is unset.
+    role = _caller_role()
+    if role is not None and role != "orchestrator":
+        _log_update_rejection(
+            case_dir_path,
+            _UpdateRejectionReason.ROLE_NOT_PERMITTED,
+            finding_id,
+            role,
+        )
+        raise ValueError("caller role not permitted for this tool")
 
     # 1. promotion_rule allow-list. Cheap pre-check; the Literal in
     #    the FindingUpdate schema would also catch this but we want

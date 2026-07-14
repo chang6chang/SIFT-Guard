@@ -591,14 +591,20 @@ class TestDispatchSubagentHostScoping:
         # Pre-existing keys still survive.
         assert env["SIFT_GUARD_CASE_DIR"] == "/case"
 
-    def test_argv_uses_base_config_when_host_id_omitted(
+    def test_role_scoped_config_when_host_id_omitted(
         self, tmp_path: Path, monkeypatch
     ):
+        # Single-evidence path: no host scoping, but the dispatch
+        # still synthesizes a per-dispatch config so SIFT_GUARD_ROLE
+        # reaches the MCP server child (server-side role gate).
         base_cfg = self._seed_base_config(tmp_path, monkeypatch)
-        captured: dict[str, list[str]] = {}
+        captured: dict[str, object] = {}
 
         def fake_run(cmd, **kwargs):
-            captured["cmd"] = cmd
+            idx = cmd.index("--mcp-config")
+            cfg_path = Path(cmd[idx + 1])
+            captured["path"] = str(cfg_path)
+            captured["content"] = json.loads(cfg_path.read_text(encoding="utf-8"))
             return self._fake_proc()
 
         with patch.object(dispatch_mod.subprocess, "run", side_effect=fake_run):
@@ -608,9 +614,13 @@ class TestDispatchSubagentHostScoping:
                 cwd=tmp_path,
             )
 
-        idx = captured["cmd"].index("--mcp-config")
-        # Single-evidence path: base config is passed unchanged.
-        assert captured["cmd"][idx + 1] == str(base_cfg)
+        assert captured["path"] != str(base_cfg)
+        env = captured["content"]["mcpServers"]["sift-guard"]["env"]
+        assert env["SIFT_GUARD_ROLE"] == "process_analyst"
+        # No host scoping on the single-evidence path.
+        assert "SIFT_GUARD_HOST_ID" not in env
+        # Pre-existing keys still survive.
+        assert env["SIFT_GUARD_CASE_DIR"] == "/case"
 
 
 class TestPerAnalystTimeoutDefault:

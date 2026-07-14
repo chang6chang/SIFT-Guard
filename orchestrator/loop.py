@@ -335,6 +335,8 @@ async def _call_update_finding_async(
         **os.environ,
         "PYTHONPATH": str(PROJECT_ROOT),
         "SIFT_GUARD_CASE_DIR": str(case_dir),
+        # Server-side role gate: update_finding is orchestrator-only.
+        "SIFT_GUARD_ROLE": "orchestrator",
     }
     params = StdioServerParameters(
         command=python_exe,
