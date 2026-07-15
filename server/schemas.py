@@ -77,6 +77,12 @@ class EvidenceRecord(BaseModel):
     artifact_class: ArtifactClass
     registered_at: datetime
     file_mode_after_registration: str = Field(min_length=1)
+    # Registration write-protects the file in place (chmod 444) — in
+    # symlink staging that is the ORIGINAL evidence file, so record
+    # what the mode was beforehand: evidence-handling hygiene, and it
+    # lets an operator restore the source tree after the case.
+    # Optional so pre-existing CASE.yaml entries still validate.
+    file_mode_before_registration: str | None = None
 
     @field_validator("evidence_id")
     @classmethod

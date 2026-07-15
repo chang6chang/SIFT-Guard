@@ -508,6 +508,12 @@ def _step_promote(
         # findings stuck DRAFT; see docs/decisions-log.md for the
         # architectural-tension write-up.
 
+        # A single failed update must not abort a multi-hour run, so
+        # the exception is contained — but never silently: it lands
+        # with a traceback in the process log, as `error` on the
+        # iteration-chain promotion record, and in the end-of-step
+        # partial-promotion warning below.
+        error: str | None = None
         try:
             response = update_fn(
                 case_dir,
@@ -524,10 +530,13 @@ def _step_promote(
             )
             update_id = response.get("update_id") if isinstance(response, dict) else None
             applied = update_id is not None
+            if not applied:
+                error = f"update_finding returned no update_id: {response!r:.200}"
         except Exception as exc:  # noqa: BLE001
-            logger.error("update_finding failed for %s: %s", fid, exc)
+            logger.exception("update_finding failed for %s", fid)
             update_id = None
             applied = False
+            error = f"{type(exc).__name__}: {exc}"
 
         state.promotions.append(
             RecordedPromotion(
@@ -538,7 +547,17 @@ def _step_promote(
                 driving_correlation_ids=decision.driving_correlation_ids,
                 applied=applied,
                 update_id=update_id,
+                error=error,
             )
+        )
+
+    failed = [p for p in state.promotions if p.error is not None]
+    if failed:
+        logger.warning(
+            "PROMOTE applied partially: %d of %d non-R6 promotions failed (findings: %s)",
+            len(failed),
+            sum(1 for p in state.promotions if p.promotion_rule != "R6"),
+            ", ".join(p.finding_id for p in failed),
         )
 
 
@@ -550,6 +569,7 @@ def _step_plan(
     prior_disputed: frozenset[str] | None,
     iteration_number: int,
     max_iterations: int,
+    token_budget: int = TOKEN_BUDGET_UNCACHED,
 ) -> TerminationCheck:
     R_a = len(_unresolved_set(case_dir)) == 0
     cur_disputed = _disputed_set(case_dir)
@@ -559,7 +579,7 @@ def _step_plan(
         and len(cur_disputed) > 0
         and iteration_number > 1
     )
-    R_c = cumulative_tokens >= TOKEN_BUDGET_UNCACHED
+    R_c = cumulative_tokens >= token_budget
     max_reached = iteration_number >= max_iterations
     decision = "terminate" if (R_a or R_b or R_c or max_reached) else "continue"
     return TerminationCheck(
@@ -676,6 +696,7 @@ def run_loop(
             prior_disputed=prior_disputed,
             iteration_number=iteration_number,
             max_iterations=max_iterations,
+            token_budget=token_budget,
         )
 
         next_analysts, next_focus, consumed = _next_iter_dispatch_plan(state, new_correlations)
@@ -1274,25 +1295,16 @@ def run_loop_multi_host(
         )
 
         cumulative_tokens += state.tokens_uncached
-        # PLAN reuses the single-evidence helper but with the
+        # PLAN reuses the single-evidence helper with the
         # caller-provided budget.
-        R_a = len(_unresolved_set(case_dir)) == 0
-        cur_disputed = _disputed_set(case_dir)
-        R_b = (
-            prior_disputed is not None
-            and prior_disputed == cur_disputed
-            and len(cur_disputed) > 0
-            and iteration_number > 1
-        )
-        R_c = cumulative_tokens >= token_budget
-        max_reached = iteration_number >= max_iterations
-        decision = "terminate" if (R_a or R_b or R_c or max_reached) else "continue"
-        termination = TerminationCheck(
-            R_a_zero_unresolved=R_a,
-            R_b_disputed_set_unchanged=bool(R_b),
-            R_c_token_budget_exceeded=R_c,
-            max_iterations_reached=max_reached,
-            decision=decision,
+        termination = _step_plan(
+            state,
+            case_dir=case_dir,
+            cumulative_tokens=cumulative_tokens,
+            prior_disputed=prior_disputed,
+            iteration_number=iteration_number,
+            max_iterations=max_iterations,
+            token_budget=token_budget,
         )
 
         next_host_ids, next_focus, consumed = _next_iter_multi_host_plan(new_correlations, manifest)

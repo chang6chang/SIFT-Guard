@@ -131,8 +131,13 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="Where to put the case directory. Default precedence: "
         "--output-dir > $SIFT_GUARD_OUTPUT_DIR/results-<ts>/ > "
-        "./results-<ts>/. Evidence files are COPIED here and chmod "
-        "444'd; originals are never modified.",
+        "./results-<ts>/. How evidence lands here depends on the "
+        "staging mode: --no-copy (default) symlinks to the originals "
+        "and chmod 444's them in place; --copy copies files in and "
+        "leaves the originals untouched. The pre-registration file "
+        "mode is recorded in CASE.yaml "
+        "(file_mode_before_registration) so originals can be "
+        "restored after the case.",
     )
     analyze.add_argument(
         "--max-iterations",

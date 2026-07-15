@@ -74,7 +74,10 @@ class RecordedPromotion(BaseModel):
     `update_finding` MCP call; false for R6 (no-change) decisions
     which are skipped per the rule's idempotent-no-op semantics.
     `update_id` is populated only when `applied` is true; otherwise
-    None.
+    None. `error` distinguishes the two `applied=False` cases: None
+    for an R6 skip, the stringified exception when an R1-R5
+    `update_finding` call failed — so a partially-promoted iteration
+    is visible from the chain, not just from process logs.
     """
 
     finding_id: str
@@ -84,6 +87,7 @@ class RecordedPromotion(BaseModel):
     driving_correlation_ids: list[str]
     applied: bool
     update_id: str | None = None
+    error: str | None = None
 
 
 class IterationPayload(BaseModel):

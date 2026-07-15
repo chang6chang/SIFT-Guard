@@ -996,3 +996,64 @@ Three calls against the live FAISS index (697 records,
   the `source` and `license` fields from the upstream
   `RagRecord` because the corpus is repo-pinned; if multiple
   corpora are added, surface them.
+
+## 2026-07-14 — Hardening pass: audit-line reservation, idempotent re-hash, PLAN dedup
+
+External review surfaced five defects introduced or exposed by the
+parallel-dispatch migration; all fixed in one pass, 686 tests green.
+
+### Audit-line reservation replaces `peek_next_line_number`
+
+The peek read the chain head OUTSIDE `chain_write_lock`, so with one
+MCP-server process per parallel subagent dispatch a sibling could
+append between the peek and the matching `append_audit_entry` —
+leaving a stale `audit_line` embedded in returned ExtractionRefs /
+tier-2 results. Its docstring still claimed a "single-process-server
+contract" that `_chain_lock.py` had already retired.
+
+Fix: `server.audit.reserve_audit_line` context manager holds the
+lock across peek + append; `chain_write_lock` is now re-entrant per
+thread (thread-local depth ledger) so the enclosed append — success
+or rejection path — re-enters instead of deadlocking. All ten peek
+call sites converted. Lock order is always audit → other chains,
+never the reverse, so no ABBA risk. While in there,
+`_read_chain_state` now reads only the last line (backwards seek
+from EOF) instead of scanning the whole file per append — appends
+were O(chain length).
+
+### `register_evidence` idempotent skip re-verifies the hash
+
+The skip path trusted mode 0o444 + CASE.yaml path match, but that
+proves only that the file went through registration — not that its
+bytes are unchanged. A same-size content swap survived until the
+end-of-run integrity gate, burning the whole run's tokens first.
+The skip now compares size (free) then re-hashes; mismatch is an
+audited fatal rejection (`register_evidence:rejected_idempotent_
+hash_mismatch`). The record also now carries
+`file_mode_before_registration` so operators can restore source
+permissions after symlink-staged cases.
+
+### PLAN dedup exposed a real bug
+
+The multi-host loop had inlined a copy of `_step_plan` because the
+helper hard-coded `TOKEN_BUDGET_UNCACHED` — and as a result the
+single-evidence `run_loop(token_budget=...)` parameter was silently
+ignored. `_step_plan` now takes `token_budget`; both loops call it.
+
+### Promotion failures are loud
+
+`_step_promote`'s contained `except Exception` now logs the
+traceback, records the error string on the iteration-chain
+`RecordedPromotion` (new optional `error` field, None on old
+lines), and emits a partial-promotion warning summarizing failed
+finding ids. `ALLOWED_ANALYSTS` / `ALLOWED_SOURCE_TOOLS` are now
+derived from the schema Literals via `typing.get_args` (rag_query
+exclusion kept explicit), removing the acknowledged drift risk.
+
+### Docs re-synced
+
+CLAUDE.md's loop section now names the implemented stages
+(PROMOTE / PLAN / WRITE, plus the max-iterations cap);
+adversarial-robustness.md no longer calls the per-string
+`<evidence>` wrap "rejected as theatre" — it is enforced at the MCP
+return boundary since `b74769f` and the doc now says so.

@@ -42,7 +42,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from server.audit import append_audit_entry, peek_next_line_number
+from server.audit import append_audit_entry, reserve_audit_line
 from server.extractions import (
     ExtractionNotFoundError,
     HashMismatchError,
@@ -820,33 +820,32 @@ def query_records(
     truncated = matched_count > offset + limit
 
     # All rejection paths have cleared. The next audit line is THIS
-    # call's success line; capture it so the analyst can reference it
+    # call's success line; reserve it so the analyst can reference it
     # directly in `record_finding`'s `EvidenceRef`.
-    audit_line = peek_next_line_number(case_dir_path)
+    with reserve_audit_line(case_dir_path) as audit_line:
+        result = QueryRecordsResult(
+            extraction=ref,
+            audit_line=audit_line,
+            matched_count=matched_count,
+            returned_count=len(projected),
+            records=projected,
+            truncated=truncated,
+            # Projected records carry canonical field keys
+            # (analyst-supplied aliases were resolved upstream), so the
+            # untrusted-field marker set must reference those canonical
+            # names too — otherwise the agent's untrusted-content scan
+            # would miss e.g. ``disassembly`` because the analyst typed
+            # ``disasm``.
+            untrusted_fields=untrusted_fields_for(plugin_name, canonical_fields),
+        )
 
-    result = QueryRecordsResult(
-        extraction=ref,
-        audit_line=audit_line,
-        matched_count=matched_count,
-        returned_count=len(projected),
-        records=projected,
-        truncated=truncated,
-        # Projected records carry canonical field keys
-        # (analyst-supplied aliases were resolved upstream), so the
-        # untrusted-field marker set must reference those canonical
-        # names too — otherwise the agent's untrusted-content scan
-        # would miss e.g. ``disassembly`` because the analyst typed
-        # ``disasm``.
-        untrusted_fields=untrusted_fields_for(plugin_name, canonical_fields),
-    )
-
-    append_audit_entry(
-        case_dir=case_dir_path,
-        tool_name=_QUERY_RECORDS_TOOL,
-        evidence_id=evidence_id,
-        input_args=input_args,
-        output=result,
-    )
+        append_audit_entry(
+            case_dir=case_dir_path,
+            tool_name=_QUERY_RECORDS_TOOL,
+            evidence_id=evidence_id,
+            input_args=input_args,
+            output=result,
+        )
     return result
 
 
@@ -921,8 +920,6 @@ def group_by(
     distinct_values = len(counter)
     groups = list(counter.most_common(top_n))
 
-    audit_line = peek_next_line_number(case_dir_path)
-
     # `groups_keys` synthetic name: the untrusted axis is the value
     # side of every (value, count) tuple in `groups`. Marked when the
     # grouped field is itself in the plugin's untrusted record-field
@@ -934,27 +931,28 @@ def group_by(
     else:
         group_untrusted = []
 
-    # ``field`` echoed in the result reflects the canonical column
-    # the aggregation actually walked, not the alias the analyst may
-    # have typed. Consistent with ``records`` shape: keys are
-    # canonical post-projection.
-    result = GroupByResult(
-        extraction=ref,
-        audit_line=audit_line,
-        field=canonical_field,
-        total_records=len(filtered),
-        distinct_values=distinct_values,
-        groups=groups,
-        untrusted_fields=group_untrusted,
-    )
+    with reserve_audit_line(case_dir_path) as audit_line:
+        # ``field`` echoed in the result reflects the canonical column
+        # the aggregation actually walked, not the alias the analyst may
+        # have typed. Consistent with ``records`` shape: keys are
+        # canonical post-projection.
+        result = GroupByResult(
+            extraction=ref,
+            audit_line=audit_line,
+            field=canonical_field,
+            total_records=len(filtered),
+            distinct_values=distinct_values,
+            groups=groups,
+            untrusted_fields=group_untrusted,
+        )
 
-    append_audit_entry(
-        case_dir=case_dir_path,
-        tool_name=_GROUP_BY_TOOL,
-        evidence_id=evidence_id,
-        input_args=input_args,
-        output=result,
-    )
+        append_audit_entry(
+            case_dir=case_dir_path,
+            tool_name=_GROUP_BY_TOOL,
+            evidence_id=evidence_id,
+            input_args=input_args,
+            output=result,
+        )
     return result
 
 
@@ -1127,8 +1125,6 @@ def set_difference(
 
     truncated = total_matching > len(diff_records)
 
-    audit_line = peek_next_line_number(case_dir_path)
-
     # Source plugin: whichever side `returned_records` were pulled
     # from. For symmetric we returned a mix of both, but the source
     # plugin's untrusted-field set is identical between any two
@@ -1139,31 +1135,32 @@ def set_difference(
     source_plugin_for_untrusted = plugin_b if direction == "b_minus_a" else plugin_a
     diff_untrusted = untrusted_fields_for(source_plugin_for_untrusted, fields)
 
-    result = SetDifferenceResult(
-        extraction_a=ref_a,
-        extraction_b=ref_b,
-        audit_line=audit_line,
-        key=key,
-        direction=direction,  # type: ignore[arg-type]
-        a_only_count=len(a_only),
-        b_only_count=len(b_only),
-        intersection_count=len(intersection),
-        a_record_count=a_record_count,
-        b_record_count=b_record_count,
-        a_duplicate_key_count=a_duplicate_key_count,
-        b_duplicate_key_count=b_duplicate_key_count,
-        returned_records=diff_records,
-        truncated=truncated,
-        untrusted_fields=diff_untrusted,
-    )
+    with reserve_audit_line(case_dir_path) as audit_line:
+        result = SetDifferenceResult(
+            extraction_a=ref_a,
+            extraction_b=ref_b,
+            audit_line=audit_line,
+            key=key,
+            direction=direction,  # type: ignore[arg-type]
+            a_only_count=len(a_only),
+            b_only_count=len(b_only),
+            intersection_count=len(intersection),
+            a_record_count=a_record_count,
+            b_record_count=b_record_count,
+            a_duplicate_key_count=a_duplicate_key_count,
+            b_duplicate_key_count=b_duplicate_key_count,
+            returned_records=diff_records,
+            truncated=truncated,
+            untrusted_fields=diff_untrusted,
+        )
 
-    append_audit_entry(
-        case_dir=case_dir_path,
-        tool_name=_SET_DIFFERENCE_TOOL,
-        evidence_id=evidence_id,
-        input_args=input_args,
-        output=result,
-    )
+        append_audit_entry(
+            case_dir=case_dir_path,
+            tool_name=_SET_DIFFERENCE_TOOL,
+            evidence_id=evidence_id,
+            input_args=input_args,
+            output=result,
+        )
     return result
 
 
@@ -1301,34 +1298,33 @@ def subtree(
         and _count_descendants(root_node, max_depth) > descendant_count
     )
 
-    audit_line = peek_next_line_number(case_dir_path)
+    with reserve_audit_line(case_dir_path) as audit_line:
+        # Subtree is pstree-only by construction; nodes carry whichever
+        # of pstree's untrusted record fields survived the projection
+        # (image_file_name, audit, cmd, path). Empty `fields` means no
+        # projection — every untrusted field is present in `nodes`.
+        result = SubtreeResult(
+            extraction=ref,
+            audit_line=audit_line,
+            root_pid=root_pid,
+            root_found=True,
+            depth_traversed=deepest_seen,
+            descendant_count=descendant_count,
+            nodes=nodes_visited,
+            truncated=truncated_by_size,
+            # Use the canonical field names for the untrusted-field
+            # marker so it matches the keys present on the projected
+            # ``nodes`` (which carry canonical names).
+            untrusted_fields=untrusted_fields_for(plugin_name, canonical_fields),
+        )
 
-    # Subtree is pstree-only by construction; nodes carry whichever
-    # of pstree's untrusted record fields survived the projection
-    # (image_file_name, audit, cmd, path). Empty `fields` means no
-    # projection — every untrusted field is present in `nodes`.
-    result = SubtreeResult(
-        extraction=ref,
-        audit_line=audit_line,
-        root_pid=root_pid,
-        root_found=True,
-        depth_traversed=deepest_seen,
-        descendant_count=descendant_count,
-        nodes=nodes_visited,
-        truncated=truncated_by_size,
-        # Use the canonical field names for the untrusted-field
-        # marker so it matches the keys present on the projected
-        # ``nodes`` (which carry canonical names).
-        untrusted_fields=untrusted_fields_for(plugin_name, canonical_fields),
-    )
-
-    append_audit_entry(
-        case_dir=case_dir_path,
-        tool_name=_SUBTREE_TOOL,
-        evidence_id=evidence_id,
-        input_args=input_args,
-        output=result,
-    )
+        append_audit_entry(
+            case_dir=case_dir_path,
+            tool_name=_SUBTREE_TOOL,
+            evidence_id=evidence_id,
+            input_args=input_args,
+            output=result,
+        )
     return result
 
 

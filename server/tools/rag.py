@@ -44,7 +44,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from server.audit import append_audit_entry, peek_next_line_number
+from server.audit import append_audit_entry, reserve_audit_line
 from server.schemas import RagHit, RagQueryResult
 from rag.retriever import Retriever
 
@@ -237,22 +237,22 @@ def rag_query(
 
     embedding_model_version = retriever.meta.get("embedding_model_version", retriever.model_name)
 
-    audit_line = peek_next_line_number(case_dir_path)
-    result = RagQueryResult(
-        audit_line=audit_line,
-        query_kind=query_kind,  # type: ignore[arg-type]
-        query_value=query_value,
-        hits=hits,
-        embedding_model_version=embedding_model_version,
-    )
+    with reserve_audit_line(case_dir_path) as audit_line:
+        result = RagQueryResult(
+            audit_line=audit_line,
+            query_kind=query_kind,  # type: ignore[arg-type]
+            query_value=query_value,
+            hits=hits,
+            embedding_model_version=embedding_model_version,
+        )
 
-    append_audit_entry(
-        case_dir=case_dir_path,
-        tool_name=_RAG_QUERY_TOOL,
-        evidence_id=None,
-        input_args=input_args,
-        output=result,
-    )
+        append_audit_entry(
+            case_dir=case_dir_path,
+            tool_name=_RAG_QUERY_TOOL,
+            evidence_id=None,
+            input_args=input_args,
+            output=result,
+        )
     return result
 
 

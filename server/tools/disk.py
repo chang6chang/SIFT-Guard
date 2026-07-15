@@ -51,7 +51,7 @@ from typing import Callable
 import yaml
 from pydantic import BaseModel, ValidationError
 
-from server.audit import append_audit_entry, peek_next_line_number
+from server.audit import append_audit_entry, reserve_audit_line
 from server.extractions import (
     HashMismatchError,
     extraction_exists,
@@ -659,26 +659,26 @@ def _serve_fresh(
     }
     result = result_cls(**result_kwargs)
 
-    audit_line = peek_next_line_number(case_dir_path)
-    ref = write_extraction(
-        case_dir=case_dir_path,
-        evidence_id=evidence_id,
-        plugin_name=plugin_name,
-        result=result,
-        runtime_seconds=runtime_seconds,
-        audit_line=audit_line,
-    )
+    with reserve_audit_line(case_dir_path) as audit_line:
+        ref = write_extraction(
+            case_dir=case_dir_path,
+            evidence_id=evidence_id,
+            plugin_name=plugin_name,
+            result=result,
+            runtime_seconds=runtime_seconds,
+            audit_line=audit_line,
+        )
 
-    record_dicts = [r.model_dump(mode="json") for r in validated]
-    summary = summary_fn(ref, record_dicts)
+        record_dicts = [r.model_dump(mode="json") for r in validated]
+        summary = summary_fn(ref, record_dicts)
 
-    append_audit_entry(
-        case_dir=case_dir_path,
-        tool_name=tool_name,
-        evidence_id=evidence_id,
-        input_args={"evidence_id": evidence_id},
-        output=summary,
-    )
+        append_audit_entry(
+            case_dir=case_dir_path,
+            tool_name=tool_name,
+            evidence_id=evidence_id,
+            input_args={"evidence_id": evidence_id},
+            output=summary,
+        )
     return summary
 
 

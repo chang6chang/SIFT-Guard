@@ -68,7 +68,7 @@ from typing import Callable
 import yaml
 from pydantic import BaseModel, ValidationError
 
-from server.audit import append_audit_entry, peek_next_line_number
+from server.audit import append_audit_entry, reserve_audit_line
 from server.extractions import (
     HashMismatchError,
     extraction_exists,
@@ -819,23 +819,23 @@ def _serve_fresh(
                 "invoked_at": invoked_at,
             }
             empty_result = result_cls(**result_kwargs_empty)
-            audit_line = peek_next_line_number(case_dir_path)
-            ref = write_extraction(
-                case_dir=case_dir_path,
-                evidence_id=evidence_id,
-                plugin_name=plugin_name,
-                result=empty_result,
-                runtime_seconds=runtime_seconds,
-                audit_line=audit_line,
-            )
-            summary = summary_fn(ref, [])
-            append_audit_entry(
-                case_dir=case_dir_path,
-                tool_name=tool_name,
-                evidence_id=evidence_id,
-                input_args={"evidence_id": evidence_id},
-                output=summary,
-            )
+            with reserve_audit_line(case_dir_path) as audit_line:
+                ref = write_extraction(
+                    case_dir=case_dir_path,
+                    evidence_id=evidence_id,
+                    plugin_name=plugin_name,
+                    result=empty_result,
+                    runtime_seconds=runtime_seconds,
+                    audit_line=audit_line,
+                )
+                summary = summary_fn(ref, [])
+                append_audit_entry(
+                    case_dir=case_dir_path,
+                    tool_name=tool_name,
+                    evidence_id=evidence_id,
+                    input_args={"evidence_id": evidence_id},
+                    output=summary,
+                )
             return summary
         # Plugin name is server-controlled (typed enum), not agent-
         # supplied — safe to include in the command shape. The image
@@ -882,33 +882,32 @@ def _serve_fresh(
     }
     result = result_cls(**result_kwargs)
 
-    # Peek the audit line where this fresh-call's success entry will
-    # land. Must come AFTER the per-record validation warnings above
-    # (which append to the chain). The peeked line is what the
-    # extractions chain entry and the returned `ExtractionRef` will
-    # carry as `audit_line`, so the analyst can reference it in
+    # Reserve the audit line where this fresh-call's success entry
+    # will land. Must come AFTER the per-record validation warnings
+    # above (which append to the chain). The reserved line is what
+    # the extractions chain entry and the returned `ExtractionRef`
+    # will carry as `audit_line`, so the analyst can reference it in
     # `record_finding`'s `EvidenceRef` without probing.
-    audit_line = peek_next_line_number(case_dir_path)
+    with reserve_audit_line(case_dir_path) as audit_line:
+        ref = write_extraction(
+            case_dir=case_dir_path,
+            evidence_id=evidence_id,
+            plugin_name=plugin_name,
+            result=result,
+            runtime_seconds=runtime_seconds,
+            audit_line=audit_line,
+        )
 
-    ref = write_extraction(
-        case_dir=case_dir_path,
-        evidence_id=evidence_id,
-        plugin_name=plugin_name,
-        result=result,
-        runtime_seconds=runtime_seconds,
-        audit_line=audit_line,
-    )
+        record_dicts = [r.model_dump(mode="json") for r in validated]
+        summary = summary_fn(ref, record_dicts)
 
-    record_dicts = [r.model_dump(mode="json") for r in validated]
-    summary = summary_fn(ref, record_dicts)
-
-    append_audit_entry(
-        case_dir=case_dir_path,
-        tool_name=tool_name,
-        evidence_id=evidence_id,
-        input_args={"evidence_id": evidence_id},
-        output=summary,
-    )
+        append_audit_entry(
+            case_dir=case_dir_path,
+            tool_name=tool_name,
+            evidence_id=evidence_id,
+            input_args={"evidence_id": evidence_id},
+            output=summary,
+        )
     return summary
 
 

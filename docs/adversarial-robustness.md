@@ -87,18 +87,27 @@ is the audit chain.
    different trail. The chain lets a reviewer reconstruct after the
    fact what the agent saw and what it did with it.
 
-## Field-level discipline: why field-level, not per-string
+## Field-level discipline plus the per-string wrap
 
-A per-string `<evidence source="…" hash="…" untrusted="true">…
-</evidence>` envelope was considered and rejected as theatre. Such
-envelopes balloon result sizes (tier-2 results are already JSON-
-budget-bound) and the load-bearing defenses are layers 1-3 above —
-the architecture, not the wrapping. The schema field
-`untrusted_fields: list[str]` is a smaller contract: it names the
-columns whose values are evidence-derived. The LLM sees it once per
-result and applies it to every value of those columns, no per-
-string ceremony required. See decisions-log entry 2026-05-07
-"untrusted_fields field-level discipline" for the rationale.
+The `untrusted_fields: list[str]` schema field is the contract: it
+names the columns whose values are evidence-derived. The LLM sees it
+once per result and applies it to every value of those columns.
+
+Originally (week 6) a per-string `<evidence source="…" hash="…"
+untrusted="true">…</evidence>` envelope was rejected as theatre on
+result-size grounds, with the field-level contract standing alone
+(see decisions-log entry 2026-05-07 "untrusted_fields field-level
+discipline"). That call was later reversed: the MCP server now
+applies exactly that envelope at the return boundary
+(`server/untrusted_boundary.py:wrap_untrusted_result`, wired in
+`server/main.py` for every read-tier tool). The wrap happens AFTER
+the raw output is audited, so audit-replay recomputes it
+deterministically from stored values, and it is driven by the same
+`untrusted_fields` declaration — the field-level contract remains
+the source of truth; the envelope makes the quarantine visible
+per-value and carries per-string provenance (source plugin + column
++ extraction hash). The load-bearing defenses are still layers 1-3
+above — the architecture, not the wrapping.
 
 ## Demonstration on the synthetic image
 
@@ -167,16 +176,14 @@ apparent instructions were not followed" disclaimer.
   field. Coverage of the `PLUGIN_UNTRUSTED_RECORD_FIELDS` map
   itself is pinned by the per-plugin tests in the same file.
 
-- **Per-string provenance is deferred.** An inline
-  `<evidence source="…" hash="…">…</evidence>` envelope around each
-  individual evidence-derived string would let a downstream
-  reviewer trace any value to a specific extraction. Not
-  implemented; the audit chain provides this property at the call
-  level (which extraction line, which tool invocation), and the
-  tier-2 result-level provenance via `extraction.audit_line` is
-  sufficient for the substrate's needs through week 6. Re-evaluate
-  if/when a tier-3 tool surfaces composed results that no longer
-  trivially trace back to a single tier-2 call.
+- **Per-string provenance: implemented since the week-6 writeup.**
+  The inline `<evidence source="…" hash="…" untrusted="true">…
+  </evidence>` envelope around each evidence-derived string was
+  originally deferred; it is now applied at the MCP return boundary
+  (`server/untrusted_boundary.py`), citing the source plugin,
+  column, and extraction SHA-256. The audit chain still provides
+  call-level provenance (which extraction line, which tool
+  invocation) on top.
 
 - **Prompt-level discipline is reinforcement, not primary
   defense.** The week-6 paragraph in each subagent's

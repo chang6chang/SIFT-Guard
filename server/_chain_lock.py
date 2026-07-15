@@ -31,8 +31,20 @@ millisecond-scale chain-update phase is serialized.
 from __future__ import annotations
 
 import fcntl
+import threading
 from contextlib import contextmanager
 from pathlib import Path
+
+# Per-thread re-entrancy ledger: {resolved lock path: hold depth}.
+# ``fcntl.flock`` locks belong to the open file description, so a
+# thread that already holds the exclusive lock and opens the sidecar
+# a second time would block against itself. The ledger lets the same
+# thread nest ``chain_write_lock`` on the same chain (e.g.
+# ``reserve_audit_line`` wrapping an ``append_audit_entry``) while
+# distinct threads and processes still serialize through flock —
+# the ledger is thread-local, so a sibling thread's entry is
+# invisible here and it takes the flock path as before.
+_local = threading.local()
 
 
 @contextmanager
@@ -45,6 +57,10 @@ def chain_write_lock(chain_path: Path):
     sidecar is opened in append mode so creation is concurrent-safe
     (open + create races resolve cleanly without an explicit
     ``O_EXCL``-style guard).
+
+    Re-entrant within a thread: nested acquisition of the same chain
+    by the same thread yields immediately and releases only when the
+    outermost holder exits.
 
     Releases the lock on ``finally``, including on exception. The
     OS releases the lock when the file descriptor is closed too, so
@@ -62,11 +78,26 @@ def chain_write_lock(chain_path: Path):
     chain_path = Path(chain_path)
     chain_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = chain_path.with_suffix(chain_path.suffix + ".lock")
-    with lock_path.open("a") as lockf:
-        fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
+
+    held: dict[str, int] = getattr(_local, "held", None) or {}
+    _local.held = held
+    key = str(lock_path.resolve())
+
+    if held.get(key, 0) > 0:
+        held[key] += 1
         try:
             yield
         finally:
+            held[key] -= 1
+        return
+
+    with lock_path.open("a") as lockf:
+        fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
+        held[key] = 1
+        try:
+            yield
+        finally:
+            del held[key]
             fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
 
 

@@ -279,8 +279,22 @@ class ProgressDisplay:
         if self._tail_thread is not None:
             return
         self._stop_event.clear()
+        # Capture the skip-existing-content offset HERE, not inside
+        # the thread body: anything appended between this call
+        # returning and the thread's first stat() must still be
+        # rendered. Computing it lazily in the thread raced with the
+        # first MCP calls of a run, silently dropping them from the
+        # live UI.
+        audit_path = self._case_dir / "audit" / "sift-guard-mcp.jsonl"
+        initial_offset = 0
+        if audit_path.exists():
+            try:
+                initial_offset = audit_path.stat().st_size
+            except OSError:
+                initial_offset = 0
         self._tail_thread = threading.Thread(
             target=self._audit_tail_loop,
+            args=(initial_offset,),
             name="sift-guard-audit-tail",
             daemon=True,
         )
@@ -294,18 +308,14 @@ class ProgressDisplay:
             self._tail_thread.join(timeout=2.0)
             self._tail_thread = None
 
-    def _audit_tail_loop(self) -> None:
+    def _audit_tail_loop(self, offset: int = 0) -> None:
         audit_path = self._case_dir / "audit" / "sift-guard-mcp.jsonl"
-        offset = 0
-        # If the file already exists when we start, skip everything
-        # already written so we only render NEW activity. The
-        # registration-time lines were already produced
-        # synchronously by the CLI's own register_evidence calls.
-        if audit_path.exists():
-            try:
-                offset = audit_path.stat().st_size
-            except OSError:
-                offset = 0
+        # `offset` skips everything already written when
+        # start_audit_tail was called, so we only render NEW
+        # activity. The registration-time lines were already
+        # produced synchronously by the CLI's own register_evidence
+        # calls. (Captured by the caller, pre-thread-start — see
+        # start_audit_tail.)
         while not self._stop_event.is_set():
             try:
                 if not audit_path.exists():

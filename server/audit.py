@@ -20,6 +20,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,31 +35,61 @@ _AUDIT_FILENAME = "sift-guard-mcp.jsonl"
 _GENESIS_PREV_HASH = "0" * 64
 
 
+_TAIL_CHUNK_BYTES = 64 * 1024
+
+
+def _read_last_nonblank_line(path: Path) -> str:
+    """Return the last non-blank line of ``path`` without reading the
+    whole file: seek to EOF and scan backwards in fixed-size chunks.
+
+    Returns "" for a missing, empty, or all-blank file.
+    """
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        return ""
+    if size == 0:
+        return ""
+
+    with path.open("rb") as f:
+        buffer = b""
+        pos = size
+        while pos > 0:
+            read_from = max(0, pos - _TAIL_CHUNK_BYTES)
+            f.seek(read_from)
+            buffer = f.read(pos - read_from) + buffer
+            pos = read_from
+            # Trailing whitespace (the writer always ends lines with
+            # "\n") is stripped before looking for the line break that
+            # bounds the final record.
+            tail = buffer.rstrip()
+            if not tail:
+                buffer = b""
+                continue
+            newline_index = tail.rfind(b"\n")
+            if newline_index != -1 or pos == 0:
+                return tail[newline_index + 1 :].decode("utf-8").strip()
+    return ""
+
+
 def _read_chain_state(audit_path: Path) -> tuple[int, str]:
     """Return (next_line_number, prev_line_hash) for the next append.
 
     For a missing or empty file the chain starts at line 1 with the
-    genesis previous-hash (64 zeros). For a non-empty file the next line
-    number is one greater than the count of non-blank lines, and the
-    previous-hash comes from the last non-blank line's `this_line_hash`.
+    genesis previous-hash (64 zeros). For a non-empty file the state
+    comes from the last non-blank line's own record: `line_number + 1`
+    and `this_line_hash`. The writer emits strictly sequential
+    `line_number`s under `chain_write_lock`, so the last record's
+    counter equals the non-blank line count — reading one line from
+    EOF replaces the previous full-file scan, which made every append
+    O(chain length).
     """
-    if not audit_path.exists():
-        return 1, _GENESIS_PREV_HASH
-
-    last_line = ""
-    line_count = 0
-    with audit_path.open("r", encoding="utf-8") as f:
-        for raw in f:
-            stripped = raw.strip()
-            if stripped:
-                last_line = stripped
-                line_count += 1
-
-    if line_count == 0:
+    last_line = _read_last_nonblank_line(audit_path)
+    if not last_line:
         return 1, _GENESIS_PREV_HASH
 
     prev_record = json.loads(last_line)
-    return line_count + 1, prev_record["this_line_hash"]
+    return prev_record["line_number"] + 1, prev_record["this_line_hash"]
 
 
 def append_audit_entry(
@@ -111,9 +143,10 @@ def append_audit_entry(
     return entry
 
 
-def peek_next_line_number(case_dir: Path | str) -> int:
-    """Return the audit-chain line number that the next
-    `append_audit_entry` would use.
+@contextmanager
+def reserve_audit_line(case_dir: Path | str) -> Iterator[int]:
+    """Hold the audit-chain lock across peek + append so the yielded
+    line number is exactly the line the next audit write lands on.
 
     Used by tier-1 / tier-2 tools to pre-determine the audit line
     where their own success entry will land, so they can embed that
@@ -122,17 +155,28 @@ def peek_next_line_number(case_dir: Path | str) -> int:
     having to probe `record_finding`'s audit-chain validation by
     submitting placeholder findings.
 
-    Single-process-server contract: between this peek and the matching
-    `append_audit_entry` call there must be no other audit writes.
-    The MCP server is single-process by construction (see
-    `server/audit.py` module docstring); a future multi-process design
-    would route writes through a queue and would need a different
-    line-number-allocation primitive.
+    This replaces the pre-parallel-dispatch ``peek_next_line_number``,
+    which read the chain head OUTSIDE the lock: with one MCP-server
+    process per parallel subagent dispatch, a sibling process could
+    append between the peek and the matching ``append_audit_entry``,
+    leaving a stale line number embedded in the returned result.
+    Holding ``chain_write_lock`` across the whole region closes that
+    window; ``chain_write_lock`` is re-entrant per thread, so the
+    enclosed ``append_audit_entry`` (success or rejection path)
+    re-enters rather than deadlocking and consumes the reserved line.
+
+    Keep the enclosed region short — model construction and same-case
+    chain writes only, never subprocess work. Other chains'
+    (extractions / findings / correlations) locks nest strictly inside
+    this one, so lock order is always audit → other, never the
+    reverse.
     """
     case_dir_path = Path(case_dir).resolve()
     audit_path = case_dir_path / _AUDIT_SUBDIR / _AUDIT_FILENAME
-    line_number, _ = _read_chain_state(audit_path)
-    return line_number
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    with chain_write_lock(audit_path):
+        line_number, _ = _read_chain_state(audit_path)
+        yield line_number
 
 
-__all__ = ["append_audit_entry", "peek_next_line_number"]
+__all__ = ["append_audit_entry", "reserve_audit_line"]

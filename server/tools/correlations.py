@@ -44,7 +44,7 @@ from uuid import uuid4
 import yaml
 from pydantic import BaseModel, ValidationError
 
-from server.audit import append_audit_entry, peek_next_line_number
+from server.audit import append_audit_entry, reserve_audit_line
 from server.correlations_log import append_correlation_entry
 from server.findings_log import read_finding_ids
 from server.rejections_log import append_rejection_record
@@ -729,79 +729,82 @@ def record_correlation(
     #    `:rejected_invalid_payload`.
     correlation_id = str(uuid4())
     created_at = datetime.now(tz=timezone.utc)
-    # Peek the audit line BEFORE the success-audit append. The
-    # contract is single-process / no concurrent writes (see
-    # `server/audit.py:peek_next_line_number`), so the line we peek
-    # is the line our success-append will use.
-    audit_line = peek_next_line_number(case_dir_path)
-    try:
-        payload = _build_payload(
-            correlation_id=correlation_id,
-            correlation_type=correlation_type,
-            case_id=case_id,
-            iteration_number=iteration_number,
-            created_at=created_at,
-            audit_line=audit_line,
-            evidence_refs=evidence_refs,
-            hypothesis=hypothesis,
-            target_finding_ids=target_finding_ids,
-            finding_a_id=finding_a_id,
-            finding_b_id=finding_b_id,
-            target_finding_id=target_finding_id,
-            strength=strength,
-            severity=severity,
-            resolvable_by_followup=resolvable_by_followup,
-            target_analyst=target_analyst,
-            related_finding_ids=related_finding_ids,
-            focus_context=focus_context,
-            rationale=rationale,
-            host_ids=host_ids,
-            shared_indicator=shared_indicator,
-        )
-    except (ValueError, ValidationError):
-        _log_rejection(
-            case_dir_path,
-            _RejectionReason.INVALID_PAYLOAD,
-            case_id,
-            correlation_type,
-            raw_input,
-        )
-        raise ValueError("correlation payload failed validation")
+    # Reserve the audit line BEFORE the success-audit append. The
+    # reservation holds the audit-chain lock across peek + append
+    # (see `server/audit.py:reserve_audit_line`), so a concurrent
+    # MCP-server process cannot shift the line between the two.
+    # Rejection paths inside the block re-enter the held lock and
+    # consume the reserved line — correct either way, since the
+    # payload carrying `audit_line` is never returned on rejection.
+    with reserve_audit_line(case_dir_path) as audit_line:
+        try:
+            payload = _build_payload(
+                correlation_id=correlation_id,
+                correlation_type=correlation_type,
+                case_id=case_id,
+                iteration_number=iteration_number,
+                created_at=created_at,
+                audit_line=audit_line,
+                evidence_refs=evidence_refs,
+                hypothesis=hypothesis,
+                target_finding_ids=target_finding_ids,
+                finding_a_id=finding_a_id,
+                finding_b_id=finding_b_id,
+                target_finding_id=target_finding_id,
+                strength=strength,
+                severity=severity,
+                resolvable_by_followup=resolvable_by_followup,
+                target_analyst=target_analyst,
+                related_finding_ids=related_finding_ids,
+                focus_context=focus_context,
+                rationale=rationale,
+                host_ids=host_ids,
+                shared_indicator=shared_indicator,
+            )
+        except (ValueError, ValidationError):
+            _log_rejection(
+                case_dir_path,
+                _RejectionReason.INVALID_PAYLOAD,
+                case_id,
+                correlation_type,
+                raw_input,
+            )
+            raise ValueError("correlation payload failed validation")
 
-    # 5. Finding-id existence.
-    referenced_ids = _collect_referenced_finding_ids(payload)
-    known_ids = read_finding_ids(case_dir_path)
-    missing = [fid for fid in referenced_ids if fid not in known_ids]
-    if missing:
-        _log_rejection(
-            case_dir_path,
-            _RejectionReason.UNKNOWN_FINDING,
-            case_id,
-            correlation_type,
-            raw_input,
+        # 5. Finding-id existence.
+        referenced_ids = _collect_referenced_finding_ids(payload)
+        known_ids = read_finding_ids(case_dir_path)
+        missing = [fid for fid in referenced_ids if fid not in known_ids]
+        if missing:
+            _log_rejection(
+                case_dir_path,
+                _RejectionReason.UNKNOWN_FINDING,
+                case_id,
+                correlation_type,
+                raw_input,
+            )
+            raise ValueError("referenced finding_id not in findings.jsonl")
+
+        # 6. Append to the correlations chain.
+        chain_entry: CorrelationChainEntry = append_correlation_entry(case_dir_path, payload)
+
+        # 7. Audit success. The output_hash is the digest of the
+        #    CorrelationChainEntry — so audit-replay can verify "the line
+        #    in correlations.jsonl that this correlation points at hashes
+        #    to what the audit chain claimed".
+        append_audit_entry(
+            case_dir=case_dir_path,
+            tool_name=_TOOL_NAME,
+            evidence_id=None,
+            input_args=_success_input_args(
+                case_id,
+                correlation_type,
+                iteration_number,
+                referenced_ids,
+                evidence_refs,
+            ),
+            output=chain_entry,
         )
-        raise ValueError("referenced finding_id not in findings.jsonl")
-
-    # 6. Append to the correlations chain.
-    chain_entry: CorrelationChainEntry = append_correlation_entry(case_dir_path, payload)
-
-    # 7. Audit success. The output_hash is the digest of the
-    #    CorrelationChainEntry — so audit-replay can verify "the line
-    #    in correlations.jsonl that this correlation points at hashes
-    #    to what the audit chain claimed".
-    append_audit_entry(
-        case_dir=case_dir_path,
-        tool_name=_TOOL_NAME,
-        evidence_id=None,
-        input_args=_success_input_args(
-            case_id,
-            correlation_type,
-            iteration_number,
-            referenced_ids,
-            evidence_refs,
-        ),
-        output=chain_entry,
-    )
 
     return payload
 

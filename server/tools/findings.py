@@ -28,12 +28,13 @@ import os
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
+from typing import get_args
 from uuid import uuid4
 
 import yaml
 from pydantic import BaseModel, ValidationError
 
-from server.audit import append_audit_entry, peek_next_line_number
+from server.audit import append_audit_entry, reserve_audit_line
 from server.correlations_log import read_correlation_ids
 from server.findings_log import (
     append_finding_entry,
@@ -41,9 +42,11 @@ from server.findings_log import (
 )
 from server.rejections_log import append_rejection_record
 from server.schemas import (
+    AnalystName,
     DraftFinding,
     EvidenceRecord,
     EvidenceRef,
+    EvidenceRefSourceTool,
     FindingCategory,
     FindingChainEntry,
     FindingConfidence,
@@ -56,14 +59,11 @@ _TOOL_NAME = "record_finding"
 _CASE_FILENAME = "CASE.yaml"
 _AUDIT_RELATIVE_PATH = ("audit", "sift-guard-mcp.jsonl")
 
-# Single source of truth for the analyst allow-list. Keep in sync with
-# the `AnalystName` Literal in server/schemas.py — schema constrains
-# the *type*; this set is what the runtime check rejects against.
-# Same set, two enforcement layers: schema for protocol-level, runtime
-# for audit-on-rejection visibility.
-ALLOWED_ANALYSTS: frozenset[str] = frozenset(
-    {"process_analyst", "network_analyst", "disk_analyst", "validator"}
-)
+# Derived from the `AnalystName` Literal in server/schemas.py so the
+# two enforcement layers cannot drift: schema constrains the *type*;
+# this set is what the runtime check rejects against (schema for
+# protocol-level, runtime for audit-on-rejection visibility).
+ALLOWED_ANALYSTS: frozenset[str] = frozenset(get_args(AnalystName))
 
 # Caller-role gate. ``SIFT_GUARD_ROLE`` is injected per dispatch by
 # the orchestrator (same .mcp.json env-block mechanism as
@@ -79,35 +79,17 @@ def _caller_role() -> str | None:
     return role or None
 
 
-# Source tools an EvidenceRef is allowed to point at. Mirrors the
-# EvidenceRefSourceTool Literal — duplicated here so the runtime check
-# can run before pydantic validation (we want the audit-on-rejection
-# path to fire on a typo'd source_tool, not a schema ValidationError).
-ALLOWED_SOURCE_TOOLS: frozenset[str] = frozenset(
-    {
-        "register_evidence",
-        "vol_pslist",
-        "vol_psscan",
-        "vol_pstree",
-        "vol_netscan",
-        # Week 8 additions: cmdline + malfind on the memory side,
-        # plus four disk-side tier-1 tools whose audit_line is a
-        # legitimate citation surface for record_finding.
-        "vol_cmdline",
-        "vol_malfind",
-        "disk_mft_timeline",
-        "disk_prefetch",
-        "disk_evtx",
-        "disk_registry",
-        # Tier-2 tools added 2026-05-06: a tier-2 result's
-        # `audit_line` field is the analyst's direct entry point for
-        # citing a derived analysis as evidence.
-        "query_records",
-        "group_by",
-        "set_difference",
-        "subtree",
-    }
-)
+# Source tools an EvidenceRef in a *finding* is allowed to point at.
+# Derived from the EvidenceRefSourceTool Literal so new tools flow in
+# without a second edit; the runtime check exists so a typo'd
+# source_tool fires the audit-on-rejection path, not a bare schema
+# ValidationError. One deliberate exception: `rag_query` is citable
+# only in the validator's correlations (schemas.py Week 7 G-2 note) —
+# analysts cannot call rag_query, so a finding citing its audit line
+# would be citing a call the author never made.
+ALLOWED_SOURCE_TOOLS: frozenset[str] = frozenset(get_args(EvidenceRefSourceTool)) - {
+    "rag_query"
+}
 
 
 class _RejectionReason(StrEnum):
@@ -736,51 +718,56 @@ def update_finding(
     #    becomes the schema_validation_failed rejection path.
     update_id = str(uuid4())
     created_at = datetime.now(tz=timezone.utc)
-    audit_line = peek_next_line_number(case_dir_path)
-    try:
-        update = FindingUpdate(
-            update_id=update_id,
-            finding_id=finding_id,
-            iteration_number=iteration_number,
-            previous_state=previous_state,  # type: ignore[arg-type]
-            new_state=new_state,  # type: ignore[arg-type]
-            previous_confidence=previous_confidence,  # type: ignore[arg-type]
-            new_confidence=new_confidence,  # type: ignore[arg-type]
-            promotion_rule=promotion_rule,  # type: ignore[arg-type]
-            driving_correlation_ids=driving_correlation_ids,
-            created_at=created_at,
-            audit_line=audit_line,
-            orchestrator_version=orchestrator_version,
-        )
-    except ValidationError:
-        _log_update_rejection(
-            case_dir_path,
-            _UpdateRejectionReason.SCHEMA_VALIDATION_FAILED,
-            finding_id,
-            promotion_rule,
-        )
-        raise ValueError("update failed schema validation")
+    # Reserved (not peeked) so a concurrent MCP-server process cannot
+    # take the line between here and the success append below; the
+    # rejection path re-enters the held lock and consumes the
+    # reservation instead, which is fine — the update carrying
+    # `audit_line` is never returned on rejection.
+    with reserve_audit_line(case_dir_path) as audit_line:
+        try:
+            update = FindingUpdate(
+                update_id=update_id,
+                finding_id=finding_id,
+                iteration_number=iteration_number,
+                previous_state=previous_state,  # type: ignore[arg-type]
+                new_state=new_state,  # type: ignore[arg-type]
+                previous_confidence=previous_confidence,  # type: ignore[arg-type]
+                new_confidence=new_confidence,  # type: ignore[arg-type]
+                promotion_rule=promotion_rule,  # type: ignore[arg-type]
+                driving_correlation_ids=driving_correlation_ids,
+                created_at=created_at,
+                audit_line=audit_line,
+                orchestrator_version=orchestrator_version,
+            )
+        except ValidationError:
+            _log_update_rejection(
+                case_dir_path,
+                _UpdateRejectionReason.SCHEMA_VALIDATION_FAILED,
+                finding_id,
+                promotion_rule,
+            )
+            raise ValueError("update failed schema validation")
 
-    # 6. Append to the findings chain (same chain as DRAFT entries).
-    chain_entry: FindingChainEntry = append_finding_entry(case_dir_path, update)
+        # 6. Append to the findings chain (same chain as DRAFT entries).
+        chain_entry: FindingChainEntry = append_finding_entry(case_dir_path, update)
 
-    # 7. Audit success. The output_hash is the digest of the
-    #    FindingChainEntry just written.
-    append_audit_entry(
-        case_dir=case_dir_path,
-        tool_name=_UPDATE_TOOL_NAME,
-        evidence_id=None,
-        input_args={
-            "finding_id": finding_id,
-            "iteration_number": iteration_number,
-            "new_state": new_state,
-            "new_confidence": new_confidence,
-            "promotion_rule": promotion_rule,
-            "driving_correlation_ids": sorted(set(driving_correlation_ids)),
-            "orchestrator_version": orchestrator_version,
-        },
-        output=chain_entry,
-    )
+        # 7. Audit success. The output_hash is the digest of the
+        #    FindingChainEntry just written.
+        append_audit_entry(
+            case_dir=case_dir_path,
+            tool_name=_UPDATE_TOOL_NAME,
+            evidence_id=None,
+            input_args={
+                "finding_id": finding_id,
+                "iteration_number": iteration_number,
+                "new_state": new_state,
+                "new_confidence": new_confidence,
+                "promotion_rule": promotion_rule,
+                "driving_correlation_ids": sorted(set(driving_correlation_ids)),
+                "orchestrator_version": orchestrator_version,
+            },
+            output=chain_entry,
+        )
 
     return update
 

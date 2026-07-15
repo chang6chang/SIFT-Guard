@@ -169,8 +169,12 @@ def register_evidence(
       1. resolve and validate the path
       2. idempotency skip — if CASE.yaml already has an entry whose
          ``absolute_path`` matches and the file is mode 0o444 on disk,
-         return the recorded EvidenceRecord without recomputing the
-         SHA-256. Saves ~30 s per 16 GB image on a re-run.
+         re-verify the recorded SHA-256 against the bytes on disk and
+         return the recorded EvidenceRecord (no new evidence_id, no
+         duplicate CASE.yaml entry). A hash mismatch is an audited
+         fatal rejection — mode + path alone don't prove the content
+         is untouched, and waiting for the end-of-run integrity gate
+         would let a whole run burn tokens on tampered evidence.
       3. stream-hash sha256 and capture magic bytes in one pass
       4. detect artifact class
       5. mint UUID4 evidence_id
@@ -206,21 +210,43 @@ def register_evidence(
 
     # Step 2 — idempotency skip. Re-running `sift-guard analyze`
     # against an already-registered case (same case_dir, same
-    # evidence files) should not pay the SHA-256 cost again. We
+    # evidence files) reuses the existing EvidenceRecord instead of
+    # minting a new evidence_id / duplicate CASE.yaml entry. We
     # gate on TWO conditions so a stray chmod 444 on a foreign file
     # can't trick us into trusting an arbitrary CASE.yaml hit:
     #   (a) CASE.yaml already has an entry with this absolute_path.
     #   (b) The file is currently mode 0o444 — the post-registration
     #       state this function itself leaves files in.
-    # Either one alone is insufficient; both together mean the file
-    # was registered through this code path previously and remains
-    # untouched on disk.
+    # Mode + path prove the entry came through this code path, but
+    # NOT that the bytes are untouched — a content swap that
+    # preserves path, mode, and size satisfies both. So the skip
+    # path re-verifies the recorded SHA-256 (size first: free, and
+    # fails fast before the streaming hash). Detecting tampering
+    # here instead of at the end-of-run integrity gate saves the
+    # whole run's tokens; the hash cost is the same one a fresh
+    # registration would pay in step 3.
     case_yaml_path = case_dir_path / _CASE_FILENAME
     existing_doc = _load_case_yaml(case_yaml_path) if case_yaml_path.exists() else {}
     existing_record = _find_existing_evidence_entry(existing_doc, str(path))
     current_mode = path.stat().st_mode & 0o777
     if existing_record is not None and current_mode == _FILE_MODE:
-        # Audit the skip so the chain still records every call.
+        current_size = path.stat().st_size
+        if current_size == existing_record.size_bytes:
+            current_sha256, _ = _stream_sha256_and_magic(path)
+        else:
+            current_sha256 = None
+        if current_sha256 != existing_record.sha256:
+            # Sanitized message (no path echo); the specifics live on
+            # the audit chain, same asymmetry as every rejection path.
+            append_audit_entry(
+                case_dir=case_dir_path,
+                tool_name="register_evidence:rejected_idempotent_hash_mismatch",
+                evidence_id=existing_record.evidence_id,
+                input_args={"filepath": str(path), "case_dir": str(case_dir_path)},
+                output=existing_record,
+            )
+            raise ValueError("registered evidence content does not match recorded hash")
+        # Audit the verified skip so the chain still records every call.
         append_audit_entry(
             case_dir=case_dir_path,
             tool_name="register_evidence:idempotent_skip",
@@ -236,6 +262,7 @@ def register_evidence(
     evidence_id = str(uuid.uuid4())
     registered_at = datetime.now(tz=timezone.utc)
 
+    mode_before = current_mode
     os.chmod(path, _FILE_MODE)
 
     record = EvidenceRecord(
@@ -247,6 +274,7 @@ def register_evidence(
         artifact_class=artifact_class,
         registered_at=registered_at,
         file_mode_after_registration=oct(_FILE_MODE),
+        file_mode_before_registration=oct(mode_before),
     )
 
     case_dir_path.mkdir(parents=True, exist_ok=True)

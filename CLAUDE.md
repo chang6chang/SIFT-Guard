@@ -77,13 +77,18 @@ valid HIGH, just earned via different evidence patterns. See
 
 ## Self-correction loop
 
-Five steps per iteration: ANALYZE (analyst subagents dispatched in
-parallel) → CORRELATE (validator over current DRAFT findings) →
-HYPOTHESIZE (one-sentence hypothesis per contradiction) → ITERATE
-(orchestrator dispatches re-runs) → REPORT. The loop terminates on
-zero unresolved contradictions, two iterations with identical
-contradiction sets, or hard token budget cap — never a fixed
-iteration count. Termination reason is logged in `iterations.jsonl`.
+Five steps per iteration (`orchestrator/loop.py`): ANALYZE (analyst
+subagents dispatched in parallel) → CORRELATE (validator over
+current DRAFT findings) → PROMOTE (orchestrator applies R1–R6 over
+the validator's correlations and writes `update_finding` calls) →
+PLAN (termination check + next-iteration dispatch plan from
+`request_followup` correlations) → WRITE (append the iteration
+record). The loop terminates on zero unresolved findings
+(`R_a_zero_unresolved`), two iterations with an identical
+non-empty disputed set (`R_b_disputed_set_unchanged`), the token
+budget cap (`R_c_token_budget_exceeded`), or the `--max-iterations`
+hard cap (`max_iterations_reached`). Termination reason is logged
+in `iterations.jsonl`.
 
 ## Confidence methodology (4 levels, written rules in docs)
 

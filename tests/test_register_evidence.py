@@ -282,15 +282,19 @@ class TestRegisterEvidenceInPlace:
 
 class TestRegisterEvidenceIdempotency:
     """Re-running ``sift-guard analyze`` against the same case_dir
-    must not re-hash already-registered evidence. Skip is gated on
-    BOTH (a) file mode 0o444 AND (b) CASE.yaml has a matching entry."""
+    reuses the existing EvidenceRecord (no new evidence_id, no
+    duplicate CASE.yaml entry). Skip is gated on BOTH (a) file mode
+    0o444 AND (b) CASE.yaml has a matching entry — and the skip path
+    re-verifies the recorded SHA-256, because mode + path alone do
+    not prove the content is untouched."""
 
-    def test_second_call_skips_rehash_and_returns_existing_record(
+    def test_second_call_reuses_record_and_verifies_hash(
         self, fixture_file: Path, case_dir: Path, monkeypatch
     ):
         first = register_evidence(str(fixture_file), case_dir=str(case_dir))
 
-        # Spy on the hasher — second call must NOT recompute.
+        # Spy on the hasher — the second call recomputes exactly once,
+        # as the skip path's integrity verification.
         from server.tools import evidence as evidence_module
 
         rehash_called = {"count": 0}
@@ -306,9 +310,68 @@ class TestRegisterEvidenceIdempotency:
 
         assert second.evidence_id == first.evidence_id
         assert second.sha256 == first.sha256
-        assert rehash_called["count"] == 0, (
-            "second registration must not re-hash a file with mode 0o444 + CASE.yaml entry"
+        assert rehash_called["count"] == 1, (
+            "skip path must re-hash exactly once to verify the recorded sha256"
         )
+        # Reuse, not re-registration: still a single CASE.yaml entry.
+        with _case_yaml(case_dir).open() as f:
+            doc = yaml.safe_load(f)
+        assert len(doc["evidence"]) == 1
+
+    def test_tampered_content_same_size_is_rejected(self, fixture_file: Path, case_dir: Path):
+        """A content swap that preserves path, mode, and size must be
+        caught at re-registration, not deferred to the end-of-run
+        integrity gate."""
+        register_evidence(str(fixture_file), case_dir=str(case_dir))
+
+        original = fixture_file.read_bytes()
+        tampered = bytes([original[0] ^ 0xFF]) + original[1:]
+        fixture_file.chmod(0o644)
+        fixture_file.write_bytes(tampered)
+        fixture_file.chmod(0o444)
+
+        with pytest.raises(ValueError) as exc_info:
+            register_evidence(str(fixture_file), case_dir=str(case_dir))
+
+        # Sanitized message: no path echo.
+        assert str(fixture_file) not in str(exc_info.value)
+
+        audit_lines = [
+            json.loads(line)
+            for line in _audit_path(case_dir).read_text().splitlines()
+            if line.strip()
+        ]
+        assert audit_lines[-1]["tool_name"] == (
+            "register_evidence:rejected_idempotent_hash_mismatch"
+        )
+
+    def test_size_change_is_rejected_without_rehash(
+        self, fixture_file: Path, case_dir: Path, monkeypatch
+    ):
+        """Size mismatch short-circuits: rejected before paying the
+        streaming-hash cost."""
+        register_evidence(str(fixture_file), case_dir=str(case_dir))
+
+        fixture_file.chmod(0o644)
+        with fixture_file.open("ab") as f:
+            f.write(b"\x00")
+        fixture_file.chmod(0o444)
+
+        from server.tools import evidence as evidence_module
+
+        rehash_called = {"count": 0}
+        original_hasher = evidence_module._stream_sha256_and_magic
+
+        def counting_hasher(*args, **kwargs):
+            rehash_called["count"] += 1
+            return original_hasher(*args, **kwargs)
+
+        monkeypatch.setattr(evidence_module, "_stream_sha256_and_magic", counting_hasher)
+
+        with pytest.raises(ValueError):
+            register_evidence(str(fixture_file), case_dir=str(case_dir))
+
+        assert rehash_called["count"] == 0, "size mismatch must reject before hashing"
 
     def test_skip_writes_audit_entry(
         self, fixture_file: Path, case_dir: Path
