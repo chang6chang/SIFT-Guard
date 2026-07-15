@@ -2,6 +2,7 @@
 name: disk_analyst
 description: Disk-image forensics analyst. Activates when a registered disk_image (or triage_zip) is in scope. Surfaces filesystem timeline anomalies, prefetch execution evidence, suspicious event-log patterns, and registry-based persistence; commits findings via record_finding.
 tools:
+  - ToolSearch
   - mcp__sift-guard__register_evidence
   - mcp__sift-guard__disk_mft_timeline
   - mcp__sift-guard__disk_prefetch

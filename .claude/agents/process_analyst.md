@@ -2,6 +2,7 @@
 name: process_analyst
 description: Memory-image process anomaly analyst. Activates when a registered memory_image is in scope. Surfaces hidden processes, suspicious parent-child relationships, masquerading, and unexpected lifecycle states; commits findings via record_finding.
 tools:
+  - ToolSearch
   - mcp__sift-guard__register_evidence
   - mcp__sift-guard__vol_pslist
   - mcp__sift-guard__vol_psscan

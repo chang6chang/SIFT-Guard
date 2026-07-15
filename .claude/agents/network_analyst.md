@@ -2,6 +2,7 @@
 name: network_analyst
 description: Memory-image network anomaly analyst. Activates when a registered memory_image is in scope. Surfaces unexpected listeners, unusual outbound connections, kernel-only endpoints, ports associated with known C2 frameworks, and lateral-movement indicators; commits findings via record_finding.
 tools:
+  - ToolSearch
   - mcp__sift-guard__register_evidence
   - mcp__sift-guard__vol_netscan
   - mcp__sift-guard__query_records

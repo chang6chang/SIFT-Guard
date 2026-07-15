@@ -124,7 +124,11 @@ class TestDispatchSubagentMcpConfigArg:
         return _R(stdout)
 
     def _stream(self, mcp_attached: bool) -> str:
-        """A minimal stream-json transcript: system init + result."""
+        """A minimal stream-json transcript: system init + one
+        sift-guard tool call + result. The tool-call event matters:
+        ``DispatchResult.succeeded`` fails closed on a zero-tool-call
+        run (the confabulation guard), so a realistic happy-path
+        stream must show the subagent actually touching the evidence."""
         init = {
             "type": "system",
             "mcp_servers": [
@@ -133,6 +137,14 @@ class TestDispatchSubagentMcpConfigArg:
                     "status": "connected" if mcp_attached else "failed",
                 }
             ],
+        }
+        tool_call = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "name": "mcp__sift-guard__vol_pslist"}
+                ]
+            },
         }
         result = {
             "type": "result",
@@ -149,7 +161,14 @@ class TestDispatchSubagentMcpConfigArg:
                 "output_tokens": 5,
             },
         }
-        return json.dumps(init) + "\n" + json.dumps(result) + "\n"
+        return (
+            json.dumps(init)
+            + "\n"
+            + json.dumps(tool_call)
+            + "\n"
+            + json.dumps(result)
+            + "\n"
+        )
 
     def test_argv_includes_mcp_config(self, tmp_path: Path, monkeypatch):
         # Real .mcp.json so the resolver picks it up.
@@ -240,13 +259,34 @@ class TestDispatchSubagentMcpConfigArg:
         assert result.mcp_server_status == {}
         assert result.succeeded is False
 
-    def _stream_with_status(self, sift_status: str) -> str:
-        """Like ``_stream`` but with an explicit sift-guard status string,
-        for covering Claude Code's mid-handshake (``pending``) and
-        explicit-failure (``needs-auth``, ``error``) shapes."""
+    def test_dispatch_fails_when_no_sift_guard_tool_calls(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # Regression for the 2026-07-15 Rocba incident: the server
+        # attached cleanly but the subagent never issued a single
+        # ``mcp__sift-guard__*`` call — it confabulated a finding set
+        # without touching the evidence, and the orchestrator accepted
+        # the run as a clean "0 findings". ``succeeded`` must fail
+        # closed on a zero-tool-call run even when attach + stop_reason
+        # both look healthy.
+        cfg = tmp_path / ".mcp.json"
+        cfg.write_text('{"mcpServers": {}}')
+        monkeypatch.setenv("SIFT_GUARD_MCP_CONFIG", str(cfg))
+
         init = {
             "type": "system",
-            "mcp_servers": [{"name": "sift-guard", "status": sift_status}],
+            "mcp_servers": [{"name": "sift-guard", "status": "connected"}],
+        }
+        # An assistant turn with text only — plus a non-sift-guard
+        # tool call, which must NOT count toward the guard.
+        chatter = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "Analysis complete: no findings."},
+                    {"type": "tool_use", "name": "Read"},
+                ]
+            },
         }
         result = {
             "type": "result",
@@ -263,7 +303,69 @@ class TestDispatchSubagentMcpConfigArg:
                 "output_tokens": 5,
             },
         }
-        return json.dumps(init) + "\n" + json.dumps(result) + "\n"
+        stream = (
+            json.dumps(init)
+            + "\n"
+            + json.dumps(chatter)
+            + "\n"
+            + json.dumps(result)
+            + "\n"
+        )
+
+        def fake_run(cmd, **kwargs):
+            return self._fake_proc(stream)
+
+        with patch.object(dispatch_mod.subprocess, "run", side_effect=fake_run):
+            result_obj = dispatch_subagent(
+                "process_analyst",
+                prompt="evidence_id: foo",
+                cwd=tmp_path,
+            )
+
+        assert result_obj.sift_guard_mcp_attached
+        assert result_obj.stop_reason == "end_turn"
+        assert result_obj.sift_guard_tool_calls == 0
+        assert result_obj.succeeded is False
+
+    def _stream_with_status(self, sift_status: str) -> str:
+        """Like ``_stream`` but with an explicit sift-guard status string,
+        for covering Claude Code's mid-handshake (``pending``) and
+        explicit-failure (``needs-auth``, ``error``) shapes."""
+        init = {
+            "type": "system",
+            "mcp_servers": [{"name": "sift-guard", "status": sift_status}],
+        }
+        tool_call = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "name": "mcp__sift-guard__vol_pslist"}
+                ]
+            },
+        }
+        result = {
+            "type": "result",
+            "session_id": "sid",
+            "stop_reason": "end_turn",
+            "num_turns": 1,
+            "duration_ms": 100,
+            "duration_api_ms": 50,
+            "total_cost_usd": 0.0,
+            "usage": {
+                "input_tokens": 10,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "output_tokens": 5,
+            },
+        }
+        return (
+            json.dumps(init)
+            + "\n"
+            + json.dumps(tool_call)
+            + "\n"
+            + json.dumps(result)
+            + "\n"
+        )
 
     @pytest.mark.parametrize(
         "sift_status",
@@ -461,6 +563,22 @@ class TestDispatchSubagentHostScoping:
                             "mcp_servers": [
                                 {"name": "sift-guard", "status": "connected"}
                             ],
+                        }
+                    )
+                    + "\n"
+                    # One sift-guard tool call so the zero-tool-call
+                    # confabulation guard reads this as a real run.
+                    + json.dumps(
+                        {
+                            "type": "assistant",
+                            "message": {
+                                "content": [
+                                    {
+                                        "type": "tool_use",
+                                        "name": "mcp__sift-guard__vol_pslist",
+                                    }
+                                ]
+                            },
                         }
                     )
                     + "\n"

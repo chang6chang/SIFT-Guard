@@ -296,6 +296,38 @@ class DispatchResult:
         return status in self._MCP_ATTACHED_STATES
 
     @property
+    def sift_guard_tool_calls(self) -> int:
+        """How many ``mcp__sift-guard__*`` tool calls the subagent
+        actually issued in its stream. Zero means the subagent
+        produced its answer WITHOUT touching the evidence — the
+        confabulation failure mode.
+
+        The 2026-07-15 Rocba incident: with the sift-guard tools
+        surfaced as *deferred* and ``ToolSearch`` missing from the
+        agent frontmatter allow-lists, no subagent could load its
+        own tools. Rather than erroring, every analyst fabricated a
+        plausible finding set in a single turn (different invented
+        PIDs each run) and the orchestrator accepted the empty
+        chain as a clean ``0 findings`` result — a compromised host
+        reported as clean. The attach check above did not catch it:
+        the server *was* attached; it was simply never called."""
+        count = 0
+        for event in self.raw_events:
+            if event.get("type") != "assistant":
+                continue
+            content = event.get("message", {}).get("content", [])
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_use"
+                    and str(block.get("name", "")).startswith("mcp__sift-guard__")
+                ):
+                    count += 1
+        return count
+
+    @property
     def succeeded(self) -> bool:
         # Fail-closed on MCP-attach: a run with no sift-guard MCP is
         # not a successful analyst dispatch even when stop_reason
@@ -304,6 +336,15 @@ class DispatchResult:
         # was missing; surfacing the failure here is the architectural
         # guardrail that prevents a repeat.
         if not self.sift_guard_mcp_attached:
+            return False
+        # Fail-closed on zero tool calls: a subagent that attached the
+        # server but never called a single sift-guard tool did not
+        # analyze the evidence — it confabulated. Treating that as a
+        # successful "0 findings" is the dangerous silent failure the
+        # 2026-07-15 Rocba incident exposed. An analysis that legitimately
+        # finds nothing still calls tools to reach that conclusion, so a
+        # true-zero-tool-call run is always a failure.
+        if self.sift_guard_tool_calls == 0:
             return False
         return self.stop_reason in ("end_turn", "tool_use", "stop_sequence")
 
