@@ -18,7 +18,13 @@ modes are supported, in this resolution order:
      ``SIFT_DISK_PREMOUNTED_PATH=/mnt/sift_disk`` and the utility
      skips every shell-out, validates ``/proc/mounts`` shows the
      path is read-only, and returns it. The operator is responsible
-     for the actual `ewfmount` / `mount -o ro,loop` step.
+     for the actual `ewfmount` / `mount -o ro,loop` step. For E01
+     evidence, additionally set
+     ``SIFT_DISK_PREMOUNTED_EWF_PATH=/mnt/sift-ewf`` (the ewfmount
+     FUSE dir containing ``ewf1``) — the MFT runner walks the raw
+     layer, not the filesystem mount, and without the hint a
+     premounted E01 falls back to the opaque ``.E01`` path that
+     pytsk3 cannot open.
 
   2. **Real shell-out with fallback chain (default)** — when the
      env var is unset, the utility walks the per-format fallback
@@ -88,11 +94,17 @@ verified):
     actual plaso CLI shape; the user spec's single-step
     ``log2timeline.py -o json_line`` is incorrect — that flag
     belongs to psort. We run the two-step pipeline.
-  - Prefetch parsing uses python-prefetch's programmatic
-    ``prefetch.Prefetch`` class. Alternative on SIFT is ``pf2json``
-    (CLI) — set ``SIFT_DISK_PREFETCH_CMD`` to override.
-  - python-evtx ships ``evtx_dump.py`` for CLI XML dumping; we use
-    its programmatic API to produce JSON-friendly per-record dicts.
+  - Prefetch parsing shells out to ``pf2json`` (SIFT CLI) — set
+    ``SIFT_DISK_PREFETCH_CMD`` to point at an equivalent
+    JSON-emitting parser on non-SIFT hosts.
+  - EVTX parsing shells out to python-evtx's ``evtx_dump.py``
+    (XML per record; the parser converts to per-record dicts) —
+    set ``SIFT_DISK_EVTX_DUMP_CMD`` to override. Note the pip
+    distribution's console script is broken (its entry point
+    imports an unpackaged ``scripts`` module), so non-SIFT hosts
+    need a thin wrapper around ``Evtx.Evtx`` that prints the XML
+    preamble, ``<Events>``, one ``record.xml()`` per record,
+    ``</Events>``.
   - RegRipper canonical CLI on SIFT is ``rip.pl -r <hive> -p
     <plugin>`` or ``-f <profile>``. The runner uses ``-f``
     profiles per-hive (``system``, ``software``, ``sam``, ``ntuser``).
@@ -119,6 +131,7 @@ logger = logging.getLogger(__name__)
 
 
 SIFT_DISK_PREMOUNTED_PATH_ENV = "SIFT_DISK_PREMOUNTED_PATH"
+SIFT_DISK_PREMOUNTED_EWF_PATH_ENV = "SIFT_DISK_PREMOUNTED_EWF_PATH"
 SIFT_DISK_LOG2TIMELINE_BIN_ENV = "SIFT_DISK_LOG2TIMELINE_BIN"
 SIFT_DISK_PSORT_BIN_ENV = "SIFT_DISK_PSORT_BIN"
 SIFT_DISK_REGRIPPER_BIN_ENV = "SIFT_DISK_REGRIPPER_BIN"
@@ -885,8 +898,20 @@ def _resolve_raw_image_path(evidence_id: str, absolute_path: str) -> str:
     ntfs-3g mount sits on top of the same raw layer but doesn't
     expose ``$MFT`` (default ntfs-3g hides system files), so pytsk3
     walks the raw image directly instead.
+
+    Operator-premount mode: ``_EWF_DIR_CACHE`` is only populated
+    when THIS process ran ``ewfmount``, so with
+    ``SIFT_DISK_PREMOUNTED_PATH`` set the cache is empty and an E01
+    would fall through to its opaque ``absolute_path`` — which
+    pytsk3 cannot open. ``SIFT_DISK_PREMOUNTED_EWF_PATH`` names the
+    operator's ewfmount FUSE dir (the one containing ``ewf1``) so
+    premounted E01 cases keep MFT coverage. Raw images are
+    unaffected either way — their ``absolute_path`` IS the raw
+    layer.
     """
     ewf_dir = _EWF_DIR_CACHE.get(evidence_id)
+    if ewf_dir is None:
+        ewf_dir = os.environ.get(SIFT_DISK_PREMOUNTED_EWF_PATH_ENV)
     if ewf_dir is not None:
         candidate = Path(ewf_dir) / "ewf1"
         if candidate.exists():

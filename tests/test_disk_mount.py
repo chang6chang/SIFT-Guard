@@ -22,9 +22,11 @@ from server.runners import disk_mount
 from server.runners.disk_mount import (
     MountError,
     MountVerificationError,
+    SIFT_DISK_PREMOUNTED_EWF_PATH_ENV,
     SIFT_DISK_PREMOUNTED_PATH_ENV,
     _detect_image_format,
     _is_path_mounted_readonly,
+    _resolve_raw_image_path,
     mount_disk_image,
     parse_evtx,
     parse_plaso_jsonl,
@@ -987,3 +989,57 @@ class TestPlasoTempdirTracking:
         disk_mount._register_plaso_tempdir(p)
         disk_mount._atexit_cleanup_all_mounts()
         assert not p.exists()
+
+
+# ---------------------------------------------------------------------------
+# Raw-image path resolution (MFT runner's pytsk3 source)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveRawImagePath:
+    """``_resolve_raw_image_path`` must hand pytsk3 something it can
+    open: the ewf1 FUSE entry for E01s, the registered path for raw
+    images. The operator-premount case is the regression target —
+    ``_EWF_DIR_CACHE`` is only populated when THIS process ran
+    ewfmount, so premounted E01s need the env-var hint (found live
+    on the 2026-07-16 srl-2015 disk smoke test: MFT fell back to the
+    opaque .E01 and pytsk3 could not open it)."""
+
+    def _make_ewf_dir(self, tmp_path: Path) -> Path:
+        ewf_dir = tmp_path / "ewf"
+        ewf_dir.mkdir()
+        (ewf_dir / "ewf1").write_bytes(b"\x00")
+        return ewf_dir
+
+    def test_in_process_cache_wins(self, tmp_path: Path, monkeypatch):
+        ewf_dir = self._make_ewf_dir(tmp_path)
+        monkeypatch.setitem(disk_mount._EWF_DIR_CACHE, "ev-1", str(ewf_dir))
+        monkeypatch.delenv(SIFT_DISK_PREMOUNTED_EWF_PATH_ENV, raising=False)
+        assert _resolve_raw_image_path("ev-1", "/case/img.E01") == str(ewf_dir / "ewf1")
+
+    def test_premounted_env_var_used_when_cache_empty(self, tmp_path: Path, monkeypatch):
+        ewf_dir = self._make_ewf_dir(tmp_path)
+        disk_mount._EWF_DIR_CACHE.pop("ev-2", None)
+        monkeypatch.setenv(SIFT_DISK_PREMOUNTED_EWF_PATH_ENV, str(ewf_dir))
+        assert _resolve_raw_image_path("ev-2", "/case/img.E01") == str(ewf_dir / "ewf1")
+
+    def test_cache_takes_precedence_over_env_var(self, tmp_path: Path, monkeypatch):
+        cached_dir = self._make_ewf_dir(tmp_path)
+        other_dir = tmp_path / "other-ewf"
+        other_dir.mkdir()
+        (other_dir / "ewf1").write_bytes(b"\x00")
+        monkeypatch.setitem(disk_mount._EWF_DIR_CACHE, "ev-3", str(cached_dir))
+        monkeypatch.setenv(SIFT_DISK_PREMOUNTED_EWF_PATH_ENV, str(other_dir))
+        assert _resolve_raw_image_path("ev-3", "/case/img.E01") == str(cached_dir / "ewf1")
+
+    def test_falls_back_to_absolute_path_when_no_ewf1(self, tmp_path: Path, monkeypatch):
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        disk_mount._EWF_DIR_CACHE.pop("ev-4", None)
+        monkeypatch.setenv(SIFT_DISK_PREMOUNTED_EWF_PATH_ENV, str(empty_dir))
+        assert _resolve_raw_image_path("ev-4", "/case/img.001") == "/case/img.001"
+
+    def test_falls_back_when_nothing_configured(self, monkeypatch):
+        disk_mount._EWF_DIR_CACHE.pop("ev-5", None)
+        monkeypatch.delenv(SIFT_DISK_PREMOUNTED_EWF_PATH_ENV, raising=False)
+        assert _resolve_raw_image_path("ev-5", "/case/img.001") == "/case/img.001"
